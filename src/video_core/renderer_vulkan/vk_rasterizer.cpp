@@ -340,6 +340,14 @@ void Rasterizer::DispatchDirect() {
         runtime.FlushBarriers();
     }
 
+
+    // CUSA00100 VSM shadow hack: depthreduction never dispatches, so force
+    // clear shader to write a value with non-zero low-4-bit tile mask.
+    // push_data.ud_regs[1] = user_data[4] → stored as float to tile SSBO.
+    // 0x7F80000F: +inf float with bitmask=0xF, safe from DenormFlushToZero.
+    if (cs.pgm_hash == 0x9846aaff) {
+        push_data.ud_regs[1] = 0x7F80000F;
+    }
     scheduler.EndRendering();
     pipeline->BindResources(set_writes, push_data);
 
@@ -863,6 +871,15 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
 
     u32 num_images{};
     for (const auto& image_desc : stage.images) {
+        // CUSA00100: CS shaders 0xa7b66f58/0xefaaab2b have garbage T# data
+        // (mode always 1, textures never actually sampled). Bind empty descriptors
+        // instead of letting texture cache parse invalid sharp data and crash the driver.
+        if (stage.pgm_hash == 0xa7b66f58 || stage.pgm_hash == 0xefaaab2b) {
+            image_bindings[num_images++].image_id = {};
+            image_descriptor_array_sizes.push_back(1);
+            continue;
+        }
+
         const auto tsharp = image_desc.GetSharp(stage);
         const auto data_fmt = tsharp.GetDataFmt();
         const auto num_fmt = tsharp.GetNumberFmt();
