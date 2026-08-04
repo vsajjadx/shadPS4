@@ -844,6 +844,7 @@ set(COMMON src/common/logging/classes.cpp
            src/common/memory_patcher.h
            src/common/memory_patcher.cpp
            src/common/multi_level_page_table.h
+           src/common/hack_features.cpp
            ${CMAKE_CURRENT_BINARY_DIR}/src/common/scm_rev.cpp
            src/common/scm_rev.h
            src/common/key_manager.cpp
