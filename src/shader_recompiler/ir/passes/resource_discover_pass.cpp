@@ -273,6 +273,24 @@ SamplerPatchResult CheckClearAnisoRatioAndThresholdPattern(IR::Value value) {
     return {inst->Arg(0), true};
 }
 
+SamplerPatchResult CheckForceUnnormalizedPattern(IR::Value value) {
+    // s_or_b32 s12, s8, 0x8000
+    // sets the force_unnormalized bit of the sampler (seen in inFAMOUS Second Son's PS4 Pro
+    // shaders)
+
+    auto* inst = value.TryInst();
+    if (!inst) {
+        return {value, false};
+    }
+
+    if (inst->GetOpcode() != IR::Opcode::BitwiseOr32 || !inst->Arg(1).IsImmediate() ||
+        inst->Arg(1).U32() != 0x8000u) {
+        return {value, false};
+    }
+
+    return {inst->Arg(0), true};
+}
+
 IR::Inst* FindSharpSource(IR::Inst* handle) {
     ASSERT(IsSharpSource(handle));
     return handle;
@@ -286,7 +304,8 @@ void MarkReadConstBufferSharpSources(const SharpReference& sharp) {
         if (!source) {
             continue;
         }
-        ASSERT(IsSharpSource(source));
+        ASSERT_MSG(IsSharpSource(source), "sharp dword {} produced by {}", i,
+                   IR::NameOf(source->GetOpcode()));
         if (source->GetOpcode() == IR::Opcode::ReadConstBuffer) {
             auto flags = source->Flags<IR::BufferInstInfo>();
             flags.sharp_source.Assign(1u);
@@ -383,6 +402,9 @@ void DiscoverImageSharp(IR::Block& block, IR::Inst& inst, ResourceDiscoveryList&
     } else if (auto [ssharp_dw0, found] = CheckClearAnisoRatioAndThresholdPattern(ssharp.dwords[0]);
                found) {
         ssharp.post_op = SharpFetchPostOp::ClearAnisoRatioAndThreshold;
+        ssharp.dwords[0] = ssharp_dw0;
+    } else if (auto [ssharp_dw0, found] = CheckForceUnnormalizedPattern(ssharp.dwords[0]); found) {
+        ssharp.post_op = SharpFetchPostOp::ForceUnnormalizedCoords;
         ssharp.dwords[0] = ssharp_dw0;
     }
 
