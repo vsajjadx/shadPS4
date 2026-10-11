@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include "common/elf_info.h"
 #include "common/logging/log.h"
 #include "common/singleton.h"
@@ -307,13 +308,18 @@ int PS4_SYSV_ABI scePadMbusTerm() {
 
 int PS4_SYSV_ABI scePadOpen(Libraries::UserService::OrbisUserServiceUserId userId, s32 type,
                             s32 index, const OrbisPadOpenParam* pParam) {
+    LOG_INFO(Lib_Pad, "DBG scePadOpen called: userId={}, type={}, index={}, initialized={}",
+             userId, type, index, g_initialized);
     if (!g_initialized) {
+        LOG_INFO(Lib_Pad, "DBG scePadOpen -> NOT_INITIALIZED");
         return ORBIS_PAD_ERROR_NOT_INITIALIZED;
     }
     if (userId < 0) {
+        LOG_INFO(Lib_Pad, "DBG scePadOpen -> INVALID_USER (userId < 0)");
         return ORBIS_DEVICE_SERVICE_ERROR_INVALID_USER;
     }
     if (pad_handle_map.find({userId, type, index}) != pad_handle_map.end()) {
+        LOG_INFO(Lib_Pad, "DBG scePadOpen -> ALREADY_OPENED");
         return ORBIS_PAD_ERROR_ALREADY_OPENED;
     }
     auto& controllers = *Common::Singleton<GameControllers>::Instance();
@@ -332,6 +338,7 @@ int PS4_SYSV_ABI scePadOpen(Libraries::UserService::OrbisUserServiceUserId userI
     }
     auto u = UserManagement.GetUserByID(userId);
     if (!u) {
+        LOG_INFO(Lib_Pad, "DBG scePadOpen -> USER_NOT_LOGIN (no user with id {})", userId);
         return ORBIS_DEVICE_SERVICE_ERROR_USER_NOT_LOGIN;
     }
     s32 new_handle = pad_handle_counter++;
@@ -430,13 +437,23 @@ int ProcessStates(OrbisPadData* pData, const Input::State* states, s32 num) {
 }
 
 int PS4_SYSV_ABI scePadRead(s32 handle, OrbisPadData* pData, s32 num) {
-    LOG_TRACE(Lib_Pad, "called");
+    static std::atomic<int> dbg_read_calls{0};
+    const bool dbg_log = dbg_read_calls.fetch_add(1) < 30;
     if (pData == nullptr || num < 1 || num > ORBIS_PAD_MAX_DATA_NUM) {
+        if (dbg_log) {
+            LOG_INFO(Lib_Pad, "DBG scePadRead invalid arg: handle={}, num={}", handle, num);
+        }
         return ORBIS_PAD_ERROR_INVALID_ARG;
     }
     auto it = handle_to_controller_map.find(handle);
     if (it == handle_to_controller_map.end()) {
+        if (dbg_log) {
+            LOG_INFO(Lib_Pad, "DBG scePadRead invalid handle: {}", handle);
+        }
         return ORBIS_PAD_ERROR_INVALID_HANDLE;
+    }
+    if (dbg_log) {
+        LOG_INFO(Lib_Pad, "DBG scePadRead handle={} num={}", handle, num);
     }
     auto& controller = *it->second;
     std::array<Input::State, ORBIS_PAD_MAX_DATA_NUM> states;

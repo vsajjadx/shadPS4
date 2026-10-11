@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <queue>
 
 #include "common/logging/log.h"
@@ -119,12 +120,16 @@ int PS4_SYSV_ABI sceUserServiceGetDiscPlayerFlag() {
 std::queue<OrbisUserServiceEvent> user_service_event_queue = {};
 
 void AddUserServiceEvent(const OrbisUserServiceEvent e) {
-    LOG_DEBUG(Lib_UserService, "Event added to queue: {} {}", (u8)e.event, e.userId);
+    LOG_INFO(Lib_UserService, "DBG Event added to queue: {} {}", (u8)e.event, e.userId);
     user_service_event_queue.push(e);
 }
 
 s32 PS4_SYSV_ABI sceUserServiceGetEvent(OrbisUserServiceEvent* event) {
-    LOG_TRACE(Lib_UserService, "called");
+    static std::atomic<int> dbg_get_event_calls{0};
+    if (dbg_get_event_calls.fetch_add(1) < 20) {
+        LOG_INFO(Lib_UserService, "DBG sceUserServiceGetEvent called (queue size {})",
+                 user_service_event_queue.size());
+    }
 
     if (!user_service_event_queue.empty()) {
         OrbisUserServiceEvent& temp = user_service_event_queue.front();
@@ -511,12 +516,12 @@ int PS4_SYSV_ABI sceUserServiceGetImeRunCount() {
 }
 
 s32 PS4_SYSV_ABI sceUserServiceGetInitialUser(int* user_id) {
-    LOG_DEBUG(Lib_UserService, "called");
     if (user_id == nullptr) {
         LOG_ERROR(Lib_UserService, "user_id is null");
         return ORBIS_USER_SERVICE_ERROR_INVALID_ARGUMENT;
     }
     *user_id = UserManagement.GetDefaultUser().user_id;
+    LOG_INFO(Lib_UserService, "DBG sceUserServiceGetInitialUser -> {}", *user_id);
     return ORBIS_OK;
 }
 
@@ -604,8 +609,8 @@ s32 PS4_SYSV_ABI sceUserServiceGetLoginUserIdList(OrbisUserServiceLoginUserIdLis
         s32 id =
             logged_in_users[i] ? logged_in_users[i]->user_id : ORBIS_USER_SERVICE_USER_ID_INVALID;
         userIdList->user_id[i] = id;
-        LOG_DEBUG(Lib_UserService, "Slot {}: User ID {} (port {})", i, id,
-                  logged_in_users[i] ? logged_in_users[i]->player_index : -1);
+        LOG_INFO(Lib_UserService, "DBG GetLoginUserIdList slot {}: User ID {} (port {})", i, id,
+                 logged_in_users[i] ? logged_in_users[i]->player_index : -1);
     }
     return ORBIS_OK;
 }

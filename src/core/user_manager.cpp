@@ -5,6 +5,7 @@
 #include <iostream>
 #include <SDL3/SDL_messagebox.h>
 #include <common/assert.h>
+#include <common/logging/log.h>
 #include <common/path_util.h>
 #include <pugixml.hpp>
 #include "emulator_settings.h"
@@ -369,6 +370,7 @@ void UserManager::LoginUser(User* u, s32 player_index) {
         ASSERT(logged_in_user != u);
     }
 
+    LOG_INFO(Lib_UserService, "DBG LoginUser user_id={} player_index={}", u->user_id, player_index);
     u->logged_in = true;
     u->player_index = player_index;
     AddUserServiceEvent({OrbisUserServiceEventType::Login, u->user_id});
