@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <deque>
 #include <map>
@@ -951,6 +952,8 @@ static void DispatchPendingNpStateCallbacks() {
         }
 
         if (toolkit_callback.func != nullptr) {
+            LOG_INFO(Lib_NpManager, "DBG delivering NP state {} for user {} to toolkit callback",
+                     static_cast<u32>(event.state), event.user_id);
             toolkit_callback.func(event.user_id, event.state, toolkit_callback.userdata);
         }
     }
@@ -962,7 +965,10 @@ static void DispatchPendingNpStateCallbacks() {
 }
 
 s32 PS4_SYSV_ABI sceNpCheckCallback() {
-    LOG_DEBUG(Lib_NpManager, "called");
+    static std::atomic<int> dbg_check_calls{0};
+    if (dbg_check_calls.fetch_add(1) < 10) {
+        LOG_INFO(Lib_NpManager, "DBG sceNpCheckCallback called");
+    }
     DispatchPendingNpStateCallbacks();
 
     std::scoped_lock lk{g_np_callbacks_mutex};
@@ -973,7 +979,10 @@ s32 PS4_SYSV_ABI sceNpCheckCallback() {
 }
 
 s32 PS4_SYSV_ABI sceNpCheckCallbackForLib() {
-    LOG_DEBUG(Lib_NpManager, "(STUBBED) called");
+    static std::atomic<int> dbg_check_lib_calls{0};
+    if (dbg_check_lib_calls.fetch_add(1) < 10) {
+        LOG_INFO(Lib_NpManager, "DBG sceNpCheckCallbackForLib called");
+    }
     DispatchPendingNpStateCallbacks();
     return ORBIS_OK;
 }
@@ -1048,10 +1057,25 @@ s32 PS4_SYSV_ABI sceNpUnregisterNpReachabilityStateCallback() {
 
 s32 PS4_SYSV_ABI sceNpRegisterStateCallbackForToolkit(OrbisNpStateCallbackForNpToolkit callback,
                                                       void* userdata) {
-    LOG_ERROR(Lib_NpManager, "(STUBBED) called");
-    std::scoped_lock lk{g_np_state_callbacks_mutex};
-    NpStateCbForNp.func = callback;
-    NpStateCbForNp.userdata = userdata;
+    LOG_INFO(Lib_NpManager, "DBG sceNpRegisterStateCallbackForToolkit: has_callback={}, shadnet={}",
+             callback != nullptr, g_shadnet_enabled);
+    {
+        std::scoped_lock lk{g_np_state_callbacks_mutex};
+        NpStateCbForNp.func = callback;
+        NpStateCbForNp.userdata = userdata;
+    }
+    // The NP toolkit expects to learn the current state of every already logged-in user once the
+    // callback is registered. Events are otherwise only produced when the game polls
+    // sceUserServiceGetEvent, which some titles never do, leaving them waiting forever.
+    if (callback != nullptr && !g_shadnet_enabled) {
+        for (const User* u : UserManagement.GetLoggedInUsers()) {
+            if (u != nullptr) {
+                LOG_INFO(Lib_NpManager, "DBG queueing initial NP state (SignedOut) for user {}",
+                         u->user_id);
+                QueueNpStateEvent(u->user_id, OrbisNpState::SignedOut);
+            }
+        }
+    }
     return ORBIS_OK;
 }
 
