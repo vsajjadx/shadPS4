@@ -22,6 +22,7 @@
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
+#include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 #include "video_core/texture_cache/host_compatibility.h"
 #include "video_core/texture_cache/texture_cache.h"
 #include "video_core/texture_cache/tile_manager.h"
@@ -844,9 +845,54 @@ void TextureCache::RefreshImage(Image& image) {
 
     scheduler.EndRendering();
 
-    const auto [in_buffer, in_offset] =
-        buffer_cache.ObtainBufferForImage(image.info.guest_address, image.info.guest_size);
-    const auto [buffer, offset] = tile_manager.DetileImage(in_buffer, in_offset, image.info);
+    const Buffer* buffer = nullptr;
+    u64 offset = 0;
+
+    // Single-mip 8bpp Thin1DThin images (e.g. glyph atlases) are detiled on the CPU. The GPU
+    // detiler produced an empty image for these on some setups, leaving text invisible.
+    const auto& inf = image.info;
+    const u32 mip0_pitch = inf.mips_layout[0].pitch;
+    const u32 mip0_height = inf.mips_layout[0].height;
+    const bool cpu_detile =
+        inf.num_bits == 8 && inf.tile_mode == AmdGpu::TileMode::Thin1DThin && inf.props.is_tiled &&
+        !inf.props.is_block && num_mips == 1 && num_layers == 1 && inf.size.depth == 1 &&
+        inf.num_samples == 1 && mip0_pitch != 0 && mip0_height != 0 && (mip0_pitch % 8) == 0 &&
+        (mip0_height % 8) == 0 && u64(mip0_pitch) * mip0_height <= inf.guest_size &&
+        !buffer_cache.IsRegionGpuModified(inf.guest_address, inf.guest_size);
+    if (cpu_detile) {
+        const auto staging = runtime.GetStagingPool().Request(inf.guest_size,
+                                                              MemoryType::HostUncached, 256);
+        std::vector<u8> src(inf.guest_size);
+        Core::Memory::Instance()->CopySparseMemory(inf.guest_address, src.data(), inf.guest_size);
+        u8* dst = staging.mapped;
+        const u32 tiles_x = mip0_pitch / 8;
+        const u32 tiles_y = mip0_height / 8;
+        for (u32 ty = 0; ty < tiles_y; ++ty) {
+            for (u32 tx = 0; tx < tiles_x; ++tx) {
+                const u8* tile = src.data() + (u64(ty) * tiles_x + tx) * 64;
+                for (u32 i = 0; i < 64; ++i) {
+                    const u32 x = (i & 1) | (((i >> 2) & 1) << 1) | (((i >> 4) & 1) << 2);
+                    const u32 y = ((i >> 1) & 1) | (((i >> 3) & 1) << 1) | (((i >> 5) & 1) << 2);
+                    dst[u64(ty * 8 + y) * mip0_pitch + tx * 8 + x] = tile[i];
+                }
+            }
+        }
+        staging.Flush();
+        buffer = staging.buffer;
+        offset = staging.offset;
+        static std::atomic<int> dbg_cpu_detile{0};
+        if (dbg_cpu_detile.fetch_add(1) < 60) {
+            LOG_INFO(Render_Vulkan, "DBG CPU detile used: addr={:#x} {}x{} pitch={}",
+                     inf.guest_address, inf.size.width, inf.size.height, mip0_pitch);
+        }
+    } else {
+        const auto [in_buffer, in_offset] =
+            buffer_cache.ObtainBufferForImage(image.info.guest_address, image.info.guest_size);
+        const auto [det_buffer, det_offset] =
+            tile_manager.DetileImage(in_buffer, in_offset, image.info);
+        buffer = det_buffer;
+        offset = det_offset;
+    }
     for (auto& copy : image_copies) {
         copy.bufferOffset += offset;
     }
