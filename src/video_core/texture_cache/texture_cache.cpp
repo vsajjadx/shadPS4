@@ -4,7 +4,9 @@
 #include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <cstring>
 #include <limits>
+#include <vector>
 #include <xxhash.h>
 
 #include "common/assert.h"
@@ -759,6 +761,26 @@ void TextureCache::RefreshImage(Image& image) {
             const u32 sample = std::min<u32>(sz, 1u << 20);
             for (u32 i = 0; i < sample; i += 16) {
                 nonzero += bytes[i] != 0;
+            }
+            if (image.info.num_bits <= 16 && sz >= 65536 && sz <= (4u << 20)) {
+                // DBG: compare the direct guest read with what the buffer cache path would see.
+                static std::atomic<int> dbg_cmp{0};
+                if (dbg_cmp.fetch_add(1) < 120) {
+                    std::vector<u8> tmp(sz);
+                    Core::Memory::Instance()->CopySparseMemory(image.info.guest_address,
+                                                               tmp.data(), sz);
+                    u32 sparse_nz = 0;
+                    for (u32 i = 0; i < sample; i += 16) {
+                        sparse_nz += tmp[i] != 0;
+                    }
+                    LOG_INFO(Render_Vulkan,
+                             "DBG sparse-compare: addr={:#x} size={} direct_nz={} sparse_nz={} "
+                             "equal={} gpu_modified={} cpu_modified={}",
+                             image.info.guest_address, sz, nonzero, sparse_nz,
+                             std::memcmp(tmp.data(), bytes, sz) == 0,
+                             buffer_cache.IsRegionGpuModified(image.info.guest_address, sz),
+                             buffer_cache.IsRegionCpuModified(image.info.guest_address, sz));
+                }
             }
             LOG_INFO(Render_Vulkan,
                      "DBG upload#{}: addr={:#x} {}x{} pitch={} bits={} fmt={} tile={} block={} "
