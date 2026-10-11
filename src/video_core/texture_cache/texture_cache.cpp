@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <atomic>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <xxhash.h>
 
@@ -9,6 +11,7 @@
 #include "common/debug.h"
 #include "common/div_ceil.h"
 #include "common/hash.h"
+#include "common/path_util.h"
 #include "core/emulator_settings.h"
 #include "core/memory.h"
 #include "video_core/buffer_cache/buffer_cache.h"
@@ -741,6 +744,46 @@ void TextureCache::RefreshImage(Image& image) {
             return;
         }
         image.hash = hash;
+    }
+
+    {
+        // DBG: trace every image upload; dump raw guest bytes of small-bit-depth images so we can
+        // check whether e.g. glyph atlases actually contain data when they are uploaded.
+        static std::atomic<int> dbg_up_logs{0};
+        static std::atomic<int> dbg_dumps{0};
+        const int up_idx = dbg_up_logs.fetch_add(1);
+        if (up_idx < 1500) {
+            const auto* bytes = std::bit_cast<const u8*>(image.info.guest_address);
+            const u32 sz = image.info.guest_size;
+            u32 nonzero = 0;
+            const u32 sample = std::min<u32>(sz, 1u << 20);
+            for (u32 i = 0; i < sample; i += 16) {
+                nonzero += bytes[i] != 0;
+            }
+            LOG_INFO(Render_Vulkan,
+                     "DBG upload#{}: addr={:#x} {}x{} pitch={} bits={} fmt={} tile={} block={} "
+                     "mips={} layers={} guest_size={} nonzero_samples={}/{} flags={:#x}",
+                     up_idx, image.info.guest_address, image.info.size.width,
+                     image.info.size.height, image.info.pitch, image.info.num_bits,
+                     vk::to_string(image.info.pixel_format),
+                     static_cast<u32>(image.info.tile_mode), image.info.props.is_block,
+                     image.info.resources.levels, image.info.resources.layers, sz, nonzero,
+                     (sample + 15) / 16, static_cast<u32>(image.flags));
+            if (image.info.num_bits <= 16 && !image.info.props.is_block && sz <= (4u << 20) &&
+                dbg_dumps.load() < 60) {
+                const int d = dbg_dumps.fetch_add(1);
+                const auto dir = Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "dbg_images";
+                std::error_code ec;
+                std::filesystem::create_directories(dir, ec);
+                const auto file = dir / fmt::format("up{}_{:x}_{}x{}_b{}_t{}_nz{}.raw", up_idx,
+                                                    image.info.guest_address,
+                                                    image.info.size.width, image.info.size.height,
+                                                    image.info.num_bits,
+                                                    static_cast<u32>(image.info.tile_mode), nonzero);
+                std::ofstream out(file, std::ios::binary);
+                out.write(reinterpret_cast<const char*>(bytes), sz);
+            }
+        }
     }
 
     const u32 num_layers = image.info.resources.layers;
