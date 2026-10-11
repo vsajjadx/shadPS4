@@ -766,7 +766,7 @@ void TextureCache::RefreshImage(Image& image) {
                      up_idx, image.info.guest_address, image.info.size.width,
                      image.info.size.height, image.info.pitch, image.info.num_bits,
                      vk::to_string(image.info.pixel_format),
-                     static_cast<u32>(image.info.tile_mode), image.info.props.is_block,
+                     static_cast<u32>(image.info.tile_mode), static_cast<bool>(image.info.props.is_block),
                      image.info.resources.levels, image.info.resources.layers, sz, nonzero,
                      (sample + 15) / 16, static_cast<u32>(image.flags));
             if (image.info.num_bits <= 16 && !image.info.props.is_block && sz <= (4u << 20) &&
