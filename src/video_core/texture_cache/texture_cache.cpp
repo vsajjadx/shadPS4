@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <limits>
 #include <xxhash.h>
 
@@ -722,17 +723,19 @@ void TextureCache::RefreshImage(Image& image) {
 
     if (True(image.flags & ImageFlagBits::MaybeCpuDirty) &&
         False(image.flags & ImageFlagBits::CpuDirty)) {
-        // The image size should be less than page size to be considered MaybeCpuDirty
-        // So this calculation should be very uncommon and reasonably fast
-        // For now we'll just check up to 64 first pixels
+        // The image size is less than a page to be considered MaybeCpuDirty, so hashing the whole
+        // guest range is cheap. Hashing only the first pixels misses CPU updates to later parts of
+        // small dynamic images (e.g. glyph atlases that get new glyphs appended).
         const auto addr = std::bit_cast<u8*>(image.info.guest_address);
-        const u32 w = std::min(image.info.size.width, u32(8));
-        const u32 h = std::min(image.info.size.height, u32(8));
-
-        const u32 s_w = image.info.props.is_block ? Common::DivCeil(w, 4u) : w;
-        const u32 s_h = image.info.props.is_block ? Common::DivCeil(h, 4u) : h;
-        const u32 size = s_w * s_h * (image.info.num_bits / 8);
-        const u64 hash = XXH3_64bits(addr, size);
+        const u64 hash = XXH3_64bits(addr, image.info.guest_size);
+        static std::atomic<int> dbg_logs{0};
+        if (dbg_logs.fetch_add(1) < 300) {
+            LOG_INFO(Render_Vulkan,
+                     "DBG MaybeCpuDirty refresh: addr={:#x} size={}x{} guest_size={} bits={} "
+                     "same_hash={}",
+                     image.info.guest_address, image.info.size.width, image.info.size.height,
+                     image.info.guest_size, image.info.num_bits, image.hash == hash);
+        }
         if (image.hash == hash) {
             image.flags &= ~ImageFlagBits::MaybeCpuDirty;
             return;
