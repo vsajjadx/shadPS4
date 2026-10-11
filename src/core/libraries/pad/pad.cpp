@@ -458,7 +458,26 @@ int PS4_SYSV_ABI scePadRead(s32 handle, OrbisPadData* pData, s32 num) {
     auto& controller = *it->second;
     std::array<Input::State, ORBIS_PAD_MAX_DATA_NUM> states;
     const int ret_num = controller.ReadStates(states.data(), num);
-    return ProcessStates(pData, states.data(), ret_num);
+    const int ret = ProcessStates(pData, states.data(), ret_num);
+    {
+        // DBG: log returned pad data whenever buttons/connected change (rate-limited).
+        static std::atomic<int> dbg_change_logs{0};
+        static std::atomic<u32> dbg_last_buttons{0xFFFFFFFFu};
+        static std::atomic<int> dbg_last_connected{-1};
+        if (ret > 0) {
+            const u32 b = static_cast<u32>(pData[0].buttons);
+            const int c = pData[0].connected ? 1 : 0;
+            if ((dbg_last_buttons.exchange(b) != b || dbg_last_connected.exchange(c) != c) &&
+                dbg_change_logs.fetch_add(1) < 400) {
+                LOG_INFO(Lib_Pad,
+                         "DBG scePadRead returned: ret={} buttons=0x{:x} connected={} "
+                         "lx={} ly={} captured={}",
+                         ret, b, c, pData[0].leftStick.x, pData[0].leftStick.y,
+                         ImGui::Core::IsGamepadInputCaptured());
+            }
+        }
+    }
+    return ret;
 }
 
 int PS4_SYSV_ABI scePadReadBlasterForTracker() {

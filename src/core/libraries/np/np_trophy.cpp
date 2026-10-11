@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cstring>
 #include <thread>
 #include <unordered_map>
 #include <fmt/format.h>
@@ -441,6 +442,14 @@ int PS4_SYSV_ABI sceNpTrophyGetGameInfo(OrbisNpTrophyContext context, OrbisNpTro
 
     if (!result) {
         LOG_ERROR(Lib_NpTrophy, "Failed to parse trophy xml : {}", result.description());
+        // Hand back a well-defined empty result instead of leaving the caller's buffers
+        // uninitialized (trophy files are missing when no trophy key is configured).
+        const auto details_size = details->size;
+        const auto data_size = data->size;
+        std::memset(details, 0, sizeof(*details));
+        std::memset(data, 0, sizeof(*data));
+        details->size = details_size;
+        data->size = data_size;
         return ORBIS_OK;
     }
 
