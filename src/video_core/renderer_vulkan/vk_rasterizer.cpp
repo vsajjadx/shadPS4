@@ -499,7 +499,8 @@ void Rasterizer::BindVertexBuffers(const GraphicsPipeline* pipeline) {
 
     // Map buffers for merged ranges
     for (auto& range : ranges_merged) {
-        const u64 size = memory->ClampRangeSize(range.base_address, range.GetSize());
+        const u64 size = ClampToGpuMapped(
+            range.base_address, memory->ClampRangeSize(range.base_address, range.GetSize()));
         std::tie(range.buffer, range.offset) =
             buffer_cache.ObtainBuffer(range.base_address, size, false);
         needs_barrier |= runtime.IsBufferAccessed(range.buffer, range.offset, size);
@@ -816,7 +817,9 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
                 !memory->IsValidGpuMapping(vsharp.base_address, 0)) {
                 buffer_infos.emplace_back(VK_NULL_HANDLE, 0, VK_WHOLE_SIZE);
             } else {
-                const u64 size = memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize());
+                const u64 size = ClampToGpuMapped(
+                    vsharp.base_address,
+                    memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize()));
                 if (size != vsharp.GetSize()) {
                     LOG_ERROR(Render, "Clamped size from {} to {} for stage {:#x}",
                               vsharp.GetSize(), size, stage.pgm_hash);
@@ -1295,6 +1298,29 @@ bool Rasterizer::IsMapped(VAddr addr, u64 size) {
 
     Common::RecursiveSharedLock lock{mapped_ranges_mutex};
     return boost::icl::contains(mapped_ranges, range);
+}
+
+u64 Rasterizer::ClampToGpuMapped(VAddr addr, u64 size) {
+    // Huge ranges that straddle GPU-unmapped holes force the buffer cache to make the whole span
+    // resident (multi-GB allocations) and track pages that were never GPU mapped, which ends in a
+    // lost device. Only trim ranges that are large enough to matter.
+    static constexpr u64 MinSizeToClamp = 256_MB;
+    if (size < MinSizeToClamp || addr > std::numeric_limits<u64>::max() - size) {
+        return size;
+    }
+    Common::RecursiveSharedLock lock{mapped_ranges_mutex};
+    const auto it = mapped_ranges.find(addr);
+    if (it == mapped_ranges.end()) {
+        return size;
+    }
+    const u64 mapped_end = it->upper();
+    const u64 clamped = std::min<u64>(size, mapped_end - addr);
+    if (clamped != size) {
+        LOG_WARNING(Render,
+                    "Clamped buffer range addr={:#x} size={:#x} to GPU mapped size {:#x}", addr,
+                    size, clamped);
+    }
+    return clamped;
 }
 
 void Rasterizer::MapMemory(VAddr addr, u64 size) {
