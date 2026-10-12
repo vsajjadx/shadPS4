@@ -875,7 +875,8 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
                                 tsharp.width + 1 > MaxImageDim || tsharp.height + 1 > MaxImageDim ||
                                 tsharp.Pitch() > MaxImageDim || tsharp.NumLayers() > 2048;
         if (bad_extent || !memory->IsValidGpuMapping(tsharp.Address(), 0) ||
-            !magic_enum::enum_contains(data_fmt) || !magic_enum::enum_contains(num_fmt)) {
+            !magic_enum::enum_contains(data_fmt) || !magic_enum::enum_contains(num_fmt) ||
+            !magic_enum::enum_contains(tsharp.GetTileMode())) {
             LOG_WARNING(Render_Vulkan,
                         "Rejecting invalid T# address={:#x}, pitch={}, width={}, "
                         "data_format={}, num_format={}",
