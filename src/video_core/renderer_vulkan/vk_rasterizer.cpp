@@ -812,7 +812,8 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
             }
         } else {
             const auto vsharp = desc.GetSharp(stage);
-            if (vsharp.base_address == 0 || vsharp.GetSize() == 0) {
+            if (vsharp.base_address < 0x10000 || vsharp.GetSize() == 0 ||
+                !memory->IsValidGpuMapping(vsharp.base_address, 0)) {
                 buffer_infos.emplace_back(VK_NULL_HANDLE, 0, VK_WHOLE_SIZE);
             } else {
                 const u64 size = memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize());
@@ -866,7 +867,14 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
             continue;
         }
 
-        if (!memory->IsValidGpuMapping(tsharp.Address(), 0) ||
+        // Descriptors recovered through a failed SRT walk contain garbage; reject anything that
+        // points into the null page or describes an implausibly large image.
+        constexpr u64 MinValidAddress = 0x10000;
+        constexpr u32 MaxImageDim = 16384;
+        const bool bad_extent = tsharp.Address() < MinValidAddress ||
+                                tsharp.width + 1 > MaxImageDim || tsharp.height + 1 > MaxImageDim ||
+                                tsharp.Pitch() > MaxImageDim || tsharp.NumLayers() > 2048;
+        if (bad_extent || !memory->IsValidGpuMapping(tsharp.Address(), 0) ||
             !magic_enum::enum_contains(data_fmt) || !magic_enum::enum_contains(num_fmt)) {
             LOG_WARNING(Render_Vulkan,
                         "Rejecting invalid T# address={:#x}, pitch={}, width={}, "
