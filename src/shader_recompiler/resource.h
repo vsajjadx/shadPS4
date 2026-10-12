@@ -111,7 +111,7 @@ struct BufferResource {
         } else if (post_op == SharpFetchPostOp::OffsetByProgramBase) {
             buffer.base_address += info.pgm_base;
         }
-        if (!buffer.Valid()) {
+        if (!buffer.Valid() || !buffer.HasValidFormats()) {
             return AmdGpu::Buffer::Null();
         }
         return buffer;
@@ -145,7 +145,7 @@ struct ImageResource {
             image.type = u64(AmdGpu::ImageType::Color2DArray);
             image.depth = (image.depth + 1) * 6 - 1;
         }
-        if (!image.Valid()) {
+        if (!image.Valid() || !image.HasValidFormats()) {
             image = AmdGpu::Image::Null(is_depth);
         } else if (is_depth) {
             const auto data_fmt = image.GetDataFmt();

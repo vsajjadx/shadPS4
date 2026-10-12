@@ -6,6 +6,7 @@
 #include <cstring>
 #include "common/alignment.h"
 #include "common/assert.h"
+#include <magic_enum/magic_enum.hpp>
 #include "common/bit_field.h"
 #include "video_core/amdgpu/pixel_format.h"
 #include "video_core/amdgpu/tiling.h"
@@ -37,6 +38,12 @@ struct Buffer {
         Buffer buffer{};
         buffer.base_address = 1;
         return buffer;
+    }
+
+    // Descriptors recovered from unresolved SRT reads can contain arbitrary bits.
+    bool HasValidFormats() const noexcept {
+        return magic_enum::enum_contains(DataFormat(u32(data_format))) &&
+               magic_enum::enum_contains(NumberFormat(u32(num_format)));
     }
 
     static constexpr Buffer Placeholder(u32 size) {
@@ -183,6 +190,12 @@ struct Image {
     /// Neo-mode only
     u64 alt_tile_mode : 1;
     u64 : 39;
+
+    bool HasValidFormats() const noexcept {
+        return magic_enum::enum_contains(DataFormat(u32(data_format))) &&
+               magic_enum::enum_contains(NumberFormat(u32(num_format))) &&
+               magic_enum::enum_contains(TileMode(u32(tiling_index)));
+    }
 
     static constexpr Image Null(bool is_depth) {
         Image image{};
