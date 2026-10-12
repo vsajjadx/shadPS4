@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/dbg_wait.h"
 #include <ctime>
 #include <thread>
 
@@ -8,6 +9,7 @@
 #include "common/native_clock.h"
 #include "common/thread.h"
 #include "core/libraries/kernel/kernel.h"
+#include "core/libraries/kernel/threads/pthread.h"
 #include "core/libraries/kernel/orbis_error.h"
 #include "core/libraries/kernel/posix_error.h"
 #include "core/libraries/kernel/time.h"
@@ -62,6 +64,7 @@ static s32 posix_nanosleep_impl(const OrbisKernelTimespec* rqtp, OrbisKernelTime
     }
     const auto duration = std::chrono::nanoseconds(rqtp->tv_sec * 1'000'000'000 + rqtp->tv_nsec);
     std::chrono::nanoseconds remain;
+    Dbg::WaitGuard dbg_guard("nanosleep", nullptr, g_curthread);
     const auto uninterrupted = Common::AccurateSleep(duration, &remain, interruptible);
     if (rmtp) {
         rmtp->tv_sec = remain.count() / 1'000'000'000;

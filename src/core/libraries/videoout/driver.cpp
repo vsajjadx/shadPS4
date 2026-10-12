@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/dbg_wait.h"
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/thread.h"
@@ -234,6 +235,7 @@ int VideoOutDriver::ChangeBufferAttribute(VideoOutPort* port, s32 attributeIndex
 }
 
 void VideoOutDriver::Flip(const Request& req) {
+    Dbg::g_flips.fetch_add(1);
     // Update HDR status before presenting.
     presenter->SetHDR(req.port->is_hdr);
 

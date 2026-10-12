@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/dbg_wait.h"
+#include "core/libraries/kernel/threads/pthread.h"
 #include <thread>
 #include <magic_enum/magic_enum.hpp>
 
@@ -480,7 +482,11 @@ int PS4_SYSV_ABI sceKernelWaitEqueue(OrbisKernelEqueue eq, OrbisKernelEvent* ev,
         return ORBIS_KERNEL_ERROR_EINVAL;
     }
 
-    *out = equeue->WaitForEvents(ev, num, timo);
+    {
+        const std::string dbg_name{equeue->GetName()};
+        Dbg::WaitGuard dbg_guard("equeue_wait", dbg_name.c_str(), g_curthread);
+        *out = equeue->WaitForEvents(ev, num, timo);
+    }
 
     if (*out == 0) {
         return ORBIS_KERNEL_ERROR_ETIMEDOUT;

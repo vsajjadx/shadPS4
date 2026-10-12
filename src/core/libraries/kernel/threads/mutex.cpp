@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/dbg_wait.h"
 #include <thread>
 #include <fmt/format.h>
 
@@ -204,6 +205,7 @@ s32 PthreadMutex::SelfLock(const OrbisKernelTimespec* abstime, u64 usec) {
 
 s32 PthreadMutex::Lock(const OrbisKernelTimespec* abstime, u64 usec) {
     Pthread* curthread = g_curthread;
+    Dbg::WaitGuard dbg_guard("mutex_lock", name.c_str(), curthread);
     if (m_owner.load(std::memory_order_acquire) == curthread) {
         return SelfLock(abstime, usec);
     }

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "core/dbg_watchdog.h"
 #include <algorithm>
 #include <ctime>
 #include <filesystem>
@@ -703,6 +704,7 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         });
     }
 
+    Core::StartDebugWatchdog();
     linker->Execute(args);
 
     window->InitTimers();

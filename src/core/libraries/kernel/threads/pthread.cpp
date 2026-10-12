@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/dbg_wait.h"
 #include "common/assert.h"
 #include "common/thread.h"
 #ifdef _WIN32
@@ -117,6 +118,7 @@ void PS4_SYSV_ABI posix_pthread_exit(void* status) {
 
 static int JoinThread(PthreadT pthread, void** thread_return, const OrbisKernelTimespec* abstime) {
     Pthread* curthread = g_curthread;
+    Dbg::WaitGuard dbg_guard("pthread_join", pthread ? pthread->name.c_str() : nullptr, curthread);
 
     if (pthread == nullptr) {
         return POSIX_EINVAL;

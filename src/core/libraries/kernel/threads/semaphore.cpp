@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/dbg_wait.h"
 #include <condition_variable>
 #include <limits>
 #include <list>
@@ -65,6 +66,7 @@ static bool PthreadSemTryAcquire(PthreadSem* sem) {
 }
 
 static s32 PthreadSemWait(PthreadSem* sem, const OrbisKernelTimespec* abstime, u64 usec = 0) {
+    Dbg::WaitGuard dbg_guard("posix_sem_wait", nullptr, g_curthread);
     const bool is_reltime = abstime == THR_RELTIME;
     auto reltime_deadline = std::chrono::steady_clock::time_point{};
     bool first_sleep = true;
@@ -157,6 +159,7 @@ public:
     ~OrbisSem() = default;
 
     s32 Wait(bool can_block, s32 need_count, u32* timeout) {
+        Dbg::WaitGuard dbg_guard("sceKernelWaitSema", name.c_str(), g_curthread);
         std::unique_lock lk{mutex};
         if (token_count >= need_count) {
             token_count -= need_count;

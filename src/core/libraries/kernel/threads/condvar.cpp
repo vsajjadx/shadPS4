@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/dbg_wait.h"
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -108,6 +109,7 @@ int PS4_SYSV_ABI posix_pthread_cond_destroy(PthreadCondT* cond) {
 }
 
 int PthreadCond::Wait(PthreadMutexT* mutex, const OrbisKernelTimespec* abstime, u64 usec) {
+    Dbg::WaitGuard dbg_guard("cond_wait", name.c_str(), g_curthread);
     PthreadMutex* mp = *mutex;
     if (const int error = mp->IsOwned(g_curthread); error != 0) {
         return error;

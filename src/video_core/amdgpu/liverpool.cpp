@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/dbg_wait.h"
 #include <boost/preprocessor/stringize.hpp>
 
 #include "common/assert.h"
@@ -220,6 +221,7 @@ Liverpool::Task Liverpool::ProcessCeUpdate(std::span<const u32> ccb) {
 }
 
 Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<const u32> ccb) {
+    Dbg::g_gpu_submits.fetch_add(1);
     FIBER_ENTER(dcb_task_name);
 
     cblock.Reset();

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/dbg_wait.h"
 #include <condition_variable>
 #include <list>
 #include <mutex>
@@ -105,6 +106,7 @@ public:
     }
 
     int Wait(u64 bits, WaitMode wait_mode, ClearMode clear_mode, u64* result, u32* ptr_micros) {
+        Dbg::WaitGuard dbg_guard("eventflag_wait", nullptr, g_curthread);
         std::unique_lock lock{m_mutex};
 
         if (m_deleted) {
