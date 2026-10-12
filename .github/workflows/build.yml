@@ -26,6 +26,7 @@ env:
 
 jobs:
   reuse:
+    if: false  # test branch: Windows-only
     runs-on: ubuntu-24.04
     continue-on-error: true
     steps:
@@ -33,6 +34,7 @@ jobs:
     - uses: fsfe/reuse-action@v6
 
   clang-format:
+    if: false  # test branch: Windows-only
     runs-on: ubuntu-24.04
     continue-on-error: true
     steps:
@@ -69,6 +71,7 @@ jobs:
         echo "fullhash=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
   test:
+    if: false  # test branch: Windows-only
     name: Run C++ Tests on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -187,6 +190,7 @@ jobs:
         path: ${{github.workspace}}/build/shadPS4.exe
 
   macos-sdl:
+    if: false  # test branch: Windows-only
     runs-on: macos-26
     needs: get-info
     steps:
@@ -247,6 +251,7 @@ jobs:
         path: upload/
 
   linux-sdl:
+    if: false  # test branch: Windows-only
     runs-on: ubuntu-24.04
     needs: get-info
     steps:
@@ -311,6 +316,7 @@ jobs:
         path: Shadps4-sdl.AppImage
 
   linux-sdl-gcc:
+    if: false  # test branch: Windows-only
     runs-on: ubuntu-24.04
     needs: get-info
     steps:
