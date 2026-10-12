@@ -5,6 +5,8 @@
 #include <thread>
 #include <vector>
 
+#include <fmt/format.h>
+
 #include "common/dbg_wait.h"
 #include "common/logging/log.h"
 #include "common/singleton.h"
