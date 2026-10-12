@@ -98,6 +98,29 @@ constexpr size_t GetSurfaceFormatTableIndex(AmdGpu::DataFormat data_format,
 
 constexpr vk::Format SurfaceFormat(AmdGpu::DataFormat data_format,
                                    AmdGpu::NumberFormat num_format) noexcept {
+    // FMASK surfaces hold raw per-pixel fragment indices; the number format is meaningless for
+    // them, so map them to an unsigned integer format of matching texel size instead of asserting.
+    switch (data_format) {
+    case AmdGpu::DataFormat::FormatFmask8_S2_F1:
+    case AmdGpu::DataFormat::FormatFmask8_S4_F1:
+    case AmdGpu::DataFormat::FormatFmask8_S8_F1:
+    case AmdGpu::DataFormat::FormatFmask8_S2_F2:
+    case AmdGpu::DataFormat::FormatFmask8_S4_F2:
+    case AmdGpu::DataFormat::FormatFmask8_S4_F4:
+        return vk::Format::eR8Uint;
+    case AmdGpu::DataFormat::FormatFmask16_S16_F1:
+    case AmdGpu::DataFormat::FormatFmask16_S8_F2:
+        return vk::Format::eR16Uint;
+    case AmdGpu::DataFormat::FormatFmask32_S16_F2:
+    case AmdGpu::DataFormat::FormatFmask32_S8_F4:
+    case AmdGpu::DataFormat::FormatFmask32_S8_F8:
+        return vk::Format::eR32Uint;
+    case AmdGpu::DataFormat::FormatFmask64_S16_F4:
+    case AmdGpu::DataFormat::FormatFmask64_S16_F8:
+        return vk::Format::eR32G32Uint;
+    default:
+        break;
+    }
     vk::Format result = surface_format_table[GetSurfaceFormatTableIndex(data_format, num_format)];
     bool found =
         result != vk::Format::eUndefined || data_format == AmdGpu::DataFormat::FormatInvalid;
