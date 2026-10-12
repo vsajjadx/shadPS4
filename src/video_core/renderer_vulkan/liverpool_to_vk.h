@@ -122,6 +122,20 @@ constexpr vk::Format SurfaceFormat(AmdGpu::DataFormat data_format,
         break;
     }
     vk::Format result = surface_format_table[GetSurfaceFormatTableIndex(data_format, num_format)];
+    if (result == vk::Format::eUndefined && data_format != AmdGpu::DataFormat::FormatInvalid) {
+        for (const auto fallback_fmt : {AmdGpu::NumberFormat::Uint, AmdGpu::NumberFormat::Sint,
+                                        AmdGpu::NumberFormat::Float}) {
+            const vk::Format fallback =
+                surface_format_table[GetSurfaceFormatTableIndex(data_format, fallback_fmt)];
+            if (fallback != vk::Format::eUndefined) {
+                LOG_WARNING(Render_Vulkan,
+                            "Unsupported data_format={} and num_format={}, using num_format={}",
+                            static_cast<u32>(data_format), static_cast<u32>(num_format),
+                            static_cast<u32>(fallback_fmt));
+                return fallback;
+            }
+        }
+    }
     bool found =
         result != vk::Format::eUndefined || data_format == AmdGpu::DataFormat::FormatInvalid;
     ASSERT_MSG(found, "Unknown data_format={} and num_format={}", static_cast<u32>(data_format),
