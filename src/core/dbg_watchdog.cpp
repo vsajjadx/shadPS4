@@ -145,6 +145,29 @@ void Report(int n) {
 
 } // namespace
 
+std::string DescribeGuestCrash(u64 rip, u64 rsp) {
+    std::string out = fmt::format("rip={}", Describe(rip));
+#ifdef _WIN32
+    if (rsp != 0) {
+        std::vector<u64> stack(1024);
+        SIZE_T got = 0;
+        if (ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(rsp), stack.data(),
+                              stack.size() * 8, &got) ||
+            got > 0) {
+            out += " frames:";
+            size_t count = 0;
+            for (size_t k = 0; k < got / 8 && count < 12; ++k) {
+                if (LooksLikeReturnAddress(stack[k])) {
+                    out += " " + Describe(stack[k]);
+                    ++count;
+                }
+            }
+        }
+    }
+#endif
+    return out;
+}
+
 void StartDebugWatchdog() {
     std::thread([] {
         std::this_thread::sleep_for(std::chrono::seconds(40));

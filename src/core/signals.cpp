@@ -7,6 +7,7 @@
 #include "common/decoder.h"
 #include "common/signal_context.h"
 #include "core/cpu_patches.h" // Windows static guest red-zone protection
+#include "core/dbg_watchdog.h"
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/kernel/threads/exception.h"
 #include "core/libraries/kernel/threads/pthread.h"
@@ -142,6 +143,13 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
     const bool report_unhandled =
         use_static_windows_guest_red_zone_protection ? static_protection_exception : true;
     if (report_unhandled) {
+        if (code == EXCEPTION_ACCESS_VIOLATION && pExp->ExceptionRecord->NumberParameters >= 2) {
+            LOG_CRITICAL(Debug, "Access violation: op={} (0=read,1=write,8=exec) fault_addr={:#x}",
+                         pExp->ExceptionRecord->ExceptionInformation[0],
+                         pExp->ExceptionRecord->ExceptionInformation[1]);
+        }
+        LOG_CRITICAL(Debug, "Crash location: {}",
+                     DescribeGuestCrash(pExp->ContextRecord->Rip, pExp->ContextRecord->Rsp));
         LOG_CRITICAL(Debug, "Unhandled Exception code {:#x} at {}", code, address);
         Common::Singleton<Core::Emulator>::Instance()->Shutdown();
     }
