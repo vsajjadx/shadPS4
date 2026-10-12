@@ -567,11 +567,17 @@ static bool ComputeOffset(Xbyak::CodeGenerator& c, Xbyak::Reg32 reg, PassInfo& p
 }
 
 static inline bool PushPtr(Xbyak::CodeGenerator& c, PassInfo& pass_info, const IR::Value& off_dw) {
+    // On failure the partially emitted code (including the push below) must be discarded,
+    // otherwise the generated walker returns with an unbalanced stack and crashes.
+    const size_t code_start = c.getSize();
     c.push(rdi);
     if (off_dw.IsImmediate()) {
         c.mov(rdi, ptr[rdi + (off_dw.U32() << 2)]);
     } else {
-        ABORT_ON_FAILURE(ComputeOffset(c, r10d, pass_info, off_dw));
+        if (!ComputeOffset(c, r10d, pass_info, off_dw)) {
+            c.setSize(code_start);
+            return false;
+        }
         c.shl(r10d, 2);
         c.mov(r10d, r10d);
         c.mov(rdi, ptr[rdi + r10]);
@@ -585,6 +591,27 @@ static inline void PopPtr(Xbyak::CodeGenerator& c) {
     c.pop(rdi);
 }
 
+// Used when the pointer (or an offset) of an SRT subtree depends on data that is unavailable to
+// the CPU walker (e.g. ReadLane/Phi of VGPR data). Rather than leaving the flat buffer offset
+// unset (which makes the shader read an arbitrary user data register as a descriptor), give every
+// use a slot that is explicitly zeroed. A zeroed T#/V# is rejected as a null resource.
+static void EmitZeroedUses(IR::Inst* subtree, PassInfo& pass_info, Xbyak::CodeGenerator& c) {
+    PassInfo::PtrUserList* use_list = pass_info.GetUsesAsPointer(subtree);
+    if (!use_list) {
+        return;
+    }
+    for (const auto& [src_off_dw, use] : *use_list) {
+        c.mov(dword[rsi + (pass_info.dst_off_dw << 2)], 0);
+        SetFlatbufOffset(use, pass_info.dst_off_dw);
+        pass_info.dst_off_dw++;
+    }
+    for (const auto& [src_off_dw, use] : *use_list) {
+        if (pass_info.GetUsesAsPointer(use)) {
+            EmitZeroedUses(use, pass_info, c);
+        }
+    }
+}
+
 static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& pass_info,
                          Xbyak::CodeGenerator& c) {
     if (subtree->GetOpcode() == IR::Opcode::ReadConst && subtree->Flags<u16>() == 0 ||
@@ -594,7 +621,9 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
     }
 
     if (!PushPtr(c, pass_info, off_dw)) {
-        LOG_ERROR(Render_Recompiler, "Failed to compute offset for SRT walker");
+        LOG_ERROR(Render_Recompiler,
+                  "Failed to compute offset for SRT walker, zero-filling dependent uses");
+        EmitZeroedUses(subtree, pass_info, c);
         return;
     }
     PassInfo::PtrUserList* use_list = pass_info.GetUsesAsPointer(subtree);
@@ -609,8 +638,14 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
         if (src_off_dw.IsImmediate()) {
             c.mov(r10d, ptr[rdi + (src_off_dw.U32() << 2)]);
         } else {
+            const size_t use_code_start = c.getSize();
             if (!ComputeOffset(c, r10d, pass_info, src_off_dw)) {
-                LOG_ERROR(Render_Recompiler, "Failed to compute offset for SRT walker");
+                LOG_ERROR(Render_Recompiler,
+                          "Failed to compute offset for SRT walker, zero-filling use");
+                c.setSize(use_code_start);
+                c.mov(dword[rsi + (pass_info.dst_off_dw << 2)], 0);
+                SetFlatbufOffset(use, pass_info.dst_off_dw);
+                pass_info.dst_off_dw++;
                 continue;
             }
             c.shl(r10d, 2);
