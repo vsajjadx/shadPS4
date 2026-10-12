@@ -7,6 +7,7 @@
 #include <mutex>
 #include <thread>
 #include <queue>
+#include <string>
 
 #include "common/interval_set.h"
 #include "common/unique_function.h"
@@ -354,6 +355,13 @@ class Scheduler {
 public:
     explicit Scheduler(const Instance& instance);
     ~Scheduler();
+
+    /// Debug aid: true when GPU progress checkpoints can be recorded.
+    bool DiagEnabled() const;
+    /// Debug aid: tags the command stream with a checkpoint described by text.
+    void DiagMark(const std::string& text);
+    /// Debug aid: logs the last executed checkpoints. Call when the device is lost.
+    static void DiagDumpOnDeviceLost();
 
     /// Sends the current execution context to the GPU
     /// and increments the scheduler timeline semaphore.

@@ -235,7 +235,8 @@ std::vector<const char*> GetInstanceLayers(bool enable_validation, bool enable_c
     if (enable_validation) {
         layers.push_back(VALIDATION_LAYER_NAME);
     }
-    if (enable_crash_diagnostic) {
+    // Disabled in this diagnostic build: the layer uses the same NV checkpoints as Scheduler::Diag*.
+    if (false && enable_crash_diagnostic) {
         layers.push_back(CRASH_DIAGNOSTIC_LAYER_NAME);
     }
 

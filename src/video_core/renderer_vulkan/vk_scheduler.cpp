@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
+#include <atomic>
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/thread.h"
@@ -12,11 +14,72 @@ namespace Vulkan {
 
 std::mutex Scheduler::submit_mutex;
 
+namespace {
+struct DiagEntry {
+    u64 id{};
+    std::string text;
+};
+constexpr size_t DiagRingSize = 16384;
+std::mutex g_diag_mutex;
+std::array<DiagEntry, DiagRingSize> g_diag_ring;
+std::atomic<u64> g_diag_next{1};
+std::atomic<const Scheduler*> g_diag_scheduler{nullptr};
+std::atomic<const Instance*> g_diag_instance{nullptr};
+} // namespace
+
+bool Scheduler::DiagEnabled() const {
+    return instance.IsNvCheckpointsSupported();
+}
+
+void Scheduler::DiagMark(const std::string& text) {
+    if (!instance.IsNvCheckpointsSupported()) {
+        return;
+    }
+    const u64 id = g_diag_next.fetch_add(1);
+    {
+        std::scoped_lock lk{g_diag_mutex};
+        g_diag_ring[id % DiagRingSize] = DiagEntry{id, text};
+    }
+    CommandBuffer().setCheckpointNV(reinterpret_cast<const void*>(id));
+}
+
+void Scheduler::DiagDumpOnDeviceLost() {
+    static std::atomic<bool> dumped{false};
+    if (dumped.exchange(true)) {
+        return;
+    }
+    const Instance* inst = g_diag_instance.load();
+    if (inst == nullptr || !inst->IsNvCheckpointsSupported()) {
+        LOG_ERROR(Render_Vulkan, "DIAG device lost, but NV checkpoints are not available");
+        return;
+    }
+    const auto lookup = [](u64 id) -> std::string {
+        std::scoped_lock lk{g_diag_mutex};
+        const auto& e = g_diag_ring[id % DiagRingSize];
+        return e.id == id ? e.text : std::string{"<overwritten>"};
+    };
+    const auto data = inst->GetGraphicsQueue().getCheckpointDataNV();
+    LOG_ERROR(Render_Vulkan, "DIAG device lost: {} checkpoint(s) reported by the driver",
+              data.size());
+    for (const auto& d : data) {
+        const u64 id = reinterpret_cast<u64>(d.pCheckpointMarker);
+        LOG_ERROR(Render_Vulkan, "DIAG checkpoint stage={} id={} : {}", vk::to_string(d.stage), id,
+                  lookup(id));
+    }
+    const u64 last = g_diag_next.load();
+    const u64 first = last > 40 ? last - 40 : 1;
+    for (u64 id = first; id < last; ++id) {
+        LOG_ERROR(Render_Vulkan, "DIAG history id={} : {}", id, lookup(id));
+    }
+}
+
 Scheduler::Scheduler(const Instance& instance)
     : instance{instance}, work_semaphore{instance}, command_pool{instance, &work_semaphore} {
 #if TRACY_GPU_ENABLED
     profiler_scope = reinterpret_cast<tracy::VkCtxScope*>(std::malloc(sizeof(tracy::VkCtxScope)));
 #endif
+    g_diag_scheduler.store(this);
+    g_diag_instance.store(&instance);
     BeginSession();
     priority_pending_ops_thread =
         std::jthread(std::bind_front(&Scheduler::PriorityPendingOpsThread, this));
@@ -238,6 +301,9 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
 
     ImGui::Core::TextureManager::Submit();
     auto submit_result = instance.GetGraphicsQueue().submit(submit_info, info.fence);
+    if (submit_result == vk::Result::eErrorDeviceLost) {
+        DiagDumpOnDeviceLost();
+    }
     ASSERT_MSG(submit_result != vk::Result::eErrorDeviceLost, "Device lost during submit");
 
     work_semaphore.Refresh();

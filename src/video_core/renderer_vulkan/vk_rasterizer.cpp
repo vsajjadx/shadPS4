@@ -181,6 +181,19 @@ void Rasterizer::EliminateFastClear() {
     ScopeMarkerEnd();
 }
 
+namespace {
+u64 g_diag_seq = 0;
+std::string DiagStages(const GraphicsPipeline* pipeline) {
+    std::string s;
+    for (const auto h : pipeline->GetGraphicsKey().stage_hashes) {
+        if (h != 0) {
+            s += fmt::format(" {:#x}", h);
+        }
+    }
+    return s;
+}
+} // namespace
+
 void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     RENDERER_TRACE;
 
@@ -222,12 +235,22 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     const auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline->Handle());
 
+    const bool diag = scheduler.DiagEnabled();
+    const u64 diag_id = diag ? ++g_diag_seq : 0;
+    if (diag) {
+        scheduler.DiagMark(fmt::format("BEFORE #{} draw indexed={} count={} instances={} stages={}",
+                                       diag_id, is_indexed, regs.num_indices,
+                                       regs.num_instances.NumInstances(), DiagStages(pipeline)));
+    }
     if (is_indexed) {
         cmdbuf.drawIndexed(regs.num_indices, regs.num_instances.NumInstances(), 0,
                            s32(vertex_offset), instance_offset);
     } else {
         cmdbuf.draw(regs.num_indices, regs.num_instances.NumInstances(), vertex_offset,
                     instance_offset);
+    }
+    if (diag) {
+        scheduler.DiagMark(fmt::format("AFTER #{} draw", diag_id));
     }
     DebugState.IncDrawCall();
 
@@ -345,7 +368,19 @@ void Rasterizer::DispatchDirect() {
 
     const auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline->Handle());
+    const bool diag = scheduler.DiagEnabled();
+    const u64 diag_id = diag ? ++g_diag_seq : 0;
+    if (diag) {
+        scheduler.DiagMark(fmt::format(
+            "BEFORE #{} dispatch pipeline={:#x} key={:#x} dims={}x{}x{}", diag_id,
+            std::hash<ComputePipelineKey>{}(pipeline->GetComputeKey()),
+            pipeline->GetComputeKey().value, cs_program.dim_x, cs_program.dim_y,
+            cs_program.dim_z));
+    }
     cmdbuf.dispatch(cs_program.dim_x, cs_program.dim_y, cs_program.dim_z);
+    if (diag) {
+        scheduler.DiagMark(fmt::format("AFTER #{} dispatch", diag_id));
+    }
     DebugState.IncDispatch();
 
     ResetBindings(true);

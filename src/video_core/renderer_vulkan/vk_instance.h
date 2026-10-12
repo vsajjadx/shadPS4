@@ -137,6 +137,11 @@ public:
         return custom_border_color;
     }
 
+    /// Returns true when VK_NV_device_diagnostic_checkpoints is enabled (debug aid)
+    bool IsNvCheckpointsSupported() const {
+        return nv_checkpoints;
+    }
+
     /// Returns true when VK_EXT_shader_stencil_export is supported
     bool IsShaderStencilExportSupported() const {
         return shader_stencil_export;
@@ -527,6 +532,7 @@ private:
     bool list_restart{};
     bool provoking_vertex{};
     bool shader_stencil_export{};
+    bool nv_checkpoints{};
     bool image_load_store_lod{};
     bool amd_gcn_shader{};
     bool amd_shader_trinary_minmax{};
