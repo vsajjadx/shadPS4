@@ -292,6 +292,7 @@ s32 MemoryManager::Free(PAddr phys_addr, u64 size, bool is_checked) {
     }
 
     std::scoped_lock lk{unmap_mutex};
+    std::shared_lock read_lock{mutex};
     // If this is a checked free, then all direct memory in range must be allocated.
     std::vector<std::pair<PAddr, u64>> free_list;
     u64 remaining_size = size;
@@ -342,6 +343,8 @@ s32 MemoryManager::Free(PAddr phys_addr, u64 size, bool is_checked) {
             }
         }
     }
+
+    read_lock.unlock();
 
     // Early unmap from GPU to avoid deadlocking.
     for (auto& [addr, unmap_size] : remove_list) {
