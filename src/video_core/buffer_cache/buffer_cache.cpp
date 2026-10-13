@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <magic_enum/magic_enum.hpp>
 #include "common/alignment.h"
 #include "common/debug.h"
 #include "common/scope_exit.h"
@@ -127,9 +128,7 @@ void BufferCache::DownloadBufferMemory(Buffer& buffer, VAddr device_addr, u64 si
     download_buffer.Commit();
     scheduler.EndRendering();
     const auto cmdbuf = scheduler.CommandBuffer();
-    // Synchronize prior GPU writes to this buffer (e.g. compute SSBO writes) before the transfer
-    // read. Without this barrier the copy can read stale L2 cache contents written before the
-    // dispatch, which surfaced as all-zero readbacks of the cascade AABB ring buffer.
+    // Synchronize prior GPU writes to this buffer before the transfer read
     const vk::BufferMemoryBarrier2 pre_barrier = {
         .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
         .srcAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite,
@@ -437,7 +436,7 @@ std::pair<Buffer*, u32> BufferCache::ObtainBufferForImage(VAddr gpu_addr, u32 si
         return ObtainBuffer(gpu_addr, size, false, false);
     }
     // In all other cases, just do a CPU copy to the staging buffer.
-    const auto [data, offset] = staging_buffer.Map(size, 16);
+    const auto [data, offset] = staging_buffer.Map(size, instance.StorageMinAlignment());
     memory->CopySparseMemory(gpu_addr, data, size);
     staging_buffer.Commit();
     return {&staging_buffer, offset};
@@ -765,6 +764,15 @@ vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> c
 }
 
 bool BufferCache::SynchronizeBufferFromImage(Buffer& buffer, VAddr device_addr, u32 size) {
+    if (auto type = texture_cache.IsMeta(device_addr)) {
+        if (*type == TextureCache::MetaType::HTile) {
+            static constexpr u32 ZmaskUncompressed = 0xf;
+            buffer.Fill(buffer.Offset(device_addr), size, ZmaskUncompressed);
+            return true;
+        } else {
+            LOG_WARNING(Render_Vulkan, "Unhandled metadata type {}", magic_enum::enum_name(*type));
+        }
+    }
     const ImageId image_id = texture_cache.FindImageFromRange(device_addr, size);
     if (!image_id) {
         return false;

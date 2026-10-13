@@ -323,23 +323,22 @@ std::pair<const IR::Inst*, bool> TryDisableAnisoLod0(const IR::Inst* inst) {
     }
 
     // Select should be based on zero check
-    const auto* prod0 = inst->Arg(0).InstRecursive();
+    const auto* prod0 = inst->Arg(0).Inst();
     if (prod0->GetOpcode() != IR::Opcode::IEqual32 ||
         !(prod0->Arg(1).IsImmediate() && prod0->Arg(1).U32() == 0u)) {
         return not_found;
     }
 
     // The bitfield extract might be hidden by phi sometimes
-    auto* prod0_arg0 = prod0->Arg(0).InstRecursive();
+    auto* prod0_arg0 = prod0->Arg(0).Inst();
     if (prod0_arg0->GetOpcode() == IR::Opcode::Phi) {
         auto arg0 = prod0_arg0->Arg(0);
         auto arg1 = prod0_arg0->Arg(1);
-        if (!arg0.IsImmediate() &&
-            arg0.InstRecursive()->GetOpcode() == IR::Opcode::BitFieldUExtract) {
-            prod0_arg0 = arg0.InstRecursive();
+        if (!arg0.IsImmediate() && arg0.Inst()->GetOpcode() == IR::Opcode::BitFieldUExtract) {
+            prod0_arg0 = arg0.Inst();
         } else if (!arg1.IsImmediate() &&
-                   arg1.InstRecursive()->GetOpcode() == IR::Opcode::BitFieldUExtract) {
-            prod0_arg0 = arg1.InstRecursive();
+                   arg1.Inst()->GetOpcode() == IR::Opcode::BitFieldUExtract) {
+            prod0_arg0 = arg1.Inst();
         }
     }
 
@@ -351,13 +350,13 @@ std::pair<const IR::Inst*, bool> TryDisableAnisoLod0(const IR::Inst* inst) {
     }
 
     // Make sure mask is masking out anisotropy
-    const auto* prod1 = inst->Arg(1).InstRecursive();
+    const auto* prod1 = inst->Arg(1).Inst();
     if (prod1->GetOpcode() != IR::Opcode::BitwiseAnd32 || prod1->Arg(1).U32() != 0xfffff1ff) {
         return not_found;
     }
 
     // We're working on the first dword of s#
-    const auto* prod2 = inst->Arg(2).InstRecursive();
+    const auto* prod2 = inst->Arg(2).Inst();
     if (prod2->GetOpcode() != IR::Opcode::GetUserData &&
         prod2->GetOpcode() != IR::Opcode::ReadConst && prod2->GetOpcode() != IR::Opcode::Phi) {
         return not_found;
@@ -402,7 +401,7 @@ SharpSources FindSharpSources(const IR::Inst* handle, u32 pc) {
             if (arg_value.IsImmediate()) {
                 continue;
             }
-            const IR::Inst* arg_inst = arg_value.InstRecursive();
+            const IR::Inst* arg_inst = arg_value.Inst();
             if (std::ranges::find(visited, arg_inst) == visited.end()) {
                 visited.push_back(arg_inst);
                 queue.push(arg_inst);
@@ -531,7 +530,7 @@ SharpLocation TrackSharp(const IR::Inst* inst, const IR::Block& current_parent, 
 
 void PatchBufferSharp(IR::Block& block, IR::Inst& inst, Info& info, Descriptors& descriptors,
                       const Profile& profile) {
-    IR::Inst* handle = inst.Arg(0).InstRecursive();
+    IR::Inst* handle = inst.Arg(0).Inst();
     u32 buffer_binding = 0;
     if (handle->AreAllArgsImmediates()) {
         // Assuming V# is in UD s[32:35]
@@ -562,7 +561,7 @@ void PatchBufferSharp(IR::Block& block, IR::Inst& inst, Info& info, Descriptors&
         });
     } else {
         // Normal buffer resource.
-        IR::Inst* buffer_handle = handle->Arg(0).InstRecursive();
+        IR::Inst* buffer_handle = handle->Arg(0).Inst();
         const auto inst_info = inst.Flags<IR::BufferInstInfo>();
         const auto sharp_idx = TrackSharp(buffer_handle, block, inst_info.pc);
         const auto buffer = info.ReadUdSharp<AmdGpu::Buffer>(sharp_idx);
@@ -591,7 +590,7 @@ void PatchImageSharp(IR::Block& block, IR::Inst& inst, Info& info, Descriptors& 
                      const Profile& profile) {
     // Read image sharp.
     const auto inst_info = inst.Flags<IR::TextureInstInfo>();
-    const IR::Inst* image_handle = inst.Arg(0).InstRecursive();
+    const IR::Inst* image_handle = inst.Arg(0).Inst();
     const auto tsharp = TrackSharp(image_handle, block, inst_info.pc);
     const bool is_srt_offset = IsSrtOffsetSharp(image_handle, inst_info.pc);
     if (is_srt_offset) {
@@ -624,7 +623,7 @@ void PatchImageSharp(IR::Block& block, IR::Inst& inst, Info& info, Descriptors& 
         // If index is dynamic, we will bind levels as an array
         const auto view_type = image.GetViewType(image_res.is_array);
 
-        IR::Inst* body = inst.Arg(1).InstRecursive();
+        IR::Inst* body = inst.Arg(1).Inst();
         const auto lod_arg = [&] -> IR::Value {
             switch (view_type) {
             case AmdGpu::ImageType::Color1D: // x, [lod]
@@ -689,7 +688,7 @@ void PatchImageSharp(IR::Block& block, IR::Inst& inst, Info& info, Descriptors& 
 
     if (inst.GetOpcode() == IR::Opcode::ImageSampleRaw) {
         u32 sampler_binding = 0;
-        const IR::Inst* sampler = inst.Arg(1).InstRecursive();
+        const IR::Inst* sampler = inst.Arg(1).Inst();
         ASSERT(sampler && sampler->GetOpcode() == IR::Opcode::CompositeConstructU32x4);
         // Inline sampler resource.
         if (sampler->AreAllArgsImmediates()) {
@@ -705,7 +704,7 @@ void PatchImageSharp(IR::Block& block, IR::Inst& inst, Info& info, Descriptors& 
         } else {
             // Normal sampler resource.
             const auto& [sampler_handle, disable_aniso] =
-                TryDisableAnisoLod0(sampler->Arg(0).InstRecursive());
+                TryDisableAnisoLod0(sampler->Arg(0).Inst());
             const auto ssharp = TrackSharp(sampler_handle, block, inst_info.pc);
             sampler_binding = descriptors.Add(SamplerResource{
                 .sharp_idx = ssharp,
@@ -733,37 +732,9 @@ void PatchGlobalDataShareAccess(IR::Block& block, IR::Inst& inst, Info& info,
 
     // For data append/consume operations, convert to GDS buffer atomic.
     if (inst.GetOpcode() == IR::Opcode::DataAppend || inst.GetOpcode() == IR::Opcode::DataConsume) {
-        // gds_offset = GetM0() + inst_offset, already resolved by SsaRewrite.
-        // Compute index dynamically per dispatch so that the same SPIR-V module works
-        // across all GDS base addresses (fixes cross-slot reuse bug).
-        const IR::Value& gds_offset = inst.Arg(0);
-        IR::U32 index;
-        if (gds_offset.IsImmediate()) {
-            // Fully static offset: fold at compile time.
-            index = ir.Imm32((gds_offset.U32() & 0xFFFF) >> 2);
-        } else {
-            // Find the user data register that feeds M0, then emit a runtime chain:
-            //   index = ((GetUserData(reg) >> 16) + inst_offset) >> 2
-            const auto pred = [](const IR::Inst* i) -> std::optional<const IR::Inst*> {
-                return i->GetOpcode() == IR::Opcode::GetUserData ? std::optional{i} : std::nullopt;
-            };
-            const auto result = IR::BreadthFirstSearch(&inst, pred);
-            ASSERT_MSG(result, "Unable to track M0 source for GDS");
-
-            const IR::ScalarReg ud_reg = result.value()->Arg(0).ScalarReg();
-            const IR::Inst* add = gds_offset.InstRecursive();
-            const u32 inst_offset = add->Arg(1).U32();
-
-            // Observed: GDS base lives in upper 16 bits of the user data register.
-            IR::U32 ud_val = ir.GetUserData(ud_reg);
-            IR::U32 gds_base = ir.ShiftRightLogical(ud_val, ir.Imm32(16));
-            IR::U32 gds_byte = ir.IAdd(gds_base, ir.Imm32(inst_offset));
-            IR::U32 clamped = ir.BitwiseAnd(gds_byte, ir.Imm32(0xFFFF));
-            index = ir.ShiftRightLogical(clamped, ir.Imm32(2));
-        }
-
         // Patch instruction to GDS buffer atomic increment/decrement.
         const IR::U32 handle = ir.Imm32(binding);
+        const IR::U32 index = ir.ShiftRightLogical(IR::U32{inst.Arg(0)}, ir.Imm32(2));
         const bool is_append = inst.GetOpcode() == IR::Opcode::DataAppend;
         const IR::Value prev = is_append ? ir.BufferAtomicInc(handle, index, {})
                                          : ir.BufferAtomicDec(handle, index, {});
@@ -1113,9 +1084,9 @@ void PatchImageSampleArgs(IR::Block& block, IR::Inst& inst, Info& info,
     const auto inst_info = inst.Flags<IR::TextureInstInfo>();
     const auto view_type = image.GetViewType(image_res.is_array);
 
-    IR::Inst* body1 = inst.Arg(2).InstRecursive();
-    IR::Inst* body2 = inst.Arg(3).InstRecursive();
-    IR::Inst* body3 = inst.Arg(4).InstRecursive();
+    IR::Inst* body1 = inst.Arg(2).Inst();
+    IR::Inst* body2 = inst.Arg(3).Inst();
+    IR::Inst* body3 = inst.Arg(4).Inst();
     IR::F32 body4 = IR::F32{inst.Arg(5)};
     const auto get_addr_reg = [&](u32 index) -> IR::F32 {
         if (index <= 3) {
@@ -1143,7 +1114,7 @@ void PatchImageSampleArgs(IR::Block& block, IR::Inst& inst, Info& info,
 
         // The offsets are six-bit signed integers: X=[5:0], Y=[13:8], and Z=[21:16].
         IR::Value arg = get_addr_reg(addr_reg++);
-        if (const IR::Inst* offset_inst = arg.TryInstRecursive()) {
+        if (const IR::Inst* offset_inst = arg.TryInst()) {
             ASSERT(offset_inst->GetOpcode() == IR::Opcode::BitCastF32U32);
             arg = offset_inst->Arg(0);
         }
@@ -1317,7 +1288,7 @@ void PatchImageArgs(IR::Block& block, IR::Inst& inst, Info& info) {
     const auto view_type = image.GetViewType(image_res.is_array);
 
     // Now that we know the image type, adjust texture coordinate vector.
-    IR::Inst* body = inst.Arg(1).InstRecursive();
+    IR::Inst* body = inst.Arg(1).Inst();
     const auto [coords, arg] = [&] -> std::pair<IR::Value, IR::Value> {
         switch (view_type) {
         case AmdGpu::ImageType::Color1D: // x, [lod]

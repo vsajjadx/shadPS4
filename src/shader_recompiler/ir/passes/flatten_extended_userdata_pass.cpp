@@ -293,7 +293,7 @@ bool HasNonZeroImmediateOffset(IR::Inst* inst) {
     return false;
 }
 
-}; // namespace
+} // namespace
 
 void FlattenExtendedUserdataPass(IR::Program& program) {
     Shader::Info& info = program.info;
@@ -319,7 +319,7 @@ void FlattenExtendedUserdataPass(IR::Program& program) {
                     continue;
                 }
 
-                IR::Inst* ptr_composite = inst.Arg(0).InstRecursive();
+                IR::Inst* ptr_composite = inst.Arg(0).Inst();
 
                 const auto pred = [](IR::Inst* inst) -> std::optional<IR::Inst*> {
                     if (inst->GetOpcode() == IR::Opcode::GetUserData ||

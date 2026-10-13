@@ -12,8 +12,8 @@
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-// Bumped past both the fork (2/3/2) and upstream (3/3/3) so stale caches are never loaded.
-static constexpr u32 ShaderBinaryVersion = 4u;
+// Bumped past both the fork and upstream so caches written by either are never loaded.
+static constexpr u32 ShaderBinaryVersion = 5u;
 static constexpr u32 ShaderMetaVersion = 4u;
 static constexpr u32 PipelineKeyVersion = 4u;
 } // namespace Serialization
