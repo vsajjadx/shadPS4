@@ -175,6 +175,25 @@ bool Runtime::Transit(VideoCore::Image* image, vk::ImageLayout dst_layout,
 
 void Runtime::UploadImage(VideoCore::Image* dst, const VideoCore::Buffer* src,
                           std::span<const vk::BufferImageCopy> upload_copies) {
+    // Guard against copies that read past the end of the source buffer (e.g. for images built
+    // from garbage descriptors): such a copy loses the device.
+    u64 needed_bytes = 0;
+    for (const auto& copy : upload_copies) {
+        const u64 copy_size = BufferImageCopySize(copy, dst->info.pixel_format);
+        needed_bytes = std::max<u64>(needed_bytes, u64(copy.bufferOffset) + copy_size);
+    }
+    if (needed_bytes > src->SizeBytes()) {
+        LOG_ERROR(Render_Vulkan,
+                  "Skipping image upload that reads past its source buffer: addr={:#x}, "
+                  "{}x{}x{}, mips={}, layers={}, format={}, tile_mode={}, needed={}, buffer={}",
+                  dst->info.guest_address, dst->info.size.width, dst->info.size.height,
+                  dst->info.size.depth, dst->info.resources.levels, dst->info.resources.layers,
+                  vk::to_string(dst->info.pixel_format), static_cast<u32>(dst->info.tile_mode),
+                  needed_bytes, src->SizeBytes());
+        dst->flags &= ~VideoCore::ImageFlagBits::Dirty;
+        return;
+    }
+
     SetBackingSamples(dst, dst->info.num_samples, false);
     scheduler.EndRendering();
 
@@ -190,7 +209,19 @@ void Runtime::UploadImage(VideoCore::Image* dst, const VideoCore::Buffer* src,
     }
 
     const auto cmdbuf = scheduler.CommandBuffer();
-    scheduler.DiagMarkOn(cmdbuf, "BEFORE vk_runtime.cpp:187 copyBufferToImage");
+    if (scheduler.DiagEnabled()) {
+        scheduler.DiagMarkOn(
+            cmdbuf,
+            fmt::format("BEFORE vk_runtime.cpp:187 copyBufferToImage addr={:#x} {}x{}x{} mips={} "
+                        "layers={} format={} tile_mode={} guest_size={} copies={} needed={} "
+                        "buffer={} first_offset={}",
+                        dst->info.guest_address, dst->info.size.width, dst->info.size.height,
+                        dst->info.size.depth, dst->info.resources.levels,
+                        dst->info.resources.layers, vk::to_string(dst->info.pixel_format),
+                        static_cast<u32>(dst->info.tile_mode), dst->info.guest_size,
+                        upload_copies.size(), needed_bytes, src->SizeBytes(),
+                        upload_copies.empty() ? 0 : upload_copies[0].bufferOffset));
+    }
     cmdbuf.copyBufferToImage(src->Handle(), dst->GetImage(), vk::ImageLayout::eTransferDstOptimal,
                              upload_copies);
     scheduler.DiagMarkOn(cmdbuf, "AFTER vk_runtime.cpp:187 copyBufferToImage");
