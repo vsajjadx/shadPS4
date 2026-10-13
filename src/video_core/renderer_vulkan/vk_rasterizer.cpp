@@ -889,7 +889,11 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
         const auto tsharp = image_desc.GetSharp(stage);
         const auto data_fmt = tsharp.GetDataFmt();
         const auto num_fmt = tsharp.GetNumberFmt();
-        if (tsharp.Address() == 0 || data_fmt == AmdGpu::DataFormat::FormatInvalid) {
+        // FMask T#s are handled at shader translation time (the image instruction is patched and
+        // no image is needed). One that still reaches binding is garbage, e.g. an SRT walker
+        // failure feeding a bogus T#, and would trip the SurfaceFormat assert.
+        if (tsharp.Address() == 0 || data_fmt == AmdGpu::DataFormat::FormatInvalid ||
+            AmdGpu::IsFmask(data_fmt)) {
             image_bindings[num_images++].image_id = {};
             image_descriptor_array_sizes.push_back(1);
             continue;
