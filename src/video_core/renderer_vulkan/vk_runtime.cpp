@@ -121,7 +121,9 @@ void Runtime::CopyBuffer(const VideoCore::Buffer* src, const VideoCore::Buffer* 
     }
 
     const auto cmdbuf = scheduler.CommandBuffer();
+    scheduler.DiagMarkOn(cmdbuf, "BEFORE vk_runtime.cpp:124 copyBuffer");
     cmdbuf.copyBuffer(src->Handle(), dst->Handle(), copies);
+    scheduler.DiagMarkOn(cmdbuf, "AFTER vk_runtime.cpp:124 copyBuffer");
 
     for (const auto& copy : copies) {
         AccessBuffer(src, copy.srcOffset, copy.size, vk::PipelineStageFlagBits2::eCopy,
@@ -139,7 +141,9 @@ void Runtime::FillBuffer(const VideoCore::Buffer* dst, u64 offset, u64 size, u32
     }
 
     const auto cmdbuf = scheduler.CommandBuffer();
+    scheduler.DiagMarkOn(cmdbuf, "BEFORE vk_runtime.cpp:142 fillBuffer");
     cmdbuf.fillBuffer(dst->Handle(), offset, size, value);
+    scheduler.DiagMarkOn(cmdbuf, "AFTER vk_runtime.cpp:142 fillBuffer");
 
     AccessBuffer(dst, offset, size, vk::PipelineStageFlagBits2::eClear,
                  vk::AccessFlagBits2::eTransferWrite);
@@ -153,7 +157,9 @@ void Runtime::InlineData(VideoCore::Buffer* dst, u64 offset, u32 value) {
     }
 
     const auto cmdbuf = scheduler.CommandBuffer();
+    scheduler.DiagMarkOn(cmdbuf, "BEFORE vk_runtime.cpp:156 updateBuffer");
     cmdbuf.updateBuffer(dst->Handle(), offset, sizeof(value), &value);
+    scheduler.DiagMarkOn(cmdbuf, "AFTER vk_runtime.cpp:156 updateBuffer");
 
     AccessBuffer(dst, offset, sizeof(value), vk::PipelineStageFlagBits2::eCopy,
                  vk::AccessFlagBits2::eTransferWrite);
@@ -184,8 +190,10 @@ void Runtime::UploadImage(VideoCore::Image* dst, const VideoCore::Buffer* src,
     }
 
     const auto cmdbuf = scheduler.CommandBuffer();
+    scheduler.DiagMarkOn(cmdbuf, "BEFORE vk_runtime.cpp:187 copyBufferToImage");
     cmdbuf.copyBufferToImage(src->Handle(), dst->GetImage(), vk::ImageLayout::eTransferDstOptimal,
                              upload_copies);
+    scheduler.DiagMarkOn(cmdbuf, "AFTER vk_runtime.cpp:187 copyBufferToImage");
 
     for (const auto& copy : upload_copies) {
         const auto copy_size = BufferImageCopySize(copy, dst->info.pixel_format);
@@ -213,8 +221,10 @@ void Runtime::DownloadImage(VideoCore::Image* src, const VideoCore::Buffer* dst,
     }
 
     auto cmdbuf = scheduler.CommandBuffer();
+    scheduler.DiagMarkOn(cmdbuf, "BEFORE vk_runtime.cpp:216 copyImageToBuffer");
     cmdbuf.copyImageToBuffer(src->GetImage(), vk::ImageLayout::eTransferSrcOptimal, dst->Handle(),
                              download_copies);
+    scheduler.DiagMarkOn(cmdbuf, "AFTER vk_runtime.cpp:216 copyImageToBuffer");
 
     for (const auto& copy : download_copies) {
         const auto copy_size = BufferImageCopySize(copy, src->info.pixel_format);
@@ -314,8 +324,10 @@ void Runtime::CopyImage(VideoCore::Image* src, VideoCore::Image* dst) {
     }
 
     auto cmdbuf = scheduler.CommandBuffer();
+    scheduler.DiagMarkOn(cmdbuf, "BEFORE vk_runtime.cpp:317 copyImage");
     cmdbuf.copyImage(src->GetImage(), vk::ImageLayout::eTransferSrcOptimal, dst->GetImage(),
                      vk::ImageLayout::eTransferDstOptimal, regions);
+    scheduler.DiagMarkOn(cmdbuf, "AFTER vk_runtime.cpp:317 copyImage");
 
     dst->flags |= (src->flags & VideoCore::ImageFlagBits::GpuModified);
     dst->flags &= ~VideoCore::ImageFlagBits::Dirty;
@@ -358,8 +370,10 @@ void Runtime::CopyImageWithBuffer(VideoCore::Image* src, VideoCore::Image* dst,
     }
 
     auto cmdbuf = scheduler.CommandBuffer();
+    scheduler.DiagMarkOn(cmdbuf, "BEFORE vk_runtime.cpp:361 copyImageToBuffer");
     cmdbuf.copyImageToBuffer(src->GetImage(), vk::ImageLayout::eTransferSrcOptimal,
                              buffer->Handle(), buffer_copy);
+    scheduler.DiagMarkOn(cmdbuf, "AFTER vk_runtime.cpp:361 copyImageToBuffer");
 
     const vk::MemoryBarrier2 post_copy_barrier = {
         .srcStageMask = vk::PipelineStageFlagBits2::eCopy,
@@ -367,15 +381,19 @@ void Runtime::CopyImageWithBuffer(VideoCore::Image* src, VideoCore::Image* dst,
         .dstStageMask = vk::PipelineStageFlagBits2::eCopy,
         .dstAccessMask = vk::AccessFlagBits2::eTransferRead,
     };
+    scheduler.DiagMarkOn(cmdbuf, "BEFORE vk_runtime.cpp:370 pipelineBarrier2");
     cmdbuf.pipelineBarrier2(vk::DependencyInfo{
         .dependencyFlags = vk::DependencyFlagBits::eByRegion,
         .memoryBarrierCount = 1u,
         .pMemoryBarriers = &post_copy_barrier,
     });
+    scheduler.DiagMarkOn(cmdbuf, "AFTER vk_runtime.cpp:370 pipelineBarrier2");
 
     buffer_copy.imageSubresource.aspectMask = dst->aspect_mask & ~vk::ImageAspectFlagBits::eStencil;
+    scheduler.DiagMarkOn(cmdbuf, "BEFORE vk_runtime.cpp:377 copyBufferToImage");
     cmdbuf.copyBufferToImage(buffer->Handle(), dst->GetImage(),
                              vk::ImageLayout::eTransferDstOptimal, buffer_copy);
+    scheduler.DiagMarkOn(cmdbuf, "AFTER vk_runtime.cpp:377 copyBufferToImage");
 
     dst->flags |= (src->flags & VideoCore::ImageFlagBits::GpuModified);
     dst->flags &= ~VideoCore::ImageFlagBits::Dirty;
@@ -426,8 +444,10 @@ void Runtime::CopyMip(VideoCore::Image* src, VideoCore::Image* dst, u32 mip, u32
     }
 
     const auto cmdbuf = scheduler.CommandBuffer();
+    scheduler.DiagMarkOn(cmdbuf, "BEFORE vk_runtime.cpp:429 copyImage");
     cmdbuf.copyImage(src->GetImage(), vk::ImageLayout::eTransferSrcOptimal, dst->GetImage(),
                      vk::ImageLayout::eTransferDstOptimal, image_copy);
+    scheduler.DiagMarkOn(cmdbuf, "AFTER vk_runtime.cpp:429 copyImage");
 
     dst->flags |= (src->flags & VideoCore::ImageFlagBits::GpuModified);
     dst->flags &= ~VideoCore::ImageFlagBits::Dirty;
@@ -502,8 +522,10 @@ void Runtime::CopyDepthStencil(VideoCore::Image* src, VideoCore::Image* dst,
     };
 
     const auto cmdbuf = scheduler.CommandBuffer();
+    scheduler.DiagMarkOn(cmdbuf, "BEFORE vk_runtime.cpp:505 copyImage");
     cmdbuf.copyImage(src->GetImage(), vk::ImageLayout::eTransferSrcOptimal, dst->GetImage(),
                      vk::ImageLayout::eTransferDstOptimal, region);
+    scheduler.DiagMarkOn(cmdbuf, "AFTER vk_runtime.cpp:505 copyImage");
 
     dst->flags |= VideoCore::ImageFlagBits::GpuModified;
     dst->flags &= ~VideoCore::ImageFlagBits::Dirty;
@@ -547,8 +569,10 @@ void Runtime::ResolveImage(VideoCore::Image* src, VideoCore::Image* dst,
             .dstOffset = {0, 0, 0},
             .extent = {src->info.size.width, src->info.size.height, 1},
         };
+        scheduler.DiagMarkOn(cmdbuf, "BEFORE vk_runtime.cpp:550 copyImage");
         cmdbuf.copyImage(src->GetImage(), vk::ImageLayout::eTransferSrcOptimal, dst->GetImage(),
                          vk::ImageLayout::eTransferDstOptimal, region);
+        scheduler.DiagMarkOn(cmdbuf, "AFTER vk_runtime.cpp:550 copyImage");
     } else {
         const vk::ImageResolve region = {
             .srcSubresource{
@@ -567,8 +591,10 @@ void Runtime::ResolveImage(VideoCore::Image* src, VideoCore::Image* dst,
             .dstOffset = {0, 0, 0},
             .extent = {src->info.size.width, src->info.size.height, 1},
         };
+        scheduler.DiagMarkOn(cmdbuf, "BEFORE vk_runtime.cpp:570 resolveImage");
         cmdbuf.resolveImage(src->GetImage(), vk::ImageLayout::eTransferSrcOptimal, dst->GetImage(),
                             vk::ImageLayout::eTransferDstOptimal, region);
+        scheduler.DiagMarkOn(cmdbuf, "AFTER vk_runtime.cpp:570 resolveImage");
     }
 
     dst->flags |= VideoCore::ImageFlagBits::GpuModified;
@@ -594,8 +620,10 @@ void Runtime::ClearImage(VideoCore::Image* dst, const VideoCore::SubresourceRang
         .layerCount = range.extent.layers,
     };
     const auto cmdbuf = scheduler.CommandBuffer();
+    scheduler.DiagMarkOn(cmdbuf, "BEFORE vk_runtime.cpp:597 clearColorImage");
     cmdbuf.clearColorImage(dst->GetImage(), vk::ImageLayout::eTransferDstOptimal, clear_value.color,
                            vk_range);
+    scheduler.DiagMarkOn(cmdbuf, "AFTER vk_runtime.cpp:597 clearColorImage");
 
     dst->flags |= VideoCore::ImageFlagBits::GpuModified;
     dst->flags &= ~VideoCore::ImageFlagBits::Dirty;
@@ -738,7 +766,9 @@ void Runtime::FlushBarriers() {
 
     scheduler.EndRendering();
     const auto cmdbuf = scheduler.CommandBuffer();
+    scheduler.DiagMarkOn(cmdbuf, "BEFORE vk_runtime.cpp:741 pipelineBarrier2");
     cmdbuf.pipelineBarrier2(dep_info);
+    scheduler.DiagMarkOn(cmdbuf, "AFTER vk_runtime.cpp:741 pipelineBarrier2");
 
     memory_barrier.srcStageMask = vk::PipelineStageFlagBits2::eNone;
     memory_barrier.srcAccessMask = vk::AccessFlagBits2::eNone;

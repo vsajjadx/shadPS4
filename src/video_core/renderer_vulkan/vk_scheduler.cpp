@@ -32,6 +32,10 @@ bool Scheduler::DiagEnabled() const {
 }
 
 void Scheduler::DiagMark(const std::string& text) {
+    DiagMarkOn(CommandBuffer(), text);
+}
+
+void Scheduler::DiagMarkOn(vk::CommandBuffer cmdbuf, const std::string& text) {
     if (!instance.IsNvCheckpointsSupported()) {
         return;
     }
@@ -40,7 +44,7 @@ void Scheduler::DiagMark(const std::string& text) {
         std::scoped_lock lk{g_diag_mutex};
         g_diag_ring[id % DiagRingSize] = DiagEntry{id, text};
     }
-    CommandBuffer().setCheckpointNV(reinterpret_cast<const void*>(id));
+    cmdbuf.setCheckpointNV(reinterpret_cast<const void*>(id));
 }
 
 void Scheduler::DiagDumpOnDeviceLost() {
@@ -66,10 +70,16 @@ void Scheduler::DiagDumpOnDeviceLost() {
         LOG_ERROR(Render_Vulkan, "DIAG checkpoint stage={} id={} : {}", vk::to_string(d.stage), id,
                   lookup(id));
     }
+    // Print what was recorded right around every reported checkpoint (the failing command is the
+    // one recorded just after the last completed checkpoint).
     const u64 last = g_diag_next.load();
-    const u64 first = last > 40 ? last - 40 : 1;
-    for (u64 id = first; id < last; ++id) {
-        LOG_ERROR(Render_Vulkan, "DIAG history id={} : {}", id, lookup(id));
+    for (const auto& d : data) {
+        const u64 id = reinterpret_cast<u64>(d.pCheckpointMarker);
+        const u64 from = id > 6 ? id - 6 : 1;
+        for (u64 n = from; n < id + 40 && n < last; ++n) {
+            LOG_ERROR(Render_Vulkan, "DIAG around {} id={} : {}", id, n, lookup(n));
+        }
+        break;
     }
 }
 
@@ -143,7 +153,9 @@ void Scheduler::BeginRendering(const RenderState& new_state) {
         .pStencilAttachment = db.has_stencil ? &stencil_attachment : nullptr,
     };
 
+    DiagMark("BEFORE scheduler beginRendering");
     CommandBuffer().beginRendering(rendering_info);
+    DiagMark("AFTER scheduler beginRendering");
 }
 
 void Scheduler::EndRendering() {
@@ -151,7 +163,9 @@ void Scheduler::EndRendering() {
         return;
     }
     is_rendering = false;
+    DiagMark("BEFORE scheduler endRendering");
     CommandBuffer().endRendering();
+    DiagMark("AFTER scheduler endRendering");
 }
 
 vk::CommandBuffer Scheduler::UploadCommandBuffer() {

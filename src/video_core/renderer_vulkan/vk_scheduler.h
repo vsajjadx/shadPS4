@@ -360,6 +360,8 @@ public:
     bool DiagEnabled() const;
     /// Debug aid: tags the command stream with a checkpoint described by text.
     void DiagMark(const std::string& text);
+    /// Same as DiagMark, but records the checkpoint on an explicit command buffer.
+    void DiagMarkOn(vk::CommandBuffer cmdbuf, const std::string& text);
     /// Debug aid: logs the last executed checkpoints. Call when the device is lost.
     static void DiagDumpOnDeviceLost();
 

@@ -142,24 +142,30 @@ void FaultManager::ProcessFaultBuffer() {
     }};
     scheduler.EndRendering();
     const auto cmdbuf = scheduler.CommandBuffer();
+    scheduler.DiagMarkOn(cmdbuf, "BEFORE fault_manager.cpp:145 pipelineBarrier2");
     cmdbuf.pipelineBarrier2(vk::DependencyInfo{
         .dependencyFlags = vk::DependencyFlagBits::eByRegion,
         .bufferMemoryBarrierCount = 1,
         .pBufferMemoryBarriers = &pre_barrier,
     });
+    scheduler.DiagMarkOn(cmdbuf, "AFTER fault_manager.cpp:145 pipelineBarrier2");
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, *fault_process_pipeline);
     cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *fault_process_pipeline_layout, 0,
                                 writes);
     // 1 bit per page, 32 pages per workgroup
     const u32 num_threads = sparse_num_pages / 32;
     const u32 num_workgroups = Common::DivCeil(num_threads, 64u);
+    scheduler.DiagMarkOn(cmdbuf, "BEFORE fault_manager.cpp:156 dispatch");
     cmdbuf.dispatch(num_workgroups, 1, 1);
+    scheduler.DiagMarkOn(cmdbuf, "AFTER fault_manager.cpp:156 dispatch");
 
+    scheduler.DiagMarkOn(cmdbuf, "BEFORE fault_manager.cpp:158 pipelineBarrier2");
     cmdbuf.pipelineBarrier2(vk::DependencyInfo{
         .dependencyFlags = vk::DependencyFlagBits::eByRegion,
         .bufferMemoryBarrierCount = 1,
         .pBufferMemoryBarriers = &post_barrier,
     });
+    scheduler.DiagMarkOn(cmdbuf, "AFTER fault_manager.cpp:158 pipelineBarrier2");
 
     scheduler.DeferOperation([this, mapped, area = current_area] {
         fault_ranges.Clear();
