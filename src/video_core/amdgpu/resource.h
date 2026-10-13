@@ -216,7 +216,8 @@ struct Image {
             .b = CompSwizzle(dst_sel_z),
             .a = CompSwizzle(dst_sel_w),
         };
-        return RemapSwizzle(DataFormat(data_format), dst_sel);
+        return RemapSingleChannelImageSwizzle(DataFormat(data_format),
+                                              RemapSwizzle(DataFormat(data_format), dst_sel));
     }
 
     u32 Pitch() const {
