@@ -214,13 +214,13 @@ execute_process(
 # Set Version
 set(EMULATOR_VERSION_MAJOR "0")
 set(EMULATOR_VERSION_MINOR "18")
-set(EMULATOR_VERSION_PATCH "0")
+set(EMULATOR_VERSION_PATCH "1")
 
 set_source_files_properties(src/dist/shadps4.rc PROPERTIES COMPILE_DEFINITIONS "EMULATOR_VERSION_MAJOR=${EMULATOR_VERSION_MAJOR};EMULATOR_VERSION_MINOR=${EMULATOR_VERSION_MINOR};EMULATOR_VERSION_PATCH=${EMULATOR_VERSION_PATCH}")
 
 set(APP_VERSION_NUM "${EMULATOR_VERSION_MAJOR}.${EMULATOR_VERSION_MINOR}.${EMULATOR_VERSION_PATCH}")
-set(APP_VERSION "${APP_VERSION_NUM}")
-set(APP_IS_RELEASE true)
+set(APP_VERSION "${APP_VERSION_NUM} WIP")
+set(APP_IS_RELEASE false)
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/common/scm_rev.cpp.in" "${CMAKE_CURRENT_BINARY_DIR}/src/common/scm_rev.cpp" @ONLY)
 
 message("-- end git things, remote: ${GIT_REMOTE_NAME}, branch: ${GIT_BRANCH}, link: ${GIT_REMOTE_URL}")
@@ -260,6 +260,7 @@ if (ENABLE_SYSTEM_LIBRARIES)
     find_package(ZLIB 1.3 MODULE)
     find_package(Zydis 5.0.0 MODULE)
     find_package(pugixml 1.14 CONFIG)
+    find_package(absl 20250512.1 CONFIG)
     if (APPLE)
         find_package(date 3.0.1 CONFIG)
         find_package(epoll-shim 3.14 CONFIG)
@@ -328,6 +329,7 @@ set(KERNEL_LIB src/core/libraries/kernel/coredump/coredump.cpp
                src/core/libraries/kernel/threads/event_flag.cpp
                src/core/libraries/kernel/threads/exception.cpp
                src/core/libraries/kernel/threads/exception.h
+               src/core/libraries/kernel/threads/exception_codes.h
                src/core/libraries/kernel/threads/mutex.cpp
                src/core/libraries/kernel/threads/pthread_attr.cpp
                src/core/libraries/kernel/threads/pthread_clean.cpp
@@ -692,6 +694,9 @@ set(NP_LIBS src/core/libraries/np/np_error.h
             src/core/libraries/np/np_tus/np_tus.cpp
             src/core/libraries/np/np_tus/np_tus.h
             src/core/libraries/np/np_tus/np_tus_ctx.h
+            src/core/libraries/np/np_utility/np_utility.cpp
+            src/core/libraries/np/np_utility/np_utility.h
+            src/core/libraries/np/np_utility/np_utility_ctx.h
 )
 
 set(ZLIB_LIB src/core/libraries/zlib/zlib.cpp
@@ -1019,7 +1024,6 @@ set(SHADER_RECOMPILER src/shader_recompiler/profile.h
                       src/shader_recompiler/ir/passes/dead_code_elimination_pass.cpp
                       src/shader_recompiler/ir/passes/flatten_extended_userdata_pass.cpp
                       src/shader_recompiler/ir/passes/hull_shader_transform.cpp
-                      src/shader_recompiler/ir/passes/identity_removal_pass.cpp
                       src/shader_recompiler/ir/passes/inject_clip_distance_attributes.cpp
                       src/shader_recompiler/ir/passes/ir_passes.h
                       src/shader_recompiler/ir/passes/lower_buffer_format_to_raw.cpp
@@ -1032,6 +1036,8 @@ set(SHADER_RECOMPILER src/shader_recompiler/profile.h
                       src/shader_recompiler/ir/passes/shared_memory_barrier_pass.cpp
                       src/shader_recompiler/ir/passes/shared_memory_simplify_pass.cpp
                       src/shader_recompiler/ir/passes/shared_memory_to_storage_pass.cpp
+                      src/shader_recompiler/ir/passes/lower_phis_to_regs_pass.cpp
+                      src/shader_recompiler/ir/passes/ssa_repair_pass.cpp
                       src/shader_recompiler/ir/passes/ssa_rewrite_pass.cpp
                       src/shader_recompiler/ir/abstract_syntax_list.cpp
                       src/shader_recompiler/ir/abstract_syntax_list.h
@@ -1041,9 +1047,12 @@ set(SHADER_RECOMPILER src/shader_recompiler/profile.h
                       src/shader_recompiler/ir/basic_block.h
                       src/shader_recompiler/ir/breadth_first_search.h
                       src/shader_recompiler/ir/condition.h
+                      src/shader_recompiler/ir/dominance.cpp
+                      src/shader_recompiler/ir/dominance.h
                       src/shader_recompiler/ir/ir_emitter.cpp
                       src/shader_recompiler/ir/ir_emitter.h
                       src/shader_recompiler/ir/microinstruction.cpp
+                      src/shader_recompiler/ir/microinstruction.h
                       src/shader_recompiler/ir/opcodes.cpp
                       src/shader_recompiler/ir/opcodes.h
                       src/shader_recompiler/ir/opcodes.inc
@@ -1056,6 +1065,8 @@ set(SHADER_RECOMPILER src/shader_recompiler/profile.h
                       src/shader_recompiler/ir/program.cpp
                       src/shader_recompiler/ir/program.h
                       src/shader_recompiler/ir/reinterpret.h
+                      src/shader_recompiler/ir/srt_gvn_table.h
+                      src/shader_recompiler/ir/ssa.h
                       src/shader_recompiler/ir/reg.h
                       src/shader_recompiler/ir/type.cpp
                       src/shader_recompiler/ir/type.h
