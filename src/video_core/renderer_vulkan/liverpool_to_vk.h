@@ -143,6 +143,43 @@ constexpr vk::Format SurfaceFormat(AmdGpu::DataFormat data_format,
     return result;
 }
 
+/// Returns true when SurfaceFormat can map the pair without asserting. Descriptors recovered
+/// through a failed SRT walk can contain arbitrary combinations (e.g. BC3 with Uint).
+constexpr bool IsSurfaceFormatMappable(AmdGpu::DataFormat data_format,
+                                       AmdGpu::NumberFormat num_format) noexcept {
+    switch (data_format) {
+    case AmdGpu::DataFormat::FormatFmask8_S2_F1:
+    case AmdGpu::DataFormat::FormatFmask8_S4_F1:
+    case AmdGpu::DataFormat::FormatFmask8_S8_F1:
+    case AmdGpu::DataFormat::FormatFmask8_S2_F2:
+    case AmdGpu::DataFormat::FormatFmask8_S4_F2:
+    case AmdGpu::DataFormat::FormatFmask8_S4_F4:
+    case AmdGpu::DataFormat::FormatFmask16_S16_F1:
+    case AmdGpu::DataFormat::FormatFmask16_S8_F2:
+    case AmdGpu::DataFormat::FormatFmask32_S16_F2:
+    case AmdGpu::DataFormat::FormatFmask32_S8_F4:
+    case AmdGpu::DataFormat::FormatFmask32_S8_F8:
+    case AmdGpu::DataFormat::FormatFmask64_S16_F4:
+    case AmdGpu::DataFormat::FormatFmask64_S16_F8:
+    case AmdGpu::DataFormat::FormatInvalid:
+        return true;
+    default:
+        break;
+    }
+    if (surface_format_table[GetSurfaceFormatTableIndex(data_format, num_format)] !=
+        vk::Format::eUndefined) {
+        return true;
+    }
+    for (const auto fallback_fmt : {AmdGpu::NumberFormat::Uint, AmdGpu::NumberFormat::Sint,
+                                    AmdGpu::NumberFormat::Float}) {
+        if (surface_format_table[GetSurfaceFormatTableIndex(data_format, fallback_fmt)] !=
+            vk::Format::eUndefined) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static inline bool IsFormatDepthCompatible(vk::Format fmt) {
     switch (fmt) {
     // 32-bit float compatible
