@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <limits>
 #include <xxhash.h>
 
@@ -819,6 +820,24 @@ void TextureCache::RefreshImage(Image& image) {
     }
 
     if (image_copies.empty()) {
+        image.flags &= ~ImageFlagBits::Dirty;
+        return;
+    }
+
+    // Experiment: an upload of a ~520 MiB 243-layer array loses the device on NVIDIA (found with
+    // checkpoints). Skip implausibly large uploads instead of crashing.
+    constexpr u64 MaxUploadSize = 256ULL * 1024 * 1024;
+    if (image.info.guest_size > MaxUploadSize) {
+        static std::atomic<u32> logged{0};
+        if (logged.fetch_add(1) < 20) {
+            LOG_ERROR(Render_Vulkan,
+                      "Skipping upload of oversized image: addr={:#x}, {}x{}x{}, layers={}, "
+                      "mips={}, format={}, tile_mode={}, guest_size={}",
+                      image.info.guest_address, image.info.size.width, image.info.size.height,
+                      image.info.size.depth, num_layers, num_mips,
+                      vk::to_string(image.info.pixel_format),
+                      static_cast<u32>(image.info.tile_mode), image.info.guest_size);
+        }
         image.flags &= ~ImageFlagBits::Dirty;
         return;
     }
