@@ -181,7 +181,17 @@ jobs:
       run: cmake --fresh -G Ninja -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=ON -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
     - name: Build
-      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --parallel $env:NUMBER_OF_PROCESSORS
+      shell: bash
+      run: |
+        set -o pipefail
+        cmake --build build --config ${{env.BUILD_TYPE}} --parallel "$NUMBER_OF_PROCESSORS" 2>&1 | tee build.log
+
+    - name: Report build errors
+      if: failure()
+      shell: bash
+      run: |
+        errs=$(grep -E "error:|error C[0-9]+|FAILED:|undefined symbol|LNK[0-9]+" build.log | sort -u | head -40 | cut -c1-400 | sed -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+        echo "::error title=Build errors::${errs}"
 
     - name: Upload Windows SDL artifact
       uses: actions/upload-artifact@v7
