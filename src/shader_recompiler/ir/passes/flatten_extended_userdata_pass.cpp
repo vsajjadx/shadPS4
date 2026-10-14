@@ -624,11 +624,9 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
     }
 
     // Then visit any children used as pointers
-    for (const auto& [src_off_dw, uses] : *use_list) {
-        for (auto* use : uses) {
-            if (pass_info.GetUsesAsPointer(use)) {
-                VisitPointer(src_off_dw, use, pass_info, c);
-            }
+    for (const auto [src_off_dw, use] : *use_list) {
+        if (pass_info.GetUsesAsPointer(use)) {
+            VisitPointer(src_off_dw, use, pass_info, c);
         }
     }
 
