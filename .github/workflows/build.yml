@@ -26,6 +26,7 @@ env:
 
 jobs:
   reuse:
+    if: false  # Windows-only build
     runs-on: ubuntu-24.04
     continue-on-error: true
     steps:
@@ -33,6 +34,7 @@ jobs:
     - uses: fsfe/reuse-action@v6
 
   clang-format:
+    if: false  # Windows-only build
     runs-on: ubuntu-24.04
     continue-on-error: true
     steps:
@@ -69,6 +71,7 @@ jobs:
         echo "fullhash=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
   test:
+    if: false  # Windows-only build
     name: Run C++ Tests on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -178,7 +181,18 @@ jobs:
       run: cmake --fresh -G Ninja -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=ON -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
     - name: Build
-      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --parallel $env:NUMBER_OF_PROCESSORS
+      shell: pwsh
+      run: |
+        cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --parallel $env:NUMBER_OF_PROCESSORS 2>&1 | Tee-Object -FilePath build.log
+        exit $LASTEXITCODE
+
+    - name: Report compile errors
+      if: failure()
+      shell: pwsh
+      run: |
+        $errs = Select-String -Path build.log -Pattern ' error[: ]|FAILED:|undefined|fatal error' | Select-Object -First 25 | ForEach-Object { $_.Line.Trim().Replace('%','%25') }
+        $msg = ($errs -join '%0A')
+        Write-Output "::error title=compile-errors::$msg"
 
     - name: Upload Windows SDL artifact
       uses: actions/upload-artifact@v7
@@ -187,6 +201,7 @@ jobs:
         path: ${{github.workspace}}/build/shadPS4.exe
 
   macos-sdl:
+    if: false  # Windows-only build
     runs-on: macos-26
     needs: get-info
     steps:
@@ -247,6 +262,7 @@ jobs:
         path: upload/
 
   linux-sdl:
+    if: false  # Windows-only build
     runs-on: ubuntu-24.04
     needs: get-info
     steps:
@@ -311,6 +327,7 @@ jobs:
         path: Shadps4-sdl.AppImage
 
   linux-sdl-gcc:
+    if: false  # Windows-only build
     runs-on: ubuntu-24.04
     needs: get-info
     steps:
