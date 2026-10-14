@@ -35,9 +35,6 @@ public:
     [[nodiscard]] Dest BitCast(const Source& value);
 
     U1 ConditionRef(const U1& value);
-    void Reference(const Value& value);
-
-    void PhiMove(IR::Inst& phi, const Value& value);
 
     void Prologue();
     void Epilogue();
@@ -48,6 +45,7 @@ public:
     void Barrier();
     void WorkgroupMemoryBarrier();
     void DeviceMemoryBarrier();
+    void SubgroupBarrier();
 
     [[nodiscard]] U32 GetUserData(IR::ScalarReg reg);
 
@@ -78,6 +76,7 @@ public:
     [[nodiscard]] U1 Condition(IR::Condition cond);
 
     [[nodiscard]] F32 GetAttribute(Attribute attribute, u32 comp = 0, u32 index = 0);
+    [[nodiscard]] U1 GetAttributeU1(Attribute attribute, u32 comp = 0);
     [[nodiscard]] U32 GetAttributeU32(Attribute attribute, u32 comp = 0);
     void SetAttribute(Attribute attribute, const F32& value, u32 comp = 0);
 
@@ -269,7 +268,6 @@ public:
     [[nodiscard]] F32F64 FPMedTri(const F32F64& a, const F32F64& b, const F32F64& c);
 
     [[nodiscard]] U32U64 IAdd(const U32U64& a, const U32U64& b);
-    [[nodiscard]] Value IAddCarry(const U32& a, const U32& b);
     [[nodiscard]] U32U64 ISub(const U32U64& a, const U32U64& b);
     [[nodiscard]] U32 IMulHi(const U32& a, const U32& b, bool is_signed = false);
     [[nodiscard]] U32U64 IMul(const U32U64& a, const U32U64& b);
@@ -290,6 +288,7 @@ public:
     [[nodiscard]] U32 BitReverse(const U32& value);
     [[nodiscard]] U32 BitCount(const U32U64& value);
     [[nodiscard]] U32U64 BitwiseNot(const U32U64& value);
+    [[nodiscard]] U32 MaskedBitCount(const U32& value, const U32& addend, bool hi);
 
     [[nodiscard]] U32 FindSMsb(const U32& value);
     [[nodiscard]] U32 FindUMsb(const U32U64& value);
@@ -411,7 +410,10 @@ public:
     void ImageWrite(const Value& handle, const Value& coords, const U32& lod,
                     const U32& multisampling, const Value& color, TextureInstInfo info);
 
-    [[nodiscard]] F32 CubeFaceIndex(const Value& cube_coords);
+    [[nodiscard]] F32 CubeFaceIndex(const Value& x, const Value& y, const Value& z);
+    [[nodiscard]] F32 CubeFaceCoordS(const Value& x, const Value& y, const Value& z);
+    [[nodiscard]] F32 CubeFaceCoordT(const Value& x, const Value& y, const Value& z);
+    [[nodiscard]] F32 CubeFaceMajorAxis(const Value& x, const Value& y, const Value& z);
 
     void EmitVertex();
     void EmitPrimitive();

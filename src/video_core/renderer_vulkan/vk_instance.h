@@ -114,6 +114,14 @@ public:
         return vk12_features.shaderInt8;
     }
 
+    bool IsMaintenance5Supported() const {
+        return maintenance_5;
+    }
+
+    bool IsMaintenance6Supported() const {
+        return maintenance_6;
+    }
+
     /// Returns true if VK_KHR_maintenance8 is supported
     bool IsMaintenance8Supported() const {
         return maintenance_8;
@@ -326,7 +334,7 @@ public:
         return properties.limits.minStorageBufferOffsetAlignment;
     }
 
-    /// Returns the minimum alignemt required for accessing host-mapped device memory
+    /// Returns the minimum alignment required for accessing host-mapped device memory
     vk::DeviceSize NonCoherentAtomSize() const {
         return properties.limits.nonCoherentAtomSize;
     }
@@ -354,6 +362,11 @@ public:
     /// Returns the maximum number of push descriptors.
     u32 MaxPushDescriptors() const {
         return push_descriptor_props.maxPushDescriptors;
+    }
+
+    /// Returns the maximum size of a single VkDeviceMemory
+    vk::DeviceSize MaxMemoryAllocationSize() const {
+        return vk11_props.maxMemoryAllocationSize;
     }
 
     /// Returns the vulkan 1.2 physical device properties.
@@ -433,6 +446,11 @@ public:
     /// Returns whether VK_EXT_image_view_min_lod is supported.
     bool IsImageViewMinLodSupported() const {
         return image_view_min_lod;
+    }
+
+    /// Returns whether shaderStorageImageMultisample is supported.
+    bool IsMultisampleStorageImageSupported() const {
+        return features.shaderStorageImageMultisample;
     }
 
     /// Returns whether the device can report memory usage.
@@ -517,6 +535,8 @@ private:
     bool shader_atomic_float{};
     bool shader_atomic_float2{};
     bool workgroup_memory_explicit_layout{};
+    bool maintenance_5{};
+    bool maintenance_6{};
     bool maintenance_8{};
     bool attachment_feedback_loop{};
     bool image_2d_view_of_3d{};

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <thread>
+#include <fmt/format.h>
 
 #include "client.h"
 #include "common/elf_info.h"
@@ -216,8 +217,17 @@ void ShadNetClient::ConnectThread() {
     LOG_INFO(ShadNet, "Login packet sent for '{}'", m_npid);
 }
 
+namespace {
+thread_local bool t_reader_thread = false;
+}
+
+bool ShadNetClient::OnReaderThread() {
+    return t_reader_thread;
+}
+
 void ShadNetClient::ReaderThread() {
     Common::SetCurrentThreadName("ShadNet:Reader");
+    t_reader_thread = true;
     while (!m_terminate) {
         u8 hdr[SHAD_HEADER_SIZE];
         if (!RecvN(hdr, SHAD_HEADER_SIZE)) {
@@ -931,6 +941,7 @@ void ShadNetClient::HandleNotification(u16 cmd_raw, const std::vector<u8>& paylo
     case NotificationType::RoomMessage: {
         shadnet::NotifyRoomMessage pb;
         if (!pb.ParseFromString(blob)) {
+            LOG_WARNING(ShadNet, "RoomMessage parse error");
             break;
         }
         NotifyRoomMessage n;
@@ -946,6 +957,8 @@ void ShadNetClient::HandleNotification(u16 cmd_raw, const std::vector<u8>& paylo
         n.src_account_id = pb.src_account_id();
         n.src_platform = pb.src_platform();
         n.msg.assign(pb.msg().begin(), pb.msg().end());
+        LOG_DEBUG(ShadNet, "RoomMessage room_id={} src={} event={:#x} bytes={}", n.room_id,
+                  n.src_member_id, n.event, n.msg.size());
         if (onRoomMessage)
             onRoomMessage(n);
         break;
@@ -977,20 +990,31 @@ void ShadNetClient::HandleNotification(u16 cmd_raw, const std::vector<u8>& paylo
         if (off + 4 <= static_cast<int>(payload.size())) {
             const u32 count = GetLE32(payload.data() + off);
             off += 4;
+            bool extd_complete = count <= 256;
             for (u32 i = 0; i < count && i < 256; ++i) {
-                if (off + 4 > static_cast<int>(payload.size()))
+                if (off + 4 > static_cast<int>(payload.size())) {
+                    extd_complete = false;
                     break;
+                }
                 std::string key = ExtractBlob(payload, off);
                 off += 4 + static_cast<int>(key.size());
-                if (off + 4 > static_cast<int>(payload.size()))
+                if (off + 4 > static_cast<int>(payload.size())) {
+                    extd_complete = false;
                     break;
+                }
                 std::string val = ExtractBlob(payload, off);
                 off += 4 + static_cast<int>(val.size());
                 n.extdData.emplace_back(std::move(key), std::move(val));
             }
+            if (extd_complete && off + 16 <= static_cast<int>(payload.size())) {
+                n.fromAccountId = GetLE64(payload.data() + off);
+                n.toAccountId = GetLE64(payload.data() + off + 8);
+            }
         }
-        LOG_INFO(ShadNet, "WebApiPushEvent svc='{}' type='{}' from='{}' bytes={} extd={}",
-                 n.npServiceName, n.dataType, n.fromNpid, n.data.size(), n.extdData.size());
+        LOG_INFO(ShadNet,
+                 "WebApiPushEvent svc='{}' type='{}' from='{}'({}) to='{}'({}) bytes={} extd={}",
+                 n.npServiceName, n.dataType, n.fromNpid, n.fromAccountId, n.toNpid, n.toAccountId,
+                 n.data.size(), n.extdData.size());
         if (onWebApiPushEvent)
             onWebApiPushEvent(n);
         break;

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <chrono>
+#include <fstream>
 #include <system_error>
 
 #if defined(__linux__) || defined(__FreeBSD__) || defined(__APPLE__)
@@ -59,7 +60,10 @@ bool HostFile::Flush() {
     if (!m_file.IsOpen()) {
         return false;
     }
-    return m_file.Flush();
+    if (m_read_only) {
+        return true;
+    }
+    return m_file.Commit();
 }
 
 bool HostFile::IsOpen() const {

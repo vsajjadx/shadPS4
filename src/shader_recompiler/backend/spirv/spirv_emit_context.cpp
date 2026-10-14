@@ -8,7 +8,6 @@
 #include "shader_recompiler/ir/attribute.h"
 #include "shader_recompiler/ir/microinstruction.h"
 #include "shader_recompiler/runtime_info.h"
-#include "video_core/buffer_cache/buffer_cache.h"
 
 #include <boost/container/static_vector.hpp>
 #include <fmt/format.h>
@@ -153,7 +152,8 @@ void EmitContext::DefineArithmeticTypes() {
     u16_zero_value = Constant(U16, 0U);
     u32_one_value = ConstU32(1U);
     u32_zero_value = ConstU32(0U);
-    f32_zero_value = ConstF32(0.0f);
+    f32_one_value = ConstF32(1.f);
+    f32_zero_value = ConstF32(0.f);
     u64_one_value = Constant(U64, 1ULL);
     u64_zero_value = Constant(U64, 0ULL);
 
@@ -315,7 +315,9 @@ void EmitContext::DefineInputs() {
     if (info.uses_lane_id) {
         subgroup_local_invocation_id = DefineVariable(
             U32[1], spv::BuiltIn::SubgroupLocalInvocationId, spv::StorageClass::Input);
-        Decorate(subgroup_local_invocation_id, spv::Decoration::Flat);
+        if (sw_stage != SwStage::Vertex) {
+            Decorate(subgroup_local_invocation_id, spv::Decoration::Flat);
+        }
     }
     if (info.loads.GetAny(IR::Attribute::SubgroupLtMask)) {
         subgroup_lt_mask =
@@ -335,26 +337,29 @@ void EmitContext::DefineInputs() {
                 DefineVariable(U32[1], spv::BuiltIn::BaseInstance, spv::StorageClass::Input);
         }
 
-        const auto fetch_shader = Gcn::ParseFetchShader(info);
-        if (!fetch_shader) {
+        Shader::Gcn::FetchShaderData fetch_shader;
+        if (!Gcn::ParseFetchShader(info, fetch_shader)) {
             break;
         }
-        for (const auto& attrib : fetch_shader->attributes) {
-            ASSERT(attrib.semantic < IR::NumParams);
+        ASSERT(fetch_shader.attributes.size() <= IR::NumParams);
+        for (u32 semantic = 0; semantic < fetch_shader.attributes.size(); ++semantic) {
+            const auto& attrib = fetch_shader.attributes[semantic];
             const auto sharp = attrib.GetSharp(info);
             const Id type{GetAttributeType(*this, sharp.GetNumberFmt())[4]};
-            Id id{DefineInput(type, attrib.semantic)};
+            Id id{DefineInput(type, semantic)};
             if (attrib.GetStepRate() != Gcn::VertexAttribute::InstanceIdType::None) {
-                Name(id, fmt::format("vs_instance_attr{}", attrib.semantic));
+                Name(id, fmt::format("vs_instance_attr{}", semantic));
             } else {
-                Name(id, fmt::format("vs_in_attr{}", attrib.semantic));
+                Name(id, fmt::format("vs_in_attr{}", semantic));
             }
-            input_params[attrib.semantic] = GetAttributeInfo(sharp.GetNumberFmt(), id, 4, false);
+            input_params[semantic] = GetAttributeInfo(sharp.GetNumberFmt(), id, 4, false);
         }
         break;
     }
     case SwStage::Fragment: {
-        if (info.loads.GetAny(IR::Attribute::FragCoord)) {
+        if (info.loads.GetAny(IR::Attribute::FragCoord) ||
+            (info.loads.GetAny(IR::Attribute::BaryCoordPullModel) &&
+             !profile.supports_amd_shader_explicit_vertex_parameter)) {
             frag_coord = DefineVariable(F32[4], spv::BuiltIn::FragCoord, spv::StorageClass::Input);
         }
         if (info.loads.Get(IR::Attribute::IsFrontFace)) {
@@ -369,10 +374,27 @@ void EmitContext::DefineInputs() {
             sample_index = DefineVariable(U32[1], spv::BuiltIn::SampleId, spv::StorageClass::Input);
             Decorate(sample_index, spv::Decoration::Flat);
         }
+        if (info.loads.Get(IR::Attribute::IsHelperInvocation)) {
+            helper_invocation =
+                DefineVariable(U1[1], spv::BuiltIn::HelperInvocation, spv::StorageClass::Input);
+        }
+        if (info.loads.Get(IR::Attribute::SampleMask)) {
+            sample_mask_in = DefineVariable(TypeArray(U32[1], u32_one_value),
+                                            spv::BuiltIn::SampleMask, spv::StorageClass::Input);
+        }
         if (info.loads.GetAny(IR::Attribute::BaryCoordSmooth)) {
             if (profile.supports_amd_shader_explicit_vertex_parameter) {
                 bary_coord_smooth = DefineVariable(F32[2], spv::BuiltIn::BaryCoordSmoothAMD,
                                                    spv::StorageClass::Input);
+            } else if (profile.supports_fragment_shader_barycentric && !ValidId(bary_coord)) {
+                bary_coord =
+                    DefineVariable(F32[3], spv::BuiltIn::BaryCoordKHR, spv::StorageClass::Input);
+            }
+        }
+        if (info.loads.GetAny(IR::Attribute::BaryCoordPullModel)) {
+            if (profile.supports_amd_shader_explicit_vertex_parameter) {
+                bary_coord_pull_model = DefineVariable(F32[3], spv::BuiltIn::BaryCoordPullModelAMD,
+                                                       spv::StorageClass::Input);
             } else if (profile.supports_fragment_shader_barycentric && !ValidId(bary_coord)) {
                 bary_coord =
                     DefineVariable(F32[3], spv::BuiltIn::BaryCoordKHR, spv::StorageClass::Input);
@@ -391,9 +413,11 @@ void EmitContext::DefineInputs() {
             if (profile.supports_amd_shader_explicit_vertex_parameter) {
                 bary_coord_smooth_sample = DefineVariable(
                     F32[2], spv::BuiltIn::BaryCoordSmoothSampleAMD, spv::StorageClass::Input);
-            } else if (profile.supports_fragment_shader_barycentric && !ValidId(bary_coord)) {
-                bary_coord =
-                    DefineVariable(F32[3], spv::BuiltIn::BaryCoordKHR, spv::StorageClass::Input);
+            } else if (profile.supports_fragment_shader_barycentric) {
+                if (!ValidId(bary_coord)) {
+                    bary_coord = DefineVariable(F32[3], spv::BuiltIn::BaryCoordKHR,
+                                                spv::StorageClass::Input);
+                }
                 // we would need sample_index to interpolate the bary_coord later
                 if (!ValidId(sample_index)) {
                     sample_index =
@@ -746,18 +770,13 @@ void EmitContext::DefineOutputs() {
 
 void EmitContext::DefinePushDataBlock() {
     // Create push constants block for instance steps rates
-    const Id struct_type{Name(TypeStruct(F32[1], F32[1], F32[1], F32[1], U32[4], U32[4], U32[4],
-                                         U32[4], U32[4], U32[4], U32[2]),
-                              "AuxData")};
+    const Id struct_type{
+        Name(TypeStruct(F32[1], F32[1], F32[1], F32[1], U32[4], U32[4], U32[2]), "AuxData")};
     Decorate(struct_type, spv::Decoration::Block);
     MemberName(struct_type, PushData::XOffsetIndex, "xoffset");
     MemberName(struct_type, PushData::YOffsetIndex, "yoffset");
     MemberName(struct_type, PushData::XScaleIndex, "xscale");
     MemberName(struct_type, PushData::YScaleIndex, "yscale");
-    MemberName(struct_type, PushData::UdRegsIndex + 0, "ud_regs0");
-    MemberName(struct_type, PushData::UdRegsIndex + 1, "ud_regs1");
-    MemberName(struct_type, PushData::UdRegsIndex + 2, "ud_regs2");
-    MemberName(struct_type, PushData::UdRegsIndex + 3, "ud_regs3");
     MemberName(struct_type, PushData::BufOffsetIndex + 0, "buf_offsets0");
     MemberName(struct_type, PushData::BufOffsetIndex + 1, "buf_offsets1");
     MemberName(struct_type, PushData::BufOffsetIndex + 2, "buf_offsets2");
@@ -765,13 +784,9 @@ void EmitContext::DefinePushDataBlock() {
     MemberDecorate(struct_type, PushData::YOffsetIndex, spv::Decoration::Offset, 4U);
     MemberDecorate(struct_type, PushData::XScaleIndex, spv::Decoration::Offset, 8U);
     MemberDecorate(struct_type, PushData::YScaleIndex, spv::Decoration::Offset, 12U);
-    MemberDecorate(struct_type, PushData::UdRegsIndex + 0, spv::Decoration::Offset, 16U);
-    MemberDecorate(struct_type, PushData::UdRegsIndex + 1, spv::Decoration::Offset, 32U);
-    MemberDecorate(struct_type, PushData::UdRegsIndex + 2, spv::Decoration::Offset, 48U);
-    MemberDecorate(struct_type, PushData::UdRegsIndex + 3, spv::Decoration::Offset, 64U);
-    MemberDecorate(struct_type, PushData::BufOffsetIndex + 0, spv::Decoration::Offset, 80U);
-    MemberDecorate(struct_type, PushData::BufOffsetIndex + 1, spv::Decoration::Offset, 96U);
-    MemberDecorate(struct_type, PushData::BufOffsetIndex + 2, spv::Decoration::Offset, 112U);
+    MemberDecorate(struct_type, PushData::BufOffsetIndex + 0, spv::Decoration::Offset, 16U);
+    MemberDecorate(struct_type, PushData::BufOffsetIndex + 1, spv::Decoration::Offset, 32U);
+    MemberDecorate(struct_type, PushData::BufOffsetIndex + 2, spv::Decoration::Offset, 48U);
     push_data_block = DefineVar(struct_type, spv::StorageClass::PushConstant);
     Name(push_data_block, "push_data");
     interfaces.push_back(push_data_block);
@@ -959,12 +974,11 @@ Id ImageType(EmitContext& ctx, const ImageResource& desc, Id sampled_type) {
     const u32 sampled = desc.is_written ? 2 : 1;
     switch (type) {
     case AmdGpu::ImageType::Color1D:
-        return ctx.TypeImage(sampled_type, spv::Dim::Dim1D, false, false, false, sampled, format);
-    case AmdGpu::ImageType::Color1DArray:
-        return ctx.TypeImage(sampled_type, spv::Dim::Dim1D, false, true, false, sampled, format);
     case AmdGpu::ImageType::Color2D:
         return ctx.TypeImage(sampled_type, spv::Dim::Dim2D, false, false, false, sampled, format);
+    case AmdGpu::ImageType::Color1DArray:
     case AmdGpu::ImageType::Color2DArray:
+    case AmdGpu::ImageType::Cube:
         return ctx.TypeImage(sampled_type, spv::Dim::Dim2D, false, true, false, sampled, format);
     case AmdGpu::ImageType::Color2DMsaa:
         return ctx.TypeImage(sampled_type, spv::Dim::Dim2D, false, false, true, sampled, format);
@@ -1175,9 +1189,9 @@ Id EmitContext::DefineUfloatM5ToFloat32(u32 mantissa_bits, const std::string_vie
 }
 
 Id EmitContext::DefineGetBdaPointer() {
-    const auto caching_pagebits{
-        Constant(U64, static_cast<u64>(VideoCore::BufferCache::CACHING_PAGEBITS))};
-    const auto caching_pagemask{Constant(U64, VideoCore::BufferCache::CACHING_PAGESIZE - 1)};
+    const auto caching_pagebits{Constant(U64, static_cast<u64>(profile.sparse_page_shift))};
+    const auto caching_pagemask{
+        Constant(U64, static_cast<u64>((1u << profile.sparse_page_shift) - 1))};
 
     const auto func_type{TypeFunction(U64, U64)};
     const auto func{OpFunction(U64, spv::FunctionControlMask::MaskNone, func_type)};

@@ -26,13 +26,14 @@
 #include "core/libraries/ime/ime_dialog.h"
 #include "core/libraries/invitation_dialog/invitation_dialog.h"
 #include "core/libraries/kernel/kernel.h"
+#include "core/libraries/keyboard/keyboard.h"
 #include "core/libraries/libc_internal/libc_internal.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/mouse/mouse.h"
 #include "core/libraries/move/move.h"
+#include "core/libraries/net/net.h"
 #include "core/libraries/network/http.h"
 #include "core/libraries/network/http2.h"
-#include "core/libraries/network/net.h"
 #include "core/libraries/network/netctl.h"
 #include "core/libraries/network/ssl.h"
 #include "core/libraries/network/ssl2.h"
@@ -83,6 +84,18 @@
 #include "emulator.h"
 
 #include <array>
+
+void LinkSymbolImpl(Core::Loader::SymbolsResolver* sym, char const* nid, char const* lib,
+                    u16 libversion, char const* mod, u64 symbol,
+                    Core::Loader::SymbolType sym_type) {
+    Core::Loader::SymbolResolver sr{};
+    sr.name = nid;
+    sr.library = lib;
+    sr.library_version = libversion;
+    sr.module = mod;
+    sr.type = sym_type;
+    sym->AddSymbol(sr, symbol);
+}
 
 namespace Libraries {
 
@@ -157,6 +170,7 @@ void InitHLELibs(Core::Loader::SymbolsResolver* sym) {
             {"libSceRazorCpu.sprx", Libraries::RazorCpu::RegisterLib},
             {"libSceMove.sprx", Libraries::Move::RegisterLib},
             {"libSceMouse.sprx", Libraries::Mouse::RegisterLib},
+            {"libSceKeyboard.sprx", Libraries::Keyboard::RegisterLib},
             {"libSceWebBrowserDialog.sprx", Libraries::WebBrowserDialog::RegisterLib},
             {"libSceZlib.sprx", Libraries::Zlib::RegisterLib},
             {"libSceHmd.sprx", Libraries::Hmd::RegisterLib},

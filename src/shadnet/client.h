@@ -97,6 +97,7 @@ enum class CommandType : u16 {
     GetUserInfoList = 113,
     GetRoomMemberDataExternalList = 114,
     SendRoomMessage = 115,
+    SetRoomMemberDataInternal = 116,
     // Title User Storage (TUS)
     TusSetData = 201,
     TusGetData = 202,
@@ -222,6 +223,9 @@ struct NotifyWebApiPushEvent {
     // Optional extended-data (key,value) pairs (e.g. friendlist trigger/additionalTrigger,
     // presence gameStatus/gameData). Empty when the server sends none / is older.
     std::vector<std::pair<std::string, std::string>> extdData;
+    // Optional trailing account ids (server >= push-account-ids). 0 = unknown / not sent.
+    u64 fromAccountId = 0;
+    u64 toAccountId = 0;
 };
 
 struct MatchingBinAttr {
@@ -301,6 +305,8 @@ public:
     u32 GetAddrLocal() const;
     u32 GetAddrServer() const;
     bool IsMatching2Enabled() const;
+    // True on the thread that reads replies. Code running there must not wait for a reply.
+    static bool OnReaderThread();
     bool IsTrophiesEnabled() const;
     u64 ReportClientVersion();
     static std::string BuildVersionString();

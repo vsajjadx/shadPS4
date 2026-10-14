@@ -250,11 +250,14 @@ void Translator::S_SUBB_U32(const GcnInst& inst) {
     const IR::U32 src0{GetSrc(inst.src[0])};
     const IR::U32 src1{GetSrc(inst.src[1])};
     const IR::U32 borrow{ir.Select(ir.GetScc(), ir.Imm32(1U), ir.Imm32(0U))};
-    const IR::U32 result{ir.ISub(ir.ISub(src0, src1), borrow)};
+    const IR::U32 difference{ir.ISub(src0, src1)};
+    const IR::U32 result{ir.ISub(difference, borrow)};
     SetDst(inst.dst[0], result);
 
-    const IR::U32 sum_with_borrow{ir.IAdd(src1, borrow)};
-    ir.SetScc(ir.ILessThan(src0, sum_with_borrow, false));
+    // SCC = (S1.u + SCC > S0.u) as a 33-bit compare.
+    const IR::U1 underflow{ir.IGreaterThan(src1, src0, false)};
+    const IR::U1 borrow_underflow{ir.IGreaterThan(borrow, difference, false)};
+    ir.SetScc(ir.LogicalOr(underflow, borrow_underflow));
 }
 
 void Translator::S_ADD_I32(const GcnInst& inst) {
@@ -289,7 +292,12 @@ void Translator::S_ADDC_U32(const GcnInst& inst) {
     const IR::U32 src0{GetSrc(inst.src[0])};
     const IR::U32 src1{GetSrc(inst.src[1])};
     const IR::U32 carry{ir.Select(ir.GetScc(), ir.Imm32(1U), ir.Imm32(0U))};
-    SetDst(inst.dst[0], ir.IAdd(ir.IAdd(src0, src1), carry));
+    const IR::U32 result1{ir.IAdd(src0, src1)};
+    const IR::U32 result2{ir.IAdd(result1, carry)};
+    const IR::U1 carry_out1{ir.ILessThan(result1, src0, false)};
+    const IR::U1 carry_out2{ir.ILessThan(result2, result1, false)};
+    SetDst(inst.dst[0], result2);
+    ir.SetScc(ir.LogicalOr(carry_out1, carry_out2));
 }
 
 void Translator::S_MIN_U32(bool is_signed, const GcnInst& inst) {
@@ -497,7 +505,16 @@ void Translator::S_CMPK(ConditionOp cond, bool is_signed, const GcnInst& inst) {
 
 void Translator::S_ADDK_I32(const GcnInst& inst) {
     const s32 simm16 = inst.control.sopk.simm;
-    SetDst(inst.dst[0], ir.IAdd(GetSrc(inst.dst[0]), ir.Imm32(simm16)));
+    const IR::U32 src0{GetSrc(inst.dst[0])};
+    const IR::U32 src1{ir.Imm32(simm16)};
+    const IR::U32 result{ir.IAdd(src0, src1)};
+    SetDst(inst.dst[0], result);
+
+    const IR::U32 shift{ir.Imm32(31)};
+    const IR::U32 sign0{ir.ShiftRightLogical(src0, shift)};
+    const IR::U32 sign1{ir.ShiftRightLogical(src1, shift)};
+    const IR::U32 signr{ir.ShiftRightLogical(result, shift)};
+    ir.SetScc(ir.LogicalAnd(ir.IEqual(sign0, sign1), ir.INotEqual(sign0, signr)));
 }
 
 void Translator::S_MULK_I32(const GcnInst& inst) {
@@ -638,23 +655,22 @@ void Translator::S_CMP(ConditionOp cond, bool is_signed, const GcnInst& inst) {
 
 void Translator::S_BITCMP(bool compare_mode, u32 bits, const GcnInst& inst) {
     const IR::U1 result = [&] {
-        const IR::U32 src0 = GetSrc(inst.src[0]);
         const IR::U32 src1 = GetSrc(inst.src[1]);
-
-        IR::U32 mask;
-        switch (bits) {
-        case 32:
-            mask = ir.Imm32(0x1f);
-            break;
-        case 64:
-            mask = ir.Imm32(0x3f);
-            break;
-        default:
-            UNREACHABLE();
-        }
-
+        const IR::U32 mask = ir.Imm32(bits == 64 ? 0x3f : 0x1f);
         const IR::U32 bitpos{ir.BitwiseAnd(src1, mask)};
-        const IR::U32 bittest{ir.BitwiseAnd(ir.ShiftRightLogical(src0, bitpos), ir.Imm32(1))};
+        const IR::U32 bittest = [&]() -> IR::U32 {
+            if (bits == 64) {
+                const IR::U64 src0 = GetSrc64(inst.src[0]);
+                const IR::U64 bit{
+                    ir.BitwiseAnd(ir.ShiftRightLogical(src0, bitpos), ir.Imm64(u64(1)))};
+                return ir.UConvert(32, bit);
+            }
+            if (bits != 32) {
+                UNREACHABLE();
+            }
+            const IR::U32 src0 = GetSrc(inst.src[0]);
+            return ir.BitwiseAnd(ir.ShiftRightLogical(src0, bitpos), ir.Imm32(1));
+        }();
 
         if (!compare_mode) {
             return ir.IEqual(bittest, ir.Imm32(0));
