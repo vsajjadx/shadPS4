@@ -877,8 +877,11 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
         // The Order: 1886: CS shaders 0xa7b66f58/0xefaaab2b have garbage T# data
         // (mode always 1, textures never actually sampled). Bind empty descriptors
         // instead of letting texture cache parse invalid sharp data and crash the driver.
+        // CS 0x804aeead walks its SRT through Phi/ReadLane offsets the flatten pass can't
+        // follow, so its T#s are garbage too; the pre-#4782 tracker never bound them either.
         if (Common::HackFeatures::isTheOrder1886 &&
-            (stage.pgm_hash == 0xa7b66f58 || stage.pgm_hash == 0xefaaab2b)) {
+            (stage.pgm_hash == 0xa7b66f58 || stage.pgm_hash == 0xefaaab2b ||
+             stage.pgm_hash == 0x804aeead)) {
             image_bindings[num_images++].image_id = {};
             image_descriptor_array_sizes.push_back(1);
             continue;
@@ -899,9 +902,12 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
 
         if (!memory->IsValidGpuMapping(tsharp.Address(), 0) ||
             !magic_enum::enum_contains(data_fmt) || !magic_enum::enum_contains(num_fmt) ||
-            !magic_enum::enum_contains(tsharp.GetTileMode())) {
-            // An unknown tile mode (e.g. 29 from an SRT walker failure) would hit the
-            // UNREACHABLE in GetArrayMode once the texture cache parses the sharp.
+            !magic_enum::enum_contains(tsharp.GetTileMode()) ||
+            LiverpoolToVK::surface_format_table[LiverpoolToVK::GetSurfaceFormatTableIndex(
+                data_fmt, num_fmt)] == vk::Format::eUndefined) {
+            // An unknown tile mode (e.g. 29 from an SRT walker failure) or a format pair with
+            // no Vulkan equivalent would hit GetArrayMode's UNREACHABLE or SurfaceFormat's
+            // assert once the texture cache parses the sharp.
             LOG_WARNING(Render_Vulkan,
                         "Rejecting invalid T# address={:#x}, pitch={}, width={}, "
                         "data_format={}, num_format={}, tile_mode={}",
