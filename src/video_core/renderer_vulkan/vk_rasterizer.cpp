@@ -867,7 +867,7 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
     }
 }
 
-bool Rasterizer::IsImageInfoUsable(const VideoCore::ImageInfo& info) const {
+bool Rasterizer::IsImageInfoUsable(const VideoCore::ImageInfo& info) {
     const auto& limits = instance.GetLimits();
     const u32 max_dim =
         info.props.is_volume ? limits.maxImageDimension3D : limits.maxImageDimension2D;
@@ -886,8 +886,24 @@ bool Rasterizer::IsImageInfoUsable(const VideoCore::ImageInfo& info) const {
     // The texture cache hashes and uploads the whole guest range, so a T# reaching into
     // unmapped memory (e.g. garbage from an SRT walker failure) faults in XXH3 and crashes.
     constexpr u32 MaxGuestSize = 1_GB;
-    return info.guest_size <= MaxGuestSize &&
-           memory->IsMappedRange(info.guest_address, info.guest_size);
+    if (info.guest_size > MaxGuestSize) {
+        return false;
+    }
+    const u64 generation = gpu_mappings_generation.load(std::memory_order_acquire);
+    if (generation != checked_ranges_generation) {
+        checked_mapped_ranges.clear();
+        checked_ranges_generation = generation;
+    }
+    if (const auto it = checked_mapped_ranges.find(info.guest_address);
+        it != checked_mapped_ranges.end() && it->second >= info.guest_size) {
+        return true;
+    }
+    if (!memory->IsMappedRange(info.guest_address, info.guest_size)) {
+        return false;
+    }
+    u64& checked_size = checked_mapped_ranges[info.guest_address];
+    checked_size = std::max<u64>(checked_size, info.guest_size);
+    return true;
 }
 
 void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindings& binding) {
@@ -902,9 +918,13 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
         // instead of letting texture cache parse invalid sharp data and crash the driver.
         // CS 0x804aeead walks its SRT through Phi/ReadLane offsets the flatten pass can't
         // follow, so its T#s are garbage too; the pre-#4782 tracker never bound them either.
-        if (Common::HackFeatures::isTheOrder1886 &&
-            (stage.pgm_hash == 0xa7b66f58 || stage.pgm_hash == 0xefaaab2b ||
-             stage.pgm_hash == 0x804aeead)) {
+        // Images the reused shader permutation wasn't compiled for (see GetProgram) are bound as
+        // null too, a view of a different type would be invalid.
+        const u32 desc_idx = static_cast<u32>(&image_desc - stage.images.data());
+        if ((stage.null_image_mask >> desc_idx) & 1 ||
+            (Common::HackFeatures::isTheOrder1886 &&
+             (stage.pgm_hash == 0xa7b66f58 || stage.pgm_hash == 0xefaaab2b ||
+              stage.pgm_hash == 0x804aeead))) {
             image_bindings[num_images++].image_id = {};
             image_descriptor_array_sizes.push_back(1);
             continue;
@@ -923,7 +943,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
             continue;
         }
 
-        if (!Shader::StageSpecialization::IsPlausibleImageSharp(tsharp)) {
+        if (!Shader::IsPlausibleImageSharp(tsharp)) {
             // An address beyond 40 bits, an unknown tile mode (e.g. 29 from an SRT walker
             // failure), LinearGeneral or a format pair with no Vulkan equivalent would hit
             // GetArrayMode's UNREACHABLE, the UpdateSize assert or SurfaceFormat's assert once
@@ -1371,6 +1391,7 @@ void Rasterizer::MapMemory(VAddr addr, u64 size) {
         std::scoped_lock lock{mapped_ranges_mutex};
         mapped_ranges += decltype(mapped_ranges)::interval_type::right_open(addr, addr + size);
     }
+    gpu_mappings_generation.fetch_add(1, std::memory_order_release);
 }
 
 void Rasterizer::RegisterMemory(VAddr addr, u64 size) {
@@ -1384,6 +1405,7 @@ void Rasterizer::UnmapMemory(VAddr addr, u64 size) {
         std::scoped_lock lock{mapped_ranges_mutex};
         mapped_ranges -= decltype(mapped_ranges)::interval_type::right_open(addr, addr + size);
     }
+    gpu_mappings_generation.fetch_add(1, std::memory_order_release);
 }
 
 void Rasterizer::UpdateDynamicState(const GraphicsPipeline* pipeline, const bool is_indexed) const {

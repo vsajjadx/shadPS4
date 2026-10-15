@@ -3,6 +3,7 @@
 
 #include "common/assert.h"
 #include "common/number_utils.h"
+#include "shader_recompiler/resource.h"
 #include "video_core/amdgpu/pixel_format.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 
@@ -1186,3 +1187,24 @@ vk::SampleCountFlagBits NumSamples(u32 num_samples, vk::SampleCountFlags support
 }
 
 } // namespace Vulkan::LiverpoolToVK
+
+namespace Shader {
+
+bool IsPlausibleImageSharp(const AmdGpu::Image& sharp) {
+    const auto data_fmt = sharp.GetDataFmt();
+    const auto num_fmt = sharp.GetNumberFmt();
+    const auto tile_mode = sharp.GetTileMode();
+    constexpr VAddr MaxGpuAddress = 0x10000000000ULL;
+    const VAddr address = sharp.Address();
+    if (address == 0 || address >= MaxGpuAddress || data_fmt == AmdGpu::DataFormat::FormatInvalid ||
+        AmdGpu::IsFmask(data_fmt) || !magic_enum::enum_contains(data_fmt) ||
+        !magic_enum::enum_contains(num_fmt) || !magic_enum::enum_contains(tile_mode) ||
+        tile_mode == AmdGpu::TileMode::DisplayLinearGeneral) {
+        return false;
+    }
+    return Vulkan::LiverpoolToVK::surface_format_table
+               [Vulkan::LiverpoolToVK::GetSurfaceFormatTableIndex(data_fmt, num_fmt)] !=
+           vk::Format::eUndefined;
+}
+
+} // namespace Shader

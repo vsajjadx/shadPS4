@@ -3,6 +3,9 @@
 
 #pragma once
 
+#include <atomic>
+#include <unordered_map>
+
 #include "common/recursive_lock.h"
 #include "common/shared_first_mutex.h"
 #include "video_core/buffer_cache/buffer_cache.h"
@@ -121,7 +124,7 @@ private:
     void BindBuffers(const Shader::Info& stage, Shader::Backend::Bindings& binding,
                      Shader::PushData& push_data);
     void BindTextures(const Shader::Info& stage, Shader::Backend::Bindings& binding);
-    bool IsImageInfoUsable(const VideoCore::ImageInfo& info) const;
+    bool IsImageInfoUsable(const VideoCore::ImageInfo& info);
     bool BindResources(const Pipeline* pipeline);
 
     void BindVertexBuffers(const GraphicsPipeline* pipeline);
@@ -146,6 +149,11 @@ private:
     Core::MemoryManager* memory;
     boost::icl::interval_set<VAddr> mapped_ranges;
     Common::SharedFirstMutex mapped_ranges_mutex;
+    // Guest ranges already found mapped by IsImageInfoUsable, dropped whenever the GPU mappings
+    // change. Saves a memory manager lock per bound texture.
+    std::atomic<u64> gpu_mappings_generation{};
+    u64 checked_ranges_generation{};
+    std::unordered_map<VAddr, u64> checked_mapped_ranges;
     PipelineCache pipeline_cache;
     const bool host_markers_enabled;
     const bool guest_markers_enabled;

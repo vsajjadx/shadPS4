@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "common/hack_features.h"
 #include "common/types.h"
 #include "shader_recompiler/ir/type.h"
 #include "video_core/amdgpu/resource.h"
@@ -18,6 +19,11 @@ static constexpr u32 NUM_SAMPLERS = 16;
 static constexpr u32 NUM_FMASKS = 8;
 
 using SharpLocation = u16;
+
+/// False for T#s that can't describe a real texture: null or beyond-40-bit address, unknown or
+/// FMask formats, unknown or LinearGeneral tile modes, or format pairs with no Vulkan equivalent.
+/// They come from reading a T# slot the shader never samples this draw, or an SRT walker failure.
+bool IsPlausibleImageSharp(const AmdGpu::Image& sharp);
 
 constexpr SharpLocation UNKNOWN_LOCATION = std::numeric_limits<u16>::max();
 
@@ -146,6 +152,12 @@ struct ImageResource {
             image.depth = (image.depth + 1) * 6 - 1;
         }
         if (!image.Valid()) {
+            image = AmdGpu::Image::Null(is_depth);
+        } else if (Common::HackFeatures::isTheOrder1886 && !AmdGpu::IsFmask(image.GetDataFmt()) &&
+                   !IsPlausibleImageSharp(image)) {
+            // The Order: 1886 uber-shaders keep stale data in T# slots they don't sample. Treat
+            // those as null so compilation, specialization and binding all agree on a stable
+            // type instead of compiling a new permutation for every combination of garbage.
             image = AmdGpu::Image::Null(is_depth);
         } else if (is_depth) {
             const auto data_fmt = image.GetDataFmt();

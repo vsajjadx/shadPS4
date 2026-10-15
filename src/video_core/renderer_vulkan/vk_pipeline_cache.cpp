@@ -3,6 +3,7 @@
 
 #include <ranges>
 
+#include "common/hack_features.h"
 #include "common/hash.h"
 #include "common/io_file.h"
 #include "common/path_util.h"
@@ -679,6 +680,7 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
     auto& info = program->info;
     info.pgm_base = params.Base(); // Needs to be actualized for inline cbuffer address fixup
     info.user_data = params.user_data;
+    info.null_image_mask = 0;
     info.RefreshFlatBuf();
     auto spec = Shader::StageSpecialization(info, runtime_info, profile, binding);
 
@@ -687,7 +689,27 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
 
     vk::ShaderModule module{};
 
-    const auto it = std::ranges::find(program->modules, spec, &Program::Module::spec);
+    auto it = std::ranges::find(program->modules, spec, &Program::Module::spec);
+    if (it == program->modules.end() && Common::HackFeatures::isTheOrder1886 &&
+        program->modules.size() >= Program::MaxPermutations / 2) {
+        // The Order: 1886 uber-shaders (e.g. VS 0xad441fb1/0x8c8a4817/0xa8792bbb) sample up to
+        // 32 layer textures whose types change from draw to draw. Compiling every combination
+        // stalls gameplay for each new draw, so past a few permutations reuse the closest one
+        // and bind the images it was not compiled for as null.
+        u64 best_mask{};
+        u32 best_differences = std::numeric_limits<u32>::max();
+        for (auto m = program->modules.begin(); m != program->modules.end(); ++m) {
+            u64 mask{};
+            u32 differences{};
+            if (m->spec.DiffersOnlyInSampledImages(spec, mask, differences) &&
+                differences < best_differences) {
+                it = m;
+                best_mask = mask;
+                best_differences = differences;
+            }
+        }
+        info.null_image_mask = best_mask;
+    }
     if (it == program->modules.end()) {
         if (perm_idx >= 8) {
             // Many permutations of one shader usually means it specializes on garbage sharps.

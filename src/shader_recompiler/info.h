@@ -103,6 +103,9 @@ struct Info : InfoPersistent {
     std::span<const u32> user_data;
     std::vector<u32> flattened_ud_buf;
     PersistentSrtInfo srt_info;
+    /// Images to bind as null for the current draw, because it reuses a permutation compiled for
+    /// a different image type in these slots. Set by the pipeline cache on every lookup.
+    u64 null_image_mask{};
 
     AttributeFlags loads{};
     AttributeFlags stores{};

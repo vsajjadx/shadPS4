@@ -136,26 +136,21 @@ struct StageSpecialization {
                          }
                      });
         const bool ignore_images = HasGarbageImageSharps(*info);
-        ForEachSharp(binding, images, info->images,
-                     [&](auto& spec, const auto& desc, AmdGpu::Image sharp) {
-                         if (ignore_images || !IsPlausibleImageSharp(sharp)) {
-                             // Garbage T#s (e.g. from an SRT walker failure) change on every
-                             // dispatch; specializing on them compiles a new permutation each
-                             // time. They are bound as null images anyway.
-                             return false;
-                         }
-                         spec.type = sharp.GetViewType(desc.is_array);
-                         spec.is_integer = AmdGpu::IsInteger(sharp.GetNumberFmt());
-                         spec.is_storage = desc.is_written;
-                         if (spec.is_storage) {
-                             spec.dst_select = sharp.DstSelect();
-                         } else {
-                             spec.is_srgb = sharp.GetNumberFmt() == AmdGpu::NumberFormat::Srgb;
-                         }
-                         spec.num_conversion = sharp.GetNumberConversion();
-                         spec.num_bindings = desc.NumBindings(*info);
-                         return true;
-                     });
+        for (const auto& desc : info->images) {
+            auto& spec = images.emplace_back();
+            const auto sharp = desc.GetSharp(*info);
+            // Garbage T#s (e.g. from an SRT walker failure) change on every dispatch;
+            // specializing on them compiles a new permutation each time. They are bound as
+            // null images anyway.
+            const bool is_bound = !ignore_images && sharp && IsPlausibleImageSharp(sharp);
+            if (is_bound || (Common::HackFeatures::isTheOrder1886 && !ignore_images)) {
+                // For The Order: 1886 GetSharp already replaced unusable T#s with a null one,
+                // which is also what the module was compiled with. Record it so a later draw
+                // binding a real texture of the same type can reuse this module.
+                FillImageSpec(spec, desc, sharp);
+            }
+            bitset[binding++] = is_bound;
+        }
         ForEachSharp(binding, fmasks, info->fmasks,
                      [](auto& spec, const auto& desc, AmdGpu::Image sharp) {
                          spec.width = sharp.width;
@@ -208,32 +203,26 @@ struct StageSpecialization {
         }
     }
 
+    void FillImageSpec(ImageSpecialization& spec, const ImageResource& desc,
+                       const AmdGpu::Image& sharp) const {
+        spec.type = sharp.GetViewType(desc.is_array);
+        spec.is_integer = AmdGpu::IsInteger(sharp.GetNumberFmt());
+        spec.is_storage = desc.is_written;
+        if (spec.is_storage) {
+            spec.dst_select = sharp.DstSelect();
+        } else {
+            spec.is_srgb = sharp.GetNumberFmt() == AmdGpu::NumberFormat::Srgb;
+        }
+        spec.num_conversion = sharp.GetNumberConversion();
+        spec.num_bindings = desc.NumBindings(*info);
+    }
+
     static bool HasGarbageImageSharps(const Info& info) {
         // The Order: 1886 compute shaders whose T#s are bound as null images in
         // Rasterizer::BindTextures (keep these lists in sync).
         return Common::HackFeatures::isTheOrder1886 &&
                (info.pgm_hash == 0xa7b66f58 || info.pgm_hash == 0xefaaab2b ||
                 info.pgm_hash == 0x804aeead);
-    }
-
-    // Mirrors the T# rejection in Rasterizer::BindTextures (keep in sync). Rejected T#s are
-    // bound as null images, so specializing on them only creates useless permutations.
-    static bool IsPlausibleImageSharp(const AmdGpu::Image& sharp) {
-        const auto data_fmt = sharp.GetDataFmt();
-        const auto num_fmt = sharp.GetNumberFmt();
-        const auto tile_mode = sharp.GetTileMode();
-        constexpr VAddr MaxGpuAddress = 0x10000000000ULL;
-        const VAddr address = sharp.Address();
-        if (address == 0 || address >= MaxGpuAddress ||
-            data_fmt == AmdGpu::DataFormat::FormatInvalid || AmdGpu::IsFmask(data_fmt) ||
-            !magic_enum::enum_contains(data_fmt) || !magic_enum::enum_contains(num_fmt) ||
-            !magic_enum::enum_contains(tile_mode) ||
-            tile_mode == AmdGpu::TileMode::DisplayLinearGeneral) {
-            return false;
-        }
-        return Vulkan::LiverpoolToVK::surface_format_table
-                   [Vulkan::LiverpoolToVK::GetSurfaceFormatTableIndex(data_fmt, num_fmt)] !=
-               vk::Format::eUndefined;
     }
 
     /// Describes which part of the specialization differs from other, for diagnostics.
@@ -280,6 +269,42 @@ struct StageSpecialization {
 
     [[nodiscard]] bool Valid() const {
         return info != nullptr;
+    }
+
+    /// Returns true if other only differs from this in sampled images that this module could
+    /// still be used for by binding them as null. Their indices are set in null_mask.
+    bool DiffersOnlyInSampledImages(const StageSpecialization& other, u64& null_mask,
+                                    u32& num_differences) const {
+        null_mask = 0;
+        num_differences = 0;
+        if (!Valid() || vs_attribs != other.vs_attribs || runtime_info != other.runtime_info ||
+            fetch_shader_data != other.fetch_shader_data || fmasks != other.fmasks ||
+            start != other.start || images.size() != other.images.size()) {
+            return false;
+        }
+        u32 binding{};
+        for (u32 i = 0; i < buffers.size(); i++) {
+            if (other.bitset[binding++] && buffers[i] != other.buffers[i]) {
+                return false;
+            }
+        }
+        for (u32 i = 0; i < images.size(); i++) {
+            if (!other.bitset[binding++] || images[i] == other.images[i]) {
+                continue;
+            }
+            if (images[i].is_storage || other.images[i].is_storage || images[i].num_bindings != 1 ||
+                other.images[i].num_bindings != 1) {
+                return false;
+            }
+            null_mask |= 1ULL << i;
+            ++num_differences;
+        }
+        for (u32 i = 0; i < samplers.size(); i++) {
+            if (samplers[i] != other.samplers[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     bool operator==(const StageSpecialization& other) const {
