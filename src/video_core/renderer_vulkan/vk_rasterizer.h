@@ -125,6 +125,8 @@ private:
                      Shader::PushData& push_data);
     void BindTextures(const Shader::Info& stage, Shader::Backend::Bindings& binding);
     void ClampImageLevels(VideoCore::TextureCache::ImageDesc& desc);
+    bool ClampImageLayers(VideoCore::TextureCache::ImageDesc& desc, const AmdGpu::Image& tsharp,
+                          const Shader::ImageResource& image_desc);
     bool IsImageInfoUsable(const VideoCore::ImageInfo& info);
     bool BindResources(const Pipeline* pipeline);
 

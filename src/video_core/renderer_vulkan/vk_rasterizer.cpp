@@ -881,10 +881,42 @@ void Rasterizer::ClampImageLevels(VideoCore::TextureCache::ImageDesc& desc) {
         return;
     }
     info.resources.levels = static_cast<u16>(max_levels);
+    // Recompute the guest size and mip layout for the clamped chain. Otherwise the image keeps
+    // the size of the unclamped chain and never matches the same texture/render target cached
+    // with the full chain, so the texture cache replaces that image (dropping its GPU-written
+    // contents) every time the T# is bound.
+    info.UpdateSize();
     auto& range = desc.view_info.range;
     range.base.level = static_cast<u16>(std::min<u32>(range.base.level, max_levels - 1));
     range.extent.levels =
         static_cast<u16>(std::min<u32>(range.extent.levels, max_levels - range.base.level));
+}
+
+bool Rasterizer::ClampImageLayers(VideoCore::TextureCache::ImageDesc& desc,
+                                  const AmdGpu::Image& tsharp,
+                                  const Shader::ImageResource& image_desc) {
+    // The Order: 1886 binds 2D T#s with a garbage depth/array field (912 or 1072 slices), which
+    // pushes the guest size past the mapped memory so the T# was rejected and the shader sampled
+    // black (shadow maps, the tiled light grid, half resolution lighting buffers). A shader that
+    // declares a non-array image only ever reads one slice, so bind that slice alone instead.
+    if (!Common::HackFeatures::isTheOrder1886 || image_desc.is_array ||
+        desc.info.props.is_volume || desc.info.resources.layers <= 1) {
+        return false;
+    }
+    const auto type = tsharp.GetType();
+    if (type != AmdGpu::ImageType::Color2D && type != AmdGpu::ImageType::Color2DArray &&
+        type != AmdGpu::ImageType::Color1D && type != AmdGpu::ImageType::Color1DArray) {
+        return false;
+    }
+    auto& info = desc.info;
+    auto& range = desc.view_info.range;
+    if (range.base.layer != 0) {
+        return false;
+    }
+    info.resources.layers = 1;
+    info.UpdateSize();
+    range.extent.layers = 1;
+    return true;
 }
 
 bool Rasterizer::IsImageInfoUsable(const VideoCore::ImageInfo& info) {
@@ -985,7 +1017,8 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
             auto& [image_id, desc] = image_bindings[num_images++];
             std::construct_at(&desc, tsharp, image_desc);
             ClampImageLevels(desc);
-            if (!IsImageInfoUsable(desc.info)) {
+            if (!IsImageInfoUsable(desc.info) &&
+                !(ClampImageLayers(desc, tsharp, image_desc) && IsImageInfoUsable(desc.info))) {
                 // A T# that passed the format checks can still be garbage (e.g. from an SRT
                 // walker failure in The Order: 1886): absurd extents or a range that isn't
                 // mapped. Creating it makes the driver fail the allocation and we assert.
