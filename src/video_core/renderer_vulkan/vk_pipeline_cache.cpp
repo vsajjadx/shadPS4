@@ -689,6 +689,12 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
 
     const auto it = std::ranges::find(program->modules, spec, &Program::Module::spec);
     if (it == program->modules.end()) {
+        if (perm_idx >= 8) {
+            // Many permutations of one shader usually means it specializes on garbage sharps.
+            LOG_WARNING(Render_Vulkan, "{} shader {:#x} permutation {} differs in {}", hw_stage,
+                        params.hash, perm_idx,
+                        program->modules.back().spec.DescribeDifference(spec));
+        }
         auto new_info = Shader::Info(hw_stage, sw_stage, params);
         module = CompileModule(new_info, runtime_info, params.code, perm_idx, binding);
 

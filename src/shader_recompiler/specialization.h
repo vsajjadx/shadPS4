@@ -4,8 +4,10 @@
 #pragma once
 
 #include <bitset>
+#include <string>
 #include <type_traits>
 
+#include <fmt/format.h>
 #include <magic_enum/magic_enum.hpp>
 
 #include "common/hack_features.h"
@@ -14,6 +16,7 @@
 #include "shader_recompiler/frontend/fetch_shader.h"
 #include "shader_recompiler/info.h"
 #include "shader_recompiler/profile.h"
+#include "video_core/renderer_vulkan/liverpool_to_vk.h"
 
 namespace Shader {
 
@@ -213,13 +216,66 @@ struct StageSpecialization {
                 info.pgm_hash == 0x804aeead);
     }
 
+    // Mirrors the T# rejection in Rasterizer::BindTextures (keep in sync). Rejected T#s are
+    // bound as null images, so specializing on them only creates useless permutations.
     static bool IsPlausibleImageSharp(const AmdGpu::Image& sharp) {
         const auto data_fmt = sharp.GetDataFmt();
-        return data_fmt != AmdGpu::DataFormat::FormatInvalid && !AmdGpu::IsFmask(data_fmt) &&
-               magic_enum::enum_contains(data_fmt) &&
-               magic_enum::enum_contains(sharp.GetNumberFmt()) &&
-               magic_enum::enum_contains(sharp.GetTileMode()) &&
-               sharp.GetTileMode() != AmdGpu::TileMode::DisplayLinearGeneral;
+        const auto num_fmt = sharp.GetNumberFmt();
+        const auto tile_mode = sharp.GetTileMode();
+        constexpr VAddr MaxGpuAddress = 0x10000000000ULL;
+        const VAddr address = sharp.Address();
+        if (address == 0 || address >= MaxGpuAddress ||
+            data_fmt == AmdGpu::DataFormat::FormatInvalid || AmdGpu::IsFmask(data_fmt) ||
+            !magic_enum::enum_contains(data_fmt) || !magic_enum::enum_contains(num_fmt) ||
+            !magic_enum::enum_contains(tile_mode) ||
+            tile_mode == AmdGpu::TileMode::DisplayLinearGeneral) {
+            return false;
+        }
+        return Vulkan::LiverpoolToVK::surface_format_table
+                   [Vulkan::LiverpoolToVK::GetSurfaceFormatTableIndex(data_fmt, num_fmt)] !=
+               vk::Format::eUndefined;
+    }
+
+    /// Describes which part of the specialization differs from other, for diagnostics.
+    std::string DescribeDifference(const StageSpecialization& other) const {
+        if (vs_attribs != other.vs_attribs) {
+            return "vs_attribs";
+        }
+        if (runtime_info != other.runtime_info) {
+            return "runtime_info";
+        }
+        if (fetch_shader_data != other.fetch_shader_data) {
+            return "fetch_shader_data";
+        }
+        if (fmasks != other.fmasks) {
+            return "fmasks";
+        }
+        if (start != other.start) {
+            return "start_bindings";
+        }
+        u32 binding{};
+        for (u32 i = 0; i < buffers.size(); i++) {
+            if (other.bitset[binding++] && buffers[i] != other.buffers[i]) {
+                return fmt::format("buffer[{}] stride={}->{} fmt={}->{}", i, buffers[i].stride,
+                                   other.buffers[i].stride, buffers[i].data_format,
+                                   other.buffers[i].data_format);
+            }
+        }
+        for (u32 i = 0; i < images.size(); i++) {
+            if (other.bitset[binding++] && images[i] != other.images[i]) {
+                return fmt::format("image[{}] type={}->{} int={}->{} srgb={}->{}", i,
+                                   static_cast<u32>(images[i].type),
+                                   static_cast<u32>(other.images[i].type), images[i].is_integer,
+                                   other.images[i].is_integer, images[i].is_srgb,
+                                   other.images[i].is_srgb);
+            }
+        }
+        for (u32 i = 0; i < samplers.size(); i++) {
+            if (samplers[i] != other.samplers[i]) {
+                return fmt::format("sampler[{}]", i);
+            }
+        }
+        return "none";
     }
 
     [[nodiscard]] bool Valid() const {

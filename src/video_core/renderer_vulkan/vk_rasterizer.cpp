@@ -922,15 +922,11 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
             continue;
         }
 
-        if (!memory->IsValidGpuMapping(tsharp.Address(), 0) ||
-            !magic_enum::enum_contains(data_fmt) || !magic_enum::enum_contains(num_fmt) ||
-            !magic_enum::enum_contains(tsharp.GetTileMode()) ||
-            tsharp.GetTileMode() == AmdGpu::TileMode::DisplayLinearGeneral ||
-            LiverpoolToVK::surface_format_table[LiverpoolToVK::GetSurfaceFormatTableIndex(
-                data_fmt, num_fmt)] == vk::Format::eUndefined) {
-            // An unknown tile mode (e.g. 29 from an SRT walker failure), LinearGeneral or a format
-            // pair with no Vulkan equivalent would hit GetArrayMode's UNREACHABLE, the
-            // UpdateSize assert or SurfaceFormat's assert once the texture cache parses the sharp.
+        if (!Shader::StageSpecialization::IsPlausibleImageSharp(tsharp)) {
+            // An address beyond 40 bits, an unknown tile mode (e.g. 29 from an SRT walker
+            // failure), LinearGeneral or a format pair with no Vulkan equivalent would hit
+            // GetArrayMode's UNREACHABLE, the UpdateSize assert or SurfaceFormat's assert once
+            // the texture cache parses the sharp. The stage specialization skips these too.
             LOG_WARNING(Render_Vulkan,
                         "Rejecting invalid T# address={:#x}, pitch={}, width={}, "
                         "data_format={}, num_format={}, tile_mode={}",
