@@ -1,0 +1,30 @@
+name: Publish builds
+on:
+  push:
+    branches: [publish/*]
+permissions:
+  contents: write
+  actions: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download the two Windows artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir out && cd out
+          gh run download 38662260361 -R "${{ github.repository }}" -n shadps4-win64-sdl-2026-10-15-1033746 -D f1
+          gh run download 38662927311 -R "${{ github.repository }}" -n shadps4-win64-sdl-2026-10-15-d018b60 -D f3
+          ls -la f1 f3
+          (cd f1 && zip -q ../shadPS4-f1-full-v020.zip shadPS4.exe)
+          (cd f3 && zip -q ../shadPS4-f3-lite-v020.zip shadPS4.exe)
+          ls -la
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create builds-2026-10-15 out/shadPS4-f1-full-v020.zip out/shadPS4-f3-lite-v020.zip \
+            -R "${{ github.repository }}" --target "${{ github.sha }}" \
+            --title "shadPS4 test builds 2026-10-15 (Windows)" \
+            --notes "f1 = upstream main 7be8e97f + all ported 1886 fork fixes + input/text fixes. f3 = upstream main + lite set. Windows x64, shadPS4.exe inside the zip."
