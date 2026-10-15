@@ -220,7 +220,34 @@ void ApplyPatchesFromXML(std::filesystem::path path) {
     }
 }
 
+// NHL 24 (CUSA37933): the "rplyCompress" ring schedules one compression job per 128 KB replay
+// block through a job queue that is never drained under emulation. After 64 blocks the ring
+// wraps and waits on the first job forever, freezing the simulation at the first puck drop.
+// Turning `cmp qword ptr [rdi+8], 0 ; je` (ring->jobSystem == nullptr) into an unconditional
+// jump makes the game compress synchronously. Located by signature so it works on any APP_VER
+// (eboot+0x64acb70 on 01.00, eboot+0x64e0770 on 01.60).
+static void ApplyBuiltinPatches() {
+    if (g_game_serial != "CUSA37933") {
+        return;
+    }
+    constexpr int JeOffset = 18;
+    const uintptr_t match = PatternScan("F0 44 0F C1 B7 ?? ?? ?? ?? 41 83 E6 3F 48 83 7F 08 00 74");
+    if (match == 0) {
+        LOG_WARNING(Loader, "NHL 24: replay compression signature not found, patch skipped");
+        return;
+    }
+    auto* je = reinterpret_cast<u8*>(match + JeOffset);
+    if (*je != 0x74) {
+        return;
+    }
+    *je = 0xEB;
+    LOG_INFO(Loader, "NHL 24: applied synchronous replay compression patch at eboot+{:#x}",
+             match + JeOffset - g_eboot_address);
+}
+
 void OnGameLoaded() {
+    ApplyBuiltinPatches();
+
     std::filesystem::path patch_dir = Common::FS::GetUserPath(Common::FS::PathType::PatchesDir);
     if (!patch_file.empty()) {
 
