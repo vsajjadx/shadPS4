@@ -124,6 +124,7 @@ private:
     void BindBuffers(const Shader::Info& stage, Shader::Backend::Bindings& binding,
                      Shader::PushData& push_data);
     void BindTextures(const Shader::Info& stage, Shader::Backend::Bindings& binding);
+    void ClampImageLevels(VideoCore::TextureCache::ImageDesc& desc);
     bool IsImageInfoUsable(const VideoCore::ImageInfo& info);
     bool BindResources(const Pipeline* pipeline);
 

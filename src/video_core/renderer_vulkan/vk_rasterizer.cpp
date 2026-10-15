@@ -867,6 +867,24 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
     }
 }
 
+void Rasterizer::ClampImageLevels(VideoCore::TextureCache::ImageDesc& desc) {
+    // Games (e.g. NHL 24) use T#s whose last_level is one past the end of the full mip chain,
+    // such as 256x256 with 10 levels. Vulkan caps the mip count at log2(max extent) + 1, so
+    // clamp the image and its view instead of rejecting a valid texture.
+    auto& info = desc.info;
+    const u32 max_extent = std::max({info.size.width, info.size.height, info.size.depth});
+    const u32 max_levels = std::bit_width(max_extent);
+    if (max_levels == 0 || info.resources.levels <= max_levels ||
+        info.resources.levels > VideoCore::MAX_MIPS) {
+        return;
+    }
+    info.resources.levels = static_cast<u16>(max_levels);
+    auto& range = desc.view_info.range;
+    range.base.level = static_cast<u16>(std::min<u32>(range.base.level, max_levels - 1));
+    range.extent.levels =
+        static_cast<u16>(std::min<u32>(range.extent.levels, max_levels - range.base.level));
+}
+
 bool Rasterizer::IsImageInfoUsable(const VideoCore::ImageInfo& info) {
     const auto& limits = instance.GetLimits();
     const u32 max_dim =
@@ -964,6 +982,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
         for (auto i = 0; i < num_bindings; i++) {
             auto& [image_id, desc] = image_bindings[num_images++];
             std::construct_at(&desc, tsharp, image_desc);
+            ClampImageLevels(desc);
             if (!IsImageInfoUsable(desc.info)) {
                 // A T# that passed the format checks can still be garbage (e.g. from an SRT
                 // walker failure in The Order: 1886): absurd extents or a range that isn't
