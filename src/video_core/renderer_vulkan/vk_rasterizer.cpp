@@ -900,12 +900,15 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
         }
 
         if (!memory->IsValidGpuMapping(tsharp.Address(), 0) ||
-            !magic_enum::enum_contains(data_fmt) || !magic_enum::enum_contains(num_fmt)) {
+            !magic_enum::enum_contains(data_fmt) || !magic_enum::enum_contains(num_fmt) ||
+            !magic_enum::enum_contains(tsharp.GetTileMode())) {
+            // An unknown tile mode (e.g. 29 from an SRT walker failure) would hit the
+            // UNREACHABLE in GetArrayMode once the texture cache parses the sharp.
             LOG_WARNING(Render_Vulkan,
                         "Rejecting invalid T# address={:#x}, pitch={}, width={}, "
-                        "data_format={}, num_format={}",
+                        "data_format={}, num_format={}, tile_mode={}",
                         tsharp.Address(), tsharp.pitch, tsharp.width, static_cast<u32>(data_fmt),
-                        static_cast<u32>(num_fmt));
+                        static_cast<u32>(num_fmt), static_cast<u32>(tsharp.GetTileMode()));
             image_bindings[num_images++].image_id = {};
             image_descriptor_array_sizes.push_back(1);
             continue;
