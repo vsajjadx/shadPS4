@@ -89,6 +89,10 @@ struct StageSpecialization {
     SmallVector<FMaskSpecialization, 8> fmasks;
     SmallVector<SamplerSpecialization, 16> samplers;
     Backend::Bindings start{};
+    // Interface-format signature of the fragment shader's companion auxiliary geometry shader
+    // (per-vertex interpolation fallback). Computed at FS compile time (where fs_interpolation is
+    // fresh) and stored per-variant so preload can reload the aux GS by this signature. 0 = no aux GS.
+    u64 aux_gs_signature{};
 
     StageSpecialization() = default;
     StageSpecialization(const Info& info_, RuntimeInfo runtime_info_, const Profile& profile_,

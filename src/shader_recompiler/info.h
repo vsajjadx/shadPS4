@@ -113,6 +113,7 @@ struct Info : InfoPersistent {
 
     VAddr pgm_base;
     bool has_storage_images{};
+    bool has_srt_offset{};
     bool has_discard{};
     bool has_image_gather{};
     bool has_image_query{};
@@ -171,7 +172,15 @@ struct Info : InfoPersistent {
         if (srt_info.walker_func) {
             srt_info.walker_func(user_data.data(), flattened_ud_buf.data());
         }
+        if (has_srt_offset) {
+            PostRefreshFlatBuf();
+        }
     }
+
+    // Clears is_srt_offset T#s in the freshly-filled flatbuf whose base address is not a valid
+    // guest mapping, so garbage probe slots never reach texture cache nor vary the pipeline
+    // specialization. Implemented in info.cpp.
+    void PostRefreshFlatBuf();
 
     void ReadTessConstantBuffer(TessellationDataConstantBuffer& tess_constants) const {
         ASSERT(tess_consts_dword_offset >= 0); // We've already tracked the V# UD

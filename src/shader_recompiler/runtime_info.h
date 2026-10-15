@@ -210,7 +210,11 @@ struct HwFragmentRuntimeInfo {
     u32 dual_source_blending : 1;
     u32 clip_distance_emulation : 1;
     u32 depth_before_shader : 1;
-    u32 : 12;
+    // Whether the fragment shader is fed directly by the vertex shader (no tessellation or game
+    // geometry shader in between). Used to gate the per-vertex interpolation fallback.
+    u32 is_vs_direct : 1;
+    u32 : 11;
+    AmdGpu::PrimitiveType prim_type;
 
     bool operator==(const HwFragmentRuntimeInfo& other) const noexcept {
         return std::ranges::equal(color_buffers, other.color_buffers) &&
@@ -221,6 +225,7 @@ struct HwFragmentRuntimeInfo {
                dual_source_blending == other.dual_source_blending &&
                clip_distance_emulation == other.clip_distance_emulation &&
                depth_before_shader == other.depth_before_shader &&
+               is_vs_direct == other.is_vs_direct && prim_type == other.prim_type &&
                std::ranges::equal(inputs.begin(), inputs.begin() + num_inputs, other.inputs.begin(),
                                   other.inputs.begin() + num_inputs);
     }

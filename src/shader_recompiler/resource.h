@@ -133,6 +133,10 @@ struct ImageResource {
     bool is_written{};
     bool is_r128{};
     u8 constant_mip_index{};
+    // Marks a T# loaded via the "SRT root + s_add immediate offset" pattern (SH probe slot, may be
+    // invalid). Binding treats these slots specially (skip / check) to avoid crashing texture_cache
+    // on an invalid T#.
+    bool is_srt_offset{};
     MipStorageFallbackMode mip_fallback_mode{};
     SharpFetchPostOp post_op{};
 

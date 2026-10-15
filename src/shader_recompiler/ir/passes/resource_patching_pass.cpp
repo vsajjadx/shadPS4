@@ -122,6 +122,7 @@ public:
         auto& image = image_resources[index];
         image.is_atomic |= desc.is_atomic;
         image.is_written |= desc.is_written;
+        image.is_srt_offset |= desc.is_srt_offset;
         return index;
     }
 

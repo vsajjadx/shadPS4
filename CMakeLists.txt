@@ -1018,6 +1018,7 @@ set(SHADER_RECOMPILER src/shader_recompiler/profile.h
                       src/shader_recompiler/recompiler.cpp
                       src/shader_recompiler/recompiler.h
                       src/shader_recompiler/resource.h
+                      src/shader_recompiler/info.cpp
                       src/shader_recompiler/info.h
                       src/shader_recompiler/params.h
                       src/shader_recompiler/runtime_info.h
@@ -1038,6 +1039,8 @@ set(SHADER_RECOMPILER src/shader_recompiler/profile.h
                       src/shader_recompiler/backend/spirv/emit_spirv_instructions.h
                       src/shader_recompiler/backend/spirv/emit_spirv_integer.cpp
                       src/shader_recompiler/backend/spirv/emit_spirv_logical.cpp
+                      src/shader_recompiler/backend/spirv/emit_spirv_per_vertex.cpp
+                      src/shader_recompiler/backend/spirv/emit_spirv_per_vertex.h
                       src/shader_recompiler/backend/spirv/emit_spirv_quad_rect.cpp
                       src/shader_recompiler/backend/spirv/emit_spirv_quad_rect.h
                       src/shader_recompiler/backend/spirv/emit_spirv_select.cpp
@@ -1078,6 +1081,7 @@ set(SHADER_RECOMPILER src/shader_recompiler/profile.h
                       src/shader_recompiler/ir/passes/hull_shader_transform.cpp
                       src/shader_recompiler/ir/passes/inject_clip_distance_attributes.cpp
                       src/shader_recompiler/ir/passes/inverse_ballot_elimination_pass.cpp
+                      src/shader_recompiler/ir/passes/insert_ssbo_store_load_barrier.cpp
                       src/shader_recompiler/ir/passes/ir_passes.h
                       src/shader_recompiler/ir/passes/lower_buffer_format_to_raw.cpp
                       src/shader_recompiler/ir/passes/lower_fp64_to_fp32.cpp

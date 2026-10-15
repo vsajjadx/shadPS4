@@ -9,6 +9,7 @@
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
+#include "shader_recompiler/backend/spirv/emit_spirv_per_vertex.h"
 #include "shader_recompiler/info.h"
 #include "shader_recompiler/recompiler.h"
 #include "shader_recompiler/runtime_info.h"
@@ -176,6 +177,9 @@ const Shader::RuntimeInfo& PipelineCache::BuildRuntimeInfo(HwStage stage, SwStag
                 ? regs.aa_config.NumSamples()
                 : 1;
         info.hw.fs.z_export_format = regs.z_export_format;
+        info.hw.fs.is_vs_direct =
+            regs.stage_enable.raw == AmdGpu::ShaderStageEnable::VgtStages::Vs;
+        info.hw.fs.prim_type = graphics_key.prim_type;
         u8 stencil_ref_export_enable = regs.depth_shader_control.stencil_op_val_export_enable |
                                        regs.depth_shader_control.stencil_test_val_export_enable;
         info.hw.fs.mrtz_mask = regs.depth_shader_control.z_export_enable |
@@ -326,6 +330,7 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
         .needs_buffer_offsets = instance.StorageMinAlignment() > 4,
         .needs_unorm_fixup = instance.GetDriverID() == vk::DriverId::eMesaKosmickrisp,
         .needs_clip_distance_emulation = instance.GetDriverID() == vk::DriverId::eNvidiaProprietary,
+        .needs_ssbo_store_load_barrier = instance.GetDriverID() == vk::DriverId::eNvidiaProprietary,
         .supports_shader_stencil_export = instance_.IsShaderStencilExportSupported(),
     };
     WarmUp();
@@ -338,11 +343,36 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
 
 PipelineCache::~PipelineCache() = default;
 
+void PipelineCache::FillAuxGSModule() {
+    // Fill the Geometry slot with the FS's companion auxiliary GS (per-vertex expansion)
+    // when there is no game geometry shader. The module is compiled once (at FS compile time or
+    // preload) and cached by interface-format signature, so this is just a lookup. A non-zero
+    // signature that misses the cache is a bug — the aux GS is always generated at FS compile time
+    // on the draw path, or loaded at preload (which returns false when the blob is absent) — so
+    // assert rather than silently leaving the FS's per-vertex inputs without a producer.
+    if (infos[u32(Shader::SwStage::Geometry)]) {
+        return;
+    }
+    if (graphics_key.aux_gs_signature == 0) {
+        return;
+    }
+    // The signature excludes prim_type; assert the pipeline carrying a non-zero signature is always
+    // TriangleList, guarding the "uniform prim_type" assumption behind the shared key.
+    ASSERT_MSG(graphics_key.prim_type == AmdGpu::PrimitiveType::TriangleList,
+               "Per-vertex aux GS used for non-triangle primitive");
+    const auto gs_it = aux_gs_cache.find(graphics_key.aux_gs_signature);
+    ASSERT_MSG(gs_it != aux_gs_cache.end(),
+               "Per-vertex aux GS (signature {:#x}) missing from cache",
+               graphics_key.aux_gs_signature);
+    modules[u32(Shader::SwStage::Geometry)] = gs_it->second;
+}
+
 const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectParams params) {
     draw_indirect_params = params;
     if (!RefreshGraphicsKey()) {
         return nullptr;
     }
+    FillAuxGSModule();
     const auto [it, is_new] = graphics_pipelines.try_emplace(graphics_key);
     if (is_new) {
         const auto pipeline_hash = std::hash<GraphicsPipelineKey>{}(graphics_key);
@@ -516,8 +546,18 @@ bool PipelineCache::RefreshGraphicsStages() {
         }
 
         const auto params = AmdGpu::GetParams(*pgm);
-        std::tie(infos[stage_out_idx], modules[stage_out_idx], key.stage_hashes[stage_out_idx]) =
-            GetProgram(stage_in, stage_out, params, binding);
+        u64 stage_aux_gs_signature{};
+        std::tie(infos[stage_out_idx], modules[stage_out_idx], key.stage_hashes[stage_out_idx],
+                 stage_aux_gs_signature) = GetProgram(stage_in, stage_out, params, binding);
+        if (stage_in == Shader::HwStage::Fragment) {
+            // The signature excludes prim_type; assert a non-zero signature never belongs to a
+            // non-triangle primitive (CanPerVertexInterp already requires TriangleList at
+            // translation).
+            ASSERT_MSG(stage_aux_gs_signature == 0 ||
+                           regs.primitive_type == AmdGpu::PrimitiveType::TriangleList,
+                       "Per-vertex aux GS for non-triangle primitive");
+            key.aux_gs_signature = stage_aux_gs_signature;
+        }
         return true;
     };
 
@@ -616,14 +656,16 @@ bool PipelineCache::RefreshComputeKey() {
     Shader::Backend::Bindings binding{};
     const auto& cs_pgm = liverpool->GetCsRegs();
     const auto cs_params = AmdGpu::GetParams(cs_pgm);
-    std::tie(infos[0], modules[0], compute_key.value) =
+    std::tie(infos[0], modules[0], compute_key.value, std::ignore) =
         GetProgram(HwStage::Compute, SwStage::Compute, cs_params, binding);
     return true;
 }
 
 vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::RuntimeInfo& runtime_info,
                                               const std::span<const u32>& code, size_t perm_idx,
-                                              Shader::Backend::Bindings& binding) {
+                                              Shader::Backend::Bindings& binding,
+                                              u64& aux_gs_signature) {
+    aux_gs_signature = 0;
     LOG_INFO(Render_Vulkan, "Compiling {} shader {:#x} {}", info.hw_stage, info.pgm_hash,
              perm_idx != 0 ? "(permutation)" : "");
     DumpShader(code, info.pgm_hash, info.hw_stage, perm_idx, "bin");
@@ -631,6 +673,33 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
     const auto ir_program = Shader::TranslateProgram(code, pools, info, runtime_info, profile);
     auto spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, ir_program, binding);
     DumpShader(spv, info.pgm_hash, info.hw_stage, perm_idx, "spv");
+
+    // Generate and compile the auxiliary geometry shader for the per-vertex interpolation
+    // fallback. Done at FS compile time where fs_interpolation is still fresh. The compiled module
+    // and its SPIR-V are cached by interface-format signature so fragment shaders sharing the same
+    // input interface reuse one aux GS; the SPIR-V is saved to disk for the next preload.
+    if (info.hw_stage == HwStage::Fragment &&
+        Shader::Backend::SPIRV::NeedsPerVertexAuxGS(profile, info, runtime_info)) {
+        aux_gs_signature =
+            Shader::Backend::SPIRV::ComputePerVertexAuxGSSignature(info, runtime_info);
+        // The signature deliberately excludes prim_type (aux GS is only generated for TriangleList
+        // today). Assert the invariant that aux GS generation implies TriangleList, so a
+        // non-triangle primitive can never silently reuse a TriangleList-only aux GS.
+        ASSERT_MSG(runtime_info.hw.fs.prim_type == AmdGpu::PrimitiveType::TriangleList,
+                   "Per-vertex aux GS generated for non-triangle primitive");
+        if (!aux_gs_cache.contains(aux_gs_signature)) {
+            auto aux_gs_spv =
+                Shader::Backend::SPIRV::EmitPerVertexAuxGS(profile, info, runtime_info);
+            DumpShader(aux_gs_spv, info.pgm_hash, HwStage::Geometry, perm_idx, "spv");
+            aux_gs_cache[aux_gs_signature] = CompileSPV(aux_gs_spv, instance.GetDevice());
+            if (Storage::DataBase::Instance().IsOpened()) {
+                Storage::DataBase::Instance().Save(Storage::BlobType::AuxiliaryShader,
+                                                   fmt::format("{:#018x}_ag", aux_gs_signature),
+                                                   std::move(aux_gs_spv));
+            }
+            LOG_INFO(Render_Vulkan, "Generated per-vertex aux GS for FS {:#x}", info.pgm_hash);
+        }
+    }
 
     vk::ShaderModule module;
 
@@ -663,8 +732,11 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
         it_pgm.value() = std::make_unique<Program>(hw_stage, sw_stage, params);
         auto& program = it_pgm.value();
         auto start = binding;
-        const auto module = CompileModule(program->info, runtime_info, params.code, 0, binding);
+        u64 aux_gs_signature{};
+        const auto module =
+            CompileModule(program->info, runtime_info, params.code, 0, binding, aux_gs_signature);
         auto spec = Shader::StageSpecialization(program->info, runtime_info, profile, start);
+        spec.aux_gs_signature = aux_gs_signature;
         const auto perm_hash = HashCombine(params.hash, 0);
 
         RegisterShaderMeta(program->info, spec.fetch_shader_data, spec, perm_hash, 0);
@@ -672,7 +744,7 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
         if (auto& fetch = program->modules[0].spec.fetch_shader_data; !fetch.Empty()) {
             fetch_shader = &fetch;
         }
-        return std::make_tuple(&program->info, module, perm_hash);
+        return std::make_tuple(&program->info, module, perm_hash, aux_gs_signature);
     }
 
     auto& program = it_pgm.value();
@@ -686,11 +758,14 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
     u64 perm_hash = HashCombine(params.hash, perm_idx);
 
     vk::ShaderModule module{};
+    u64 aux_gs_signature{};
 
     const auto it = std::ranges::find(program->modules, spec, &Program::Module::spec);
     if (it == program->modules.end()) {
         auto new_info = Shader::Info(hw_stage, sw_stage, params);
-        module = CompileModule(new_info, runtime_info, params.code, perm_idx, binding);
+        module = CompileModule(new_info, runtime_info, params.code, perm_idx, binding,
+                               aux_gs_signature);
+        spec.aux_gs_signature = aux_gs_signature;
 
         RegisterShaderMeta(info, spec.fetch_shader_data, spec, perm_hash, perm_idx);
         program->AddPermut(module, std::move(spec));
@@ -699,11 +774,12 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
         module = it->module;
         perm_idx = std::distance(program->modules.begin(), it);
         perm_hash = HashCombine(params.hash, perm_idx);
+        aux_gs_signature = program->modules[perm_idx].spec.aux_gs_signature;
     }
     if (auto& fetch = program->modules[perm_idx].spec.fetch_shader_data; !fetch.Empty()) {
         fetch_shader = &fetch;
     }
-    return std::make_tuple(&program->info, module, perm_hash);
+    return std::make_tuple(&program->info, module, perm_hash, aux_gs_signature);
 }
 
 std::optional<vk::ShaderModule> PipelineCache::ReplaceShader(vk::ShaderModule module,

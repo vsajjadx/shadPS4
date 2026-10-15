@@ -87,7 +87,7 @@ public:
 
     const ComputePipeline* GetComputePipeline();
 
-    using Result = std::tuple<const Shader::Info*, vk::ShaderModule, u64>;
+    using Result = std::tuple<const Shader::Info*, vk::ShaderModule, u64, u64>;
     Result GetProgram(Shader::HwStage hw_stage, Shader::SwStage sw_stage,
                       const Shader::ShaderParams& params, Shader::Backend::Bindings& binding);
 
@@ -112,8 +112,9 @@ private:
                                                    std::string_view ext);
     vk::ShaderModule CompileModule(Shader::Info& info, Shader::RuntimeInfo& runtime_info,
                                    const std::span<const u32>& code, size_t perm_idx,
-                                   Shader::Backend::Bindings& binding);
+                                   Shader::Backend::Bindings& binding, u64& aux_gs_signature);
     const Shader::RuntimeInfo& BuildRuntimeInfo(Shader::HwStage stage, Shader::SwStage l_stage);
+    void FillAuxGSModule();
 
     [[nodiscard]] bool IsPipelineCacheDirty() const {
         return num_new_pipelines > 0;
@@ -135,6 +136,10 @@ private:
     std::array<Shader::RuntimeInfo, MaxShaderStages> runtime_infos{};
     std::array<const Shader::Info*, MaxShaderStages> infos{};
     std::array<vk::ShaderModule, MaxShaderStages> modules{};
+    // Compiled companion auxiliary geometry shader modules (per-vertex expansion), keyed by
+    // the FS input interface-format signature (aux_gs_signature). Populated once at FS compile
+    // time and on preload; shared across fragment shaders with the same input interface.
+    tsl::robin_map<u64, vk::ShaderModule> aux_gs_cache;
     Shader::Gcn::FetchShaderData* fetch_shader{};
     GraphicsPipelineKey graphics_key{};
     ComputePipelineKey compute_key{};

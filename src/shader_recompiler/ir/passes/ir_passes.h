@@ -29,6 +29,7 @@ void ReadLaneEliminationPass(IR::Program& program);
 ResourceDiscoveryList ResourceDiscoverPass(IR::Program& program, const Profile& profile);
 void ResourcePatchingPass(Shader::Info& info, const ResourceDiscoveryList& sharp_usages,
                           const Profile& profile);
+void InsertSsbsoStoreLoadBarrier(IR::Program& program, const Profile& profile);
 void CollectShaderInfoPass(IR::Program& program, const Profile& profile);
 void LowerBufferFormatToRaw(IR::Program& program);
 void LowerUserClipPlanes(IR::Program& program, const RuntimeInfo& runtime_info);

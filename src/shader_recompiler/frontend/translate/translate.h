@@ -401,6 +401,7 @@ private:
     std::array<IR::Attribute, MaxInterpVgpr> vgpr_to_interp{};
     FetchShaderData fetch_data{};
     bool opcode_missing = false;
+    bool per_vertex_fallback_warned = false;
     u32 pc{};
 };
 

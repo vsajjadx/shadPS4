@@ -12,9 +12,9 @@
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-static constexpr u32 ShaderBinaryVersion = 9u;
-static constexpr u32 ShaderMetaVersion = 6u;
-static constexpr u32 PipelineKeyVersion = 3u;
+static constexpr u32 ShaderBinaryVersion = 10u;
+static constexpr u32 ShaderMetaVersion = 7u;
+static constexpr u32 PipelineKeyVersion = 4u;
 } // namespace Serialization
 
 namespace Vulkan {
@@ -211,6 +211,30 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar) {
     GraphicsPipeline::SerializationSupport sdata{};
     sdata.Deserialize(ar);
 
+    // Load the companion auxiliary geometry shader by its interface-format signature BEFORE the
+    // game stages. It is a dedicated AuxiliaryShader blob keyed by graphics_key.aux_gs_signature.
+    // A missing blob invalidates the whole pipeline (an FS restored to per-vertex would otherwise
+    // have no GS to supply its inputs). Doing this before the stage loop matters: on failure it
+    // returns false while no stage has entered program_cache yet, so the runtime draw re-translates
+    // the FS from the original code and re-generates the aux GS (self-heal). Loading it after the
+    // loop would leave the FS in program_cache, so the draw path would reuse the cached FS without
+    // ever re-generating the missing aux GS and FillAuxGSModule would assert.
+    if (graphics_key.aux_gs_signature != 0) {
+        if (!aux_gs_cache.contains(graphics_key.aux_gs_signature)) {
+            std::vector<u32> aux_gs_spv{};
+            Storage::DataBase::Instance().Load(
+                Storage::BlobType::AuxiliaryShader,
+                fmt::format("{:#018x}_ag", graphics_key.aux_gs_signature), aux_gs_spv);
+            if (aux_gs_spv.empty()) {
+                return false;
+            }
+            aux_gs_cache[graphics_key.aux_gs_signature] =
+                CompileSPV(aux_gs_spv, instance.GetDevice());
+            LOG_INFO(Render_Vulkan, "Loaded per-vertex aux GS (signature {:#x}) from cache",
+                     graphics_key.aux_gs_signature);
+        }
+    }
+
     for (int stage_idx = 0; stage_idx < MaxShaderStages; ++stage_idx) {
         const auto& hash = graphics_key.stage_hashes[stage_idx];
         if (!hash) {
@@ -233,6 +257,8 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar) {
 
     const auto [it, is_new] = graphics_pipelines.try_emplace(graphics_key);
     ASSERT(is_new);
+
+    FillAuxGSModule();
 
     it.value() = std::make_unique<GraphicsPipeline>(
         instance, scheduler, desc_heap, profile, graphics_key, *pipeline_cache, infos,
@@ -399,6 +425,15 @@ bool Info::Deserialize(Serialization::Archive& ar) {
     info.Read(this, sizeof(Shader::InfoPersistent));
     info.Read(flattened_ud_buf);
 
+    // is_srt_offset is serialized as part of ImageResource; recompute the derived flag.
+    has_srt_offset = false;
+    for (const auto& image : images) {
+        if (image.is_srt_offset) {
+            has_srt_offset = true;
+            break;
+        }
+    }
+
     return srt_info.Deserialize(ar);
 }
 
@@ -465,6 +500,7 @@ void StageSpecialization::Serialize(Serialization::Archive& ar) const {
     spec.Write(images);
     spec.Write(fmasks);
     spec.Write(samplers);
+    spec.Write(aux_gs_signature);
 }
 
 bool StageSpecialization::Deserialize(Serialization::Archive& ar) {
@@ -491,6 +527,7 @@ bool StageSpecialization::Deserialize(Serialization::Archive& ar) {
     spec.Read(images);
     spec.Read(fmasks);
     spec.Read(samplers);
+    spec.Read(aux_gs_signature);
 
     return true;
 }
