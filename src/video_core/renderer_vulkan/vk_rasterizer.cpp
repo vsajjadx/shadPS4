@@ -341,13 +341,6 @@ void Rasterizer::DispatchDirect() {
         runtime.FlushBarriers();
     }
 
-    // The Order: 1886 VSM shadow hack: depth-reduction never dispatches,
-    // so force clear shader to write a value with non-zero low-4-bit tile mask.
-    // push_data.ud_regs[1] = user_data[4] → stored as float to tile SSBO.
-    // 0x7F80000F: +inf float with bitmask=0xF, safe from DenormFlushToZero.
-    if (Common::HackFeatures::isTheOrder1886 && cs.pgm_hash == 0x9846aaff) {
-        push_data.ud_regs[1] = 0x7F80000F;
-    }
     scheduler.EndRendering();
     pipeline->BindResources(set_writes, push_data);
 
@@ -781,8 +774,18 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
             } else if (desc.buffer_type == Shader::BufferType::Flatbuf) {
                 auto& vk_buffer = buffer_cache.GetStreamBuffer();
                 const u32 ubo_size = stage.flattened_ud_buf.size() * sizeof(u32);
-                const u64 offset =
-                    vk_buffer.Copy(stage.flattened_ud_buf.data(), ubo_size, alignment);
+                const u32* ud_data = stage.flattened_ud_buf.data();
+                std::vector<u32> patched_ud;
+                // The Order: 1886 VSM shadow hack: depth-reduction never dispatches, so force the
+                // clear shader to write a value with a non-zero low-4-bit tile mask (user_data[4]
+                // is stored as float to the tile SSBO). 0x7F80000F is +inf with bitmask 0xF, safe
+                // from DenormFlushToZero.
+                if (Common::HackFeatures::isTheOrder1886 && stage.pgm_hash == 0x9846aaff) {
+                    patched_ud = stage.flattened_ud_buf;
+                    patched_ud[4] = 0x7F80000F;
+                    ud_data = patched_ud.data();
+                }
+                const u64 offset = vk_buffer.Copy(ud_data, ubo_size, alignment);
                 buffer_infos.emplace_back(vk_buffer.Handle(), offset, ubo_size);
             } else if (desc.buffer_type == Shader::BufferType::ClipPlanes) {
                 // Permutations compiled without enabled planes never read the buffer, so the
@@ -872,7 +875,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
         // instead of letting texture cache parse invalid sharp data and crash the driver.
         if (Common::HackFeatures::isTheOrder1886 &&
             (stage.pgm_hash == 0xa7b66f58 || stage.pgm_hash == 0xefaaab2b)) {
-            image_bindings.emplace_back(std::piecewise_construct, std::tuple{}, std::tuple{});
+            image_bindings[num_images++].image_id = {};
             image_descriptor_array_sizes.push_back(1);
             continue;
         }
