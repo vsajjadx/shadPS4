@@ -99,8 +99,8 @@ void AjmContext::ProcessBatch(u32 id, std::span<AjmJob> jobs) {
             if (instance == nullptr) {
                 // The guest may destroy an instance while a batch referencing it is still
                 // queued. Fail the job instead of bringing down the emulator.
-                LOG_WARNING(Lib_Ajm, "Batch {} references destroyed instance {}, skipping job",
-                            id, job.instance_id);
+                LOG_WARNING(Lib_Ajm, "Batch {} references destroyed instance {}, skipping job", id,
+                            job.instance_id);
                 if (job.output.p_result != nullptr) {
                     job.output.p_result->result = ORBIS_AJM_RESULT_FATAL;
                     job.output.p_result->internal_result = ORBIS_AJM_ERROR_INVALID_INSTANCE;
