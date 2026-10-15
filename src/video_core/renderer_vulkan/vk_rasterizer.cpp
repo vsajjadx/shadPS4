@@ -867,6 +867,28 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
     }
 }
 
+bool Rasterizer::IsImageInfoUsable(const VideoCore::ImageInfo& info) const {
+    const auto& limits = instance.GetLimits();
+    const u32 max_dim = info.props.is_volume ? limits.maxImageDimension3D
+                                             : limits.maxImageDimension2D;
+    if (info.pixel_format == vk::Format::eUndefined || info.size.width == 0 ||
+        info.size.height == 0 || info.size.depth == 0 || info.size.width > max_dim ||
+        info.size.height > max_dim || info.size.depth > max_dim ||
+        info.resources.levels == 0 || info.resources.levels > VideoCore::MAX_MIPS ||
+        info.resources.layers == 0 || info.resources.layers > limits.maxImageArrayLayers ||
+        info.guest_size == 0) {
+        return false;
+    }
+    // Vulkan limits the mip count to log2(max extent) + 1.
+    const u32 max_extent = std::max({info.size.width, info.size.height, info.size.depth});
+    if (static_cast<u32>(info.resources.levels) > std::bit_width(max_extent)) {
+        return false;
+    }
+    // Only require the start to be mapped; legit textures may pad past the end of a mapping.
+    constexpr u32 MaxGuestSize = 1_GB;
+    return info.guest_size <= MaxGuestSize && memory->IsMappedRange(info.guest_address, 1);
+}
+
 void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindings& binding) {
     const u32 first_image_idx = image_infos.size();
     // To emulate storing to explicit mip levels, build a descriptor array with each mip level.
@@ -903,11 +925,12 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
         if (!memory->IsValidGpuMapping(tsharp.Address(), 0) ||
             !magic_enum::enum_contains(data_fmt) || !magic_enum::enum_contains(num_fmt) ||
             !magic_enum::enum_contains(tsharp.GetTileMode()) ||
+            tsharp.GetTileMode() == AmdGpu::TileMode::DisplayLinearGeneral ||
             LiverpoolToVK::surface_format_table[LiverpoolToVK::GetSurfaceFormatTableIndex(
                 data_fmt, num_fmt)] == vk::Format::eUndefined) {
-            // An unknown tile mode (e.g. 29 from an SRT walker failure) or a format pair with
-            // no Vulkan equivalent would hit GetArrayMode's UNREACHABLE or SurfaceFormat's
-            // assert once the texture cache parses the sharp.
+            // An unknown tile mode (e.g. 29 from an SRT walker failure), LinearGeneral or a format
+            // pair with no Vulkan equivalent would hit GetArrayMode's UNREACHABLE, the
+            // UpdateSize assert or SurfaceFormat's assert once the texture cache parses the sharp.
             LOG_WARNING(Render_Vulkan,
                         "Rejecting invalid T# address={:#x}, pitch={}, width={}, "
                         "data_format={}, num_format={}, tile_mode={}",
@@ -924,6 +947,20 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
         for (auto i = 0; i < num_bindings; i++) {
             auto& [image_id, desc] = image_bindings[num_images++];
             std::construct_at(&desc, tsharp, image_desc);
+            if (!IsImageInfoUsable(desc.info)) {
+                // A T# that passed the format checks can still be garbage (e.g. from an SRT
+                // walker failure in The Order: 1886): absurd extents or a range that isn't
+                // mapped. Creating it makes the driver fail the allocation and we assert.
+                LOG_WARNING(Render_Vulkan,
+                            "Rejecting implausible T# address={:#x}, size={}x{}x{}, levels={}, "
+                            "layers={}, guest_size={:#x}, data_format={}, tile_mode={}",
+                            desc.info.guest_address, desc.info.size.width, desc.info.size.height,
+                            desc.info.size.depth, desc.info.resources.levels,
+                            desc.info.resources.layers, desc.info.guest_size,
+                            static_cast<u32>(data_fmt), static_cast<u32>(tsharp.GetTileMode()));
+                image_id = {};
+                continue;
+            }
 
             if (mip_fallback_mode == Shader::MipStorageFallbackMode::ConstantIndex) {
                 ASSERT(num_bindings == 1);

@@ -218,7 +218,8 @@ struct StageSpecialization {
         return data_fmt != AmdGpu::DataFormat::FormatInvalid && !AmdGpu::IsFmask(data_fmt) &&
                magic_enum::enum_contains(data_fmt) &&
                magic_enum::enum_contains(sharp.GetNumberFmt()) &&
-               magic_enum::enum_contains(sharp.GetTileMode());
+               magic_enum::enum_contains(sharp.GetTileMode()) &&
+               sharp.GetTileMode() != AmdGpu::TileMode::DisplayLinearGeneral;
     }
 
     [[nodiscard]] bool Valid() const {

@@ -250,6 +250,9 @@ public:
 
     u64 ClampRangeSize(VAddr virtual_addr, u64 size);
 
+    /// Returns true if the whole range is backed by mapped (non-free) VMAs.
+    bool IsMappedRange(VAddr virtual_addr, u64 size);
+
     void SetPrtArea(u32 id, VAddr address, u64 size);
 
     void CopySparseMemory(VAddr source, u8* dest, u64 size);

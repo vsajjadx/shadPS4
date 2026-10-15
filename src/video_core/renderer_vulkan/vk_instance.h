@@ -384,6 +384,11 @@ public:
         return features.shaderClipDistance;
     }
 
+    /// Returns the physical device limits.
+    const vk::PhysicalDeviceLimits& GetLimits() const {
+        return properties.limits;
+    }
+
     /// Returns the maximim viewport width.
     u32 GetMaxViewportWidth() const {
         return properties.limits.maxViewportDimensions[0];
