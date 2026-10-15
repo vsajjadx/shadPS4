@@ -4,7 +4,11 @@
 #pragma once
 
 #include <bitset>
+#include <type_traits>
 
+#include <magic_enum/magic_enum.hpp>
+
+#include "common/hack_features.h"
 #include "common/types.h"
 #include "shader_recompiler/backend/bindings.h"
 #include "shader_recompiler/frontend/fetch_shader.h"
@@ -128,8 +132,15 @@ struct StageSpecialization {
                              spec.element_size = sharp.element_size;
                          }
                      });
+        const bool ignore_images = HasGarbageImageSharps(*info);
         ForEachSharp(binding, images, info->images,
                      [&](auto& spec, const auto& desc, AmdGpu::Image sharp) {
+                         if (ignore_images || !IsPlausibleImageSharp(sharp)) {
+                             // Garbage T#s (e.g. from an SRT walker failure) change on every
+                             // dispatch; specializing on them compiles a new permutation each
+                             // time. They are bound as null images anyway.
+                             return false;
+                         }
                          spec.type = sharp.GetViewType(desc.is_array);
                          spec.is_integer = AmdGpu::IsInteger(sharp.GetNumberFmt());
                          spec.is_storage = desc.is_written;
@@ -140,6 +151,7 @@ struct StageSpecialization {
                          }
                          spec.num_conversion = sharp.GetNumberConversion();
                          spec.num_bindings = desc.NumBindings(*info);
+                         return true;
                      });
         ForEachSharp(binding, fmasks, info->fmasks,
                      [](auto& spec, const auto& desc, AmdGpu::Image sharp) {
@@ -180,9 +192,33 @@ struct StageSpecialization {
                 binding++;
                 continue;
             }
+            if constexpr (std::is_same_v<decltype(func(spec, desc, sharp)), bool>) {
+                if (!func(spec, desc, sharp)) {
+                    spec = {};
+                    binding++;
+                    continue;
+                }
+            } else {
+                func(spec, desc, sharp);
+            }
             bitset[binding++] = true;
-            func(spec, desc, sharp);
         }
+    }
+
+    static bool HasGarbageImageSharps(const Info& info) {
+        // The Order: 1886 compute shaders whose T#s are bound as null images in
+        // Rasterizer::BindTextures (keep these lists in sync).
+        return Common::HackFeatures::isTheOrder1886 &&
+               (info.pgm_hash == 0xa7b66f58 || info.pgm_hash == 0xefaaab2b ||
+                info.pgm_hash == 0x804aeead);
+    }
+
+    static bool IsPlausibleImageSharp(const AmdGpu::Image& sharp) {
+        const auto data_fmt = sharp.GetDataFmt();
+        return data_fmt != AmdGpu::DataFormat::FormatInvalid && !AmdGpu::IsFmask(data_fmt) &&
+               magic_enum::enum_contains(data_fmt) &&
+               magic_enum::enum_contains(sharp.GetNumberFmt()) &&
+               magic_enum::enum_contains(sharp.GetTileMode());
     }
 
     [[nodiscard]] bool Valid() const {
