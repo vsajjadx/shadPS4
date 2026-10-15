@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <optional>
 #include <unordered_map>
 #include <boost/container/flat_map.hpp>
 #include <queue>
@@ -295,7 +296,6 @@ static bool EmitComputeOffsetShiftLeftLogical32(Xbyak::CodeGenerator& c, Xbyak::
     ASSERT(!inst->AreAllArgsImmediates());
     if (inst->Arg(0).IsImmediate()) {
         ABORT_ON_FAILURE(ComputeOffset(c, reg, pass_info, inst->Arg(1)));
-        c.shl(reg, inst->Arg(0).U32());
         c.mov(ecx, reg);
         c.mov(reg, inst->Arg(0).U32());
         c.shl(reg, cl);
@@ -508,9 +508,169 @@ static bool IsAllowedOffsetInstruction(const IR::Inst* inst) {
     }
 }
 
+// Lane and control flow constructs can wrap a value that is uniform across the wave, e.g. an SGPR
+// spilled to a VGPR lane and read back, or a loop phi carrying the same value on every edge.
+// The SRT walker can't evaluate them, so look through them to the value they carry.
+constexpr u32 MaxResolveDepth = 32;
+
+static IR::Value ResolveUniformValue(const IR::Value& value, u32 depth = 0);
+
+static bool IsUniformValue(const IR::Value& value, u32 depth) {
+    if (value.IsImmediate()) {
+        return true;
+    }
+    if (depth > MaxResolveDepth) {
+        return false;
+    }
+    const IR::Inst* inst = value.Inst();
+    switch (inst->GetOpcode()) {
+    case IR::Opcode::GetUserData:
+    case IR::Opcode::ReadConst:
+    case IR::Opcode::ReadConstBuffer:
+        return true;
+    default:
+        break;
+    }
+    if (!IsAllowedOffsetInstruction(inst)) {
+        return false;
+    }
+    for (size_t arg = 0; arg < inst->NumArgs(); ++arg) {
+        if (!IsUniformValue(ResolveUniformValue(inst->Arg(arg), depth + 1), depth + 1)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Returns the single value a phi web carries, an empty value if it only references itself,
+// or nullopt if it merges different values.
+static std::optional<IR::Value> ResolvePhi(IR::Inst* phi, u32 depth,
+                                           boost::container::small_vector<IR::Inst*, 8>& phis) {
+    if (depth > MaxResolveDepth) {
+        return std::nullopt;
+    }
+    phis.push_back(phi);
+    IR::Value same{};
+    for (size_t arg = 0; arg < phi->NumArgs(); ++arg) {
+        IR::Value op = phi->Arg(arg);
+        if (!op.IsImmediate() && op.Inst()->GetOpcode() == IR::Opcode::Phi) {
+            IR::Inst* op_phi = op.Inst();
+            if (std::ranges::find(phis, op_phi) != phis.end()) {
+                // Back edge into a phi we're already resolving
+                continue;
+            }
+            const auto resolved = ResolvePhi(op_phi, depth + 1, phis);
+            if (!resolved) {
+                return std::nullopt;
+            }
+            if (resolved->IsEmpty()) {
+                continue;
+            }
+            op = *resolved;
+        } else {
+            op = ResolveUniformValue(op, depth + 1);
+        }
+        if (same.IsEmpty()) {
+            same = op;
+        } else if (op != same) {
+            return std::nullopt;
+        }
+    }
+    return same;
+}
+
+static IR::Value ResolveUniformValue(const IR::Value& value, u32 depth) {
+    if (value.IsImmediate() || depth > MaxResolveDepth) {
+        return value;
+    }
+    IR::Inst* inst = value.Inst();
+    switch (inst->GetOpcode()) {
+    case IR::Opcode::Phi: {
+        boost::container::small_vector<IR::Inst*, 8> phis;
+        const auto resolved = ResolvePhi(inst, depth, phis);
+        return !resolved || resolved->IsEmpty() ? value : *resolved;
+    }
+    case IR::Opcode::ReadLane: {
+        if (inst->Arg(1).IsImmediate()) {
+            // Look for the WriteLane that put the value in this lane
+            const u32 lane = inst->Arg(1).U32();
+            IR::Value src = inst->Arg(0);
+            while (!src.IsImmediate() && src.Inst()->GetOpcode() == IR::Opcode::WriteLane) {
+                IR::Inst* write = src.Inst();
+                if (write->Arg(2).IsImmediate() && write->Arg(2).U32() == lane) {
+                    return ResolveUniformValue(write->Arg(1), depth + 1);
+                }
+                if (!write->Arg(2).IsImmediate()) {
+                    break;
+                }
+                src = write->Arg(0);
+            }
+        }
+        [[fallthrough]];
+    }
+    case IR::Opcode::ReadFirstLane: {
+        // Every lane holds the same value if it was computed from scalar sources only
+        const IR::Value src = ResolveUniformValue(inst->Arg(0), depth + 1);
+        if (IsUniformValue(src, depth + 1)) {
+            return src;
+        }
+        return value;
+    }
+    default:
+        return value;
+    }
+}
+
+// Rewrite the offset tree of a constant load so that it only contains instructions
+// ComputeOffset can emit.
+static void ResolveOffsetLaneOps(IR::Inst& inst) {
+    boost::container::small_vector<IR::Inst*, 16> visited;
+    std::queue<IR::Inst*> queue;
+
+    const IR::Value offset = ResolveUniformValue(inst.Arg(1));
+    if (offset != inst.Arg(1)) {
+        inst.SetArg(1, offset);
+    }
+    if (offset.IsImmediate()) {
+        return;
+    }
+    queue.push(offset.Inst());
+    while (!queue.empty()) {
+        IR::Inst* node = queue.front();
+        queue.pop();
+        if (!IsAllowedOffsetInstruction(node) || node->GetOpcode() == IR::Opcode::GetUserData ||
+            node->GetOpcode() == IR::Opcode::ReadConst ||
+            node->GetOpcode() == IR::Opcode::ReadConstBuffer) {
+            continue;
+        }
+        for (size_t arg = 0; arg < node->NumArgs(); ++arg) {
+            const IR::Value arg_value = node->Arg(arg);
+            if (arg_value.IsImmediate()) {
+                continue;
+            }
+            const IR::Value resolved = ResolveUniformValue(arg_value);
+            if (resolved != arg_value) {
+                node->SetArg(arg, resolved);
+            }
+            if (resolved.IsImmediate()) {
+                continue;
+            }
+            IR::Inst* arg_inst = resolved.Inst();
+            if (std::ranges::find(visited, arg_inst) == visited.end()) {
+                visited.push_back(arg_inst);
+                queue.push(arg_inst);
+            }
+        }
+    }
+}
+
 static bool ComputeOffset(Xbyak::CodeGenerator& c, Xbyak::Reg32 reg, PassInfo& pass_info,
                           const IR::Value& off_dw) {
     ASSERT(reg != ecx && reg != edx);
+    if (off_dw.IsImmediate()) {
+        c.mov(reg, off_dw.U32());
+        return true;
+    }
     auto inst = off_dw.Inst();
     switch (inst->GetOpcode()) {
     case IR::Opcode::GetUserData:
@@ -774,6 +934,7 @@ void FlattenExtendedUserdataPass(IR::Program& program) {
             }
 
             SimplifyReadConstAddressAdd(inst);
+            ResolveOffsetLaneOps(inst);
 
             all_readconsts.push_back(&inst);
 

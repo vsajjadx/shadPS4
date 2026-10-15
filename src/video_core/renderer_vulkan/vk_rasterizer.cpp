@@ -869,14 +869,13 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
 
 bool Rasterizer::IsImageInfoUsable(const VideoCore::ImageInfo& info) const {
     const auto& limits = instance.GetLimits();
-    const u32 max_dim = info.props.is_volume ? limits.maxImageDimension3D
-                                             : limits.maxImageDimension2D;
+    const u32 max_dim =
+        info.props.is_volume ? limits.maxImageDimension3D : limits.maxImageDimension2D;
     if (info.pixel_format == vk::Format::eUndefined || info.size.width == 0 ||
         info.size.height == 0 || info.size.depth == 0 || info.size.width > max_dim ||
-        info.size.height > max_dim || info.size.depth > max_dim ||
-        info.resources.levels == 0 || info.resources.levels > VideoCore::MAX_MIPS ||
-        info.resources.layers == 0 || info.resources.layers > limits.maxImageArrayLayers ||
-        info.guest_size == 0) {
+        info.size.height > max_dim || info.size.depth > max_dim || info.resources.levels == 0 ||
+        info.resources.levels > VideoCore::MAX_MIPS || info.resources.layers == 0 ||
+        info.resources.layers > limits.maxImageArrayLayers || info.guest_size == 0) {
         return false;
     }
     // Vulkan limits the mip count to log2(max extent) + 1.
@@ -884,9 +883,11 @@ bool Rasterizer::IsImageInfoUsable(const VideoCore::ImageInfo& info) const {
     if (static_cast<u32>(info.resources.levels) > std::bit_width(max_extent)) {
         return false;
     }
-    // Only require the start to be mapped; legit textures may pad past the end of a mapping.
+    // The texture cache hashes and uploads the whole guest range, so a T# reaching into
+    // unmapped memory (e.g. garbage from an SRT walker failure) faults in XXH3 and crashes.
     constexpr u32 MaxGuestSize = 1_GB;
-    return info.guest_size <= MaxGuestSize && memory->IsMappedRange(info.guest_address, 1);
+    return info.guest_size <= MaxGuestSize &&
+           memory->IsMappedRange(info.guest_address, info.guest_size);
 }
 
 void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindings& binding) {
