@@ -895,12 +895,14 @@ void Rasterizer::ClampImageLevels(VideoCore::TextureCache::ImageDesc& desc) {
 bool Rasterizer::ClampImageLayers(VideoCore::TextureCache::ImageDesc& desc,
                                   const AmdGpu::Image& tsharp,
                                   const Shader::ImageResource& image_desc) {
-    // The Order: 1886 binds 2D T#s with a garbage depth/array field (912 or 1072 slices), which
-    // pushes the guest size past the mapped memory so the T# was rejected and the shader sampled
-    // black (shadow maps, the tiled light grid, half resolution lighting buffers). A shader that
-    // declares a non-array image only ever reads one slice, so bind that slice alone instead.
-    if (!Common::HackFeatures::isTheOrder1886 || image_desc.is_array ||
-        desc.info.props.is_volume || desc.info.resources.layers <= 1) {
+    // The Order: 1886 binds 2D/2D-array T#s whose depth field is garbage or a "max" value (898,
+    // 913, 1073, 2048, 3793 slices), which pushes the guest size past the mapped memory, so the
+    // T# was rejected and the shader sampled black: shadow maps, half resolution lighting
+    // buffers and BC5 material arrays, which made every scene outside direct light very dark.
+    // The hardware only fetches slices up to last_array, so size the image by the slices the
+    // view can actually reach, and fall back to the first viewed slice alone.
+    if (!Common::HackFeatures::isTheOrder1886 || desc.info.props.is_volume ||
+        desc.info.resources.layers <= 1) {
         return false;
     }
     const auto type = tsharp.GetType();
@@ -910,12 +912,19 @@ bool Rasterizer::ClampImageLayers(VideoCore::TextureCache::ImageDesc& desc,
     }
     auto& info = desc.info;
     auto& range = desc.view_info.range;
-    if (range.base.layer != 0) {
-        return false;
+    const u32 view_end = static_cast<u32>(range.base.layer) + range.extent.layers;
+    if (view_end < info.resources.layers) {
+        info.resources.layers = static_cast<u16>(view_end);
+        info.UpdateSize();
+        if (IsImageInfoUsable(info)) {
+            return true;
+        }
     }
-    info.resources.layers = 1;
+    if (image_desc.is_array && range.extent.layers > 1) {
+        range.extent.layers = 1;
+    }
+    info.resources.layers = static_cast<u16>(range.base.layer + 1);
     info.UpdateSize();
-    range.extent.layers = 1;
     return true;
 }
 
@@ -1024,11 +1033,14 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
                 // mapped. Creating it makes the driver fail the allocation and we assert.
                 LOG_WARNING(Render_Vulkan,
                             "Rejecting implausible T# address={:#x}, size={}x{}x{}, levels={}, "
-                            "layers={}, guest_size={:#x}, data_format={}, tile_mode={}",
+                            "layers={}, guest_size={:#x}, data_format={}, tile_mode={}, type={}, "
+                            "base_array={}, last_array={}, pitch={}",
                             desc.info.guest_address, desc.info.size.width, desc.info.size.height,
                             desc.info.size.depth, desc.info.resources.levels,
                             desc.info.resources.layers, desc.info.guest_size,
-                            static_cast<u32>(data_fmt), static_cast<u32>(tsharp.GetTileMode()));
+                            static_cast<u32>(data_fmt), static_cast<u32>(tsharp.GetTileMode()),
+                            static_cast<u32>(tsharp.GetType()), static_cast<u32>(tsharp.base_array),
+                            static_cast<u32>(tsharp.last_array), tsharp.Pitch());
                 image_id = {};
                 continue;
             }

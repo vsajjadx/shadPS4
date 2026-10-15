@@ -447,6 +447,13 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     game_info.initialized = true;
     game_info.game_serial = id;
     Common::HackFeatures::Init(id);
+    // NHL 24 (Frostbite) reads GPU-written culling/visibility data back on the CPU. With
+    // readbacks disabled the CPU sees stale memory and the ice and arena floor go black after
+    // the first frames of a match (the NHL 24 PC port ships with readbacks_mode = Relaxed).
+    if (id == "CUSA37933" && EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Disabled) {
+        EmulatorSettings.SetReadbacksMode(GpuReadbacksMode::Relaxed, true);
+        LOG_INFO(Config, "NHL 24: GPU readbacks forced to Relaxed");
+    }
     game_info.title = title;
     game_info.app_ver = app_version;
     game_info.firmware_ver = fw_version & 0xFFF00000;
