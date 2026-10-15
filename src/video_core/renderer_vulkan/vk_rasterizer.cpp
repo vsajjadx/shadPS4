@@ -874,8 +874,10 @@ void Rasterizer::ClampImageLevels(VideoCore::TextureCache::ImageDesc& desc) {
     auto& info = desc.info;
     const u32 max_extent = std::max({info.size.width, info.size.height, info.size.depth});
     const u32 max_levels = std::bit_width(max_extent);
+    // Only clamp a small overflow; anything larger is still treated as a garbage T# (as seen
+    // with SRT walker failures in The Order: 1886) and rejected by IsImageInfoUsable.
     if (max_levels == 0 || info.resources.levels <= max_levels ||
-        info.resources.levels > VideoCore::MAX_MIPS) {
+        info.resources.levels > max_levels + 1) {
         return;
     }
     info.resources.levels = static_cast<u16>(max_levels);
