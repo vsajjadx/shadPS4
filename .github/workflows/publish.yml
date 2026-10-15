@@ -14,17 +14,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir out && cd out
-          gh run download 38715365468 -R "${{ github.repository }}" -n shadps4-win64-sdl-2026-10-15-4c3f442 -D f2
-          gh run download 38709291848 -R "${{ github.repository }}" -n shadps4-win64-sdl-2026-10-15-9c6a436 -D f3
+          gh run download 38728283816 -R "${{ github.repository }}" -n shadps4-win64-sdl-2026-10-15-7e4bf80 -D f2
+          gh run download 38728282383 -R "${{ github.repository }}" -n shadps4-win64-sdl-2026-10-15-b4d5ecc -D f3
           ls -la f2 f3
-          (cd f2 && zip -q ../shadPS4-f2-full-v020-4c3f442.zip shadPS4.exe)
-          (cd f3 && zip -q ../shadPS4-f3-lite-v020-9c6a436.zip shadPS4.exe)
+          (cd f2 && zip -q ../shadPS4-f2-full-v020-7e4bf80.zip shadPS4.exe)
+          (cd f3 && zip -q ../shadPS4-f3-lite-v020-b4d5ecc.zip shadPS4.exe)
           ls -la
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create builds-2026-10-15c out/shadPS4-f2-full-v020-4c3f442.zip out/shadPS4-f3-lite-v020-9c6a436.zip \
+          gh release create builds-2026-10-15d out/shadPS4-f2-full-v020-7e4bf80.zip out/shadPS4-f3-lite-v020-b4d5ecc.zip \
             -R "${{ github.repository }}" --target "${{ github.sha }}" \
-            --title "shadPS4 builds 2026-10-15c (Windows)" \
-            --notes "f2 = full 1886 fork on upstream main 314c456 (4c3f442). f3 = lite 1886 fixes on upstream main 314c456 (9c6a436). Windows x64, shadPS4.exe inside the zip."
+            --title "shadPS4 builds 2026-10-15d (Windows)" \
+            --notes "f2 (7e4bf80) and f3 (b4d5ecc) on upstream main 314c456, plus the SRT walker fix for The Order: 1886 (no more tile mode 29 crash). Windows x64, shadPS4.exe inside the zip."
