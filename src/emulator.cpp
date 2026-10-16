@@ -454,12 +454,19 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         EmulatorSettings.SetReadbacksMode(GpuReadbacksMode::Relaxed, true);
         LOG_INFO(Config, "NHL 24: GPU readbacks forced to Relaxed");
     }
-    // UFC 4 runs on the same EA engine and also reads GPU-written data on the CPU: without
-    // readbacks every fight renders a black arena with only the HUD visible.
-    if ((id == "CUSA14204" || id == "CUSA14209") &&
-        EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Disabled) {
-        EmulatorSettings.SetReadbacksMode(GpuReadbacksMode::Relaxed, true);
-        LOG_INFO(Config, "UFC 4: GPU readbacks forced to Relaxed");
+    // UFC 4 reads GPU-rendered data back on the CPU, including images the GPU renders in linear
+    // layout. Without precise readbacks every fight is a black arena with only the HUD, and
+    // without linear image readbacks the fighters stay black silhouettes (shadPS4 #4375).
+    // Relaxed readbacks only flush GPU data when the CPU writes, which isn't enough here.
+    if (id == "CUSA14204" || id == "CUSA14209") {
+        if (EmulatorSettings.GetReadbacksMode() != GpuReadbacksMode::Precise) {
+            EmulatorSettings.SetReadbacksMode(GpuReadbacksMode::Precise, true);
+            LOG_INFO(Config, "UFC 4: GPU readbacks forced to Precise");
+        }
+        if (!EmulatorSettings.IsReadbackLinearImagesEnabled()) {
+            EmulatorSettings.SetReadbackLinearImagesEnabled(true, true);
+            LOG_INFO(Config, "UFC 4: linear image readbacks forced on");
+        }
     }
     game_info.title = title;
     game_info.app_ver = app_version;
