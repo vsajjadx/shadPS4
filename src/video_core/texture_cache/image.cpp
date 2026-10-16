@@ -249,6 +249,35 @@ void Image::GetBarriers(Barriers& barriers, vk::ImageLayout dst_layout, vk::Acce
     auto& last_state = backing->state;
     auto& subresource_states = backing->subresource_states;
 
+    // Draws repeat the same few transitions on the same images. A request that changed nothing
+    // last time is skipped until the state changes. (From the inFAMOUS PC port.)
+    const bool has_range = subres_range.has_value();
+    const SubresourceRange range = has_range ? *subres_range : SubresourceRange{};
+    for (const auto& settled : backing->settled_requests) {
+        if (settled.generation == backing->state_generation && settled.layout == dst_layout &&
+            settled.access_mask == dst_mask && settled.pl_stage == dst_stage &&
+            settled.has_range == has_range && settled.range.base == range.base &&
+            settled.range.extent == range.extent) {
+            return;
+        }
+    }
+    const size_t barriers_before = barriers.size();
+    const State state_before = last_state;
+    const bool partial_before = !subresource_states.empty();
+    const auto settle = [&] {
+        const bool changed = barriers.size() != barriers_before ||
+                             last_state.layout != state_before.layout ||
+                             last_state.access_mask != state_before.access_mask ||
+                             last_state.pl_stage != state_before.pl_stage ||
+                             partial_before != !subresource_states.empty();
+        if (changed) {
+            ++backing->state_generation;
+            return;
+        }
+        backing->settled_requests[backing->next_settled_request++ % 4] = {
+            backing->state_generation, dst_layout, dst_mask, dst_stage, has_range, range};
+    };
+
     const bool needs_partial_transition =
         subres_range &&
         (subres_range->base != SubresourceBase{} || subres_range->extent != info.resources);
@@ -318,6 +347,7 @@ void Image::GetBarriers(Barriers& barriers, vk::ImageLayout dst_layout, vk::Acce
                                      vk::AccessFlagBits2::eMemoryWrite;
         const bool is_write = static_cast<bool>(last_state.access_mask & write_flags);
         if (last_state.layout == dst_layout && last_state.access_mask == dst_mask && !is_write) {
+            settle();
             return;
         }
         barriers.emplace_back(vk::ImageMemoryBarrier2{
@@ -343,6 +373,7 @@ void Image::GetBarriers(Barriers& barriers, vk::ImageLayout dst_layout, vk::Acce
     last_state.layout = dst_layout;
     last_state.access_mask = dst_mask;
     last_state.pl_stage = dst_stage;
+    settle();
 }
 
 } // namespace VideoCore

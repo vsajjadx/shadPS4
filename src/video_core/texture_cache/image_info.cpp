@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
+#include <cstring>
+#include <memory>
+#include <thread>
 #include "common/assert.h"
 #include "core/libraries/kernel/process.h"
 #include "core/libraries/videoout/buffer.h"
@@ -126,8 +130,50 @@ ImageInfo::ImageInfo(const AmdGpu::DepthBuffer& buffer, u32 num_slices, VAddr ht
     stencil_size = guest_size / (num_bits >> 3);
 }
 
+namespace {
+
+// Every texture bind of every draw builds an ImageInfo from the same few hundred descriptors and
+// working out the mip layout is the costly part. The result depends only on the descriptor bytes
+// and the depth flag, so the last result per descriptor is kept. Only the first thread that asks
+// (the GPU command thread) uses it. (From the inFAMOUS PC port.)
+struct SharpMemo {
+    std::array<u64, 4> sharp{};
+    bool is_depth{};
+    bool valid{};
+    ImageInfo info{};
+};
+constexpr size_t SharpMemoSize = 1024;
+static_assert(sizeof(AmdGpu::Image) == sizeof(std::array<u64, 4>));
+
+} // namespace
+
 ImageInfo::ImageInfo(const AmdGpu::Image& sharp, const Shader::ImageResource& desc) noexcept {
     const bool is_depth = desc.is_depth;
+    static const std::thread::id owner = std::this_thread::get_id();
+    SharpMemo* slot = nullptr;
+    std::array<u64, 4> key;
+    std::memcpy(key.data(), &sharp, sizeof(key));
+    if (std::this_thread::get_id() == owner) {
+        static const auto memo = std::make_unique<std::array<SharpMemo, SharpMemoSize>>();
+        u64 hash = key[0] * 0x9E3779B97F4A7C15ull ^ key[1] * 0xC2B2AE3D27D4EB4Full ^
+                   key[2] * 0x165667B19E3779F9ull ^ key[3] * 0x27D4EB2F165667C5ull;
+        hash ^= hash >> 29;
+        slot = &(*memo)[(hash ^ static_cast<u64>(is_depth)) % SharpMemoSize];
+        if (slot->valid && slot->is_depth == is_depth && slot->sharp == key) {
+            *this = slot->info;
+            return;
+        }
+    }
+    BuildFromSharp(sharp, is_depth);
+    if (slot) {
+        slot->sharp = key;
+        slot->is_depth = is_depth;
+        slot->info = *this;
+        slot->valid = true;
+    }
+}
+
+void ImageInfo::BuildFromSharp(const AmdGpu::Image& sharp, bool is_depth) noexcept {
     const auto image = sharp;
     const auto data_fmt = image.GetDataFmt();
     tile_mode = image.GetTileMode();
