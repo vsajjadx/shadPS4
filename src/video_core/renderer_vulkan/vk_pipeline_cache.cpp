@@ -148,6 +148,19 @@ static u32 MapOutputs(std::span<Shader::OutputMap, 3> outputs, const AmdGpu::VsO
     return num_outputs;
 }
 
+// Lowered user clip planes ride the same emulation path as guest-exported distances, so the
+// fragment side arms whenever the hardware vertex stage lowers them, keeping its input locations
+// in sync with the shifted vertex outputs.
+static bool NeedsClipDistanceEmulation(const AmdGpu::Regs& regs, const Shader::Profile& profile) {
+    const bool lowers_user_clip_planes =
+        regs.clipper_control.user_clip_plane_enable &&
+        !regs.stage_enable.IsStageEnabled(static_cast<u32>(HwStage::Geometry));
+    return ((regs.vs_output_control.clip_distance_enable &&
+             !regs.stage_enable.IsStageEnabled(static_cast<u32>(HwStage::Local))) ||
+            lowers_user_clip_planes) &&
+           profile.needs_clip_distance_emulation;
+}
+
 const Shader::RuntimeInfo& PipelineCache::BuildRuntimeInfo(HwStage stage, SwStage l_stage) {
     auto& info = runtime_infos[u32(l_stage)];
     const auto& regs = liverpool->regs;
@@ -268,17 +281,7 @@ const Shader::RuntimeInfo& PipelineCache::BuildRuntimeInfo(HwStage stage, SwStag
         for (u32 i = 0; i < Shader::MaxColorBuffers; i++) {
             info.hw.fs.color_buffers[i] = graphics_key.color_buffers[i];
         }
-        // Lowered user clip planes ride the same emulation path as guest-exported distances, so
-        // the fragment side arms whenever the hardware vertex stage lowers them, keeping its input
-        // locations in sync with the shifted vertex outputs.
-        const bool lowers_user_clip_planes =
-            regs.clipper_control.user_clip_plane_enable &&
-            !regs.stage_enable.IsStageEnabled(static_cast<u32>(HwStage::Geometry));
-        info.hw.fs.clip_distance_emulation =
-            ((regs.vs_output_control.clip_distance_enable &&
-              !regs.stage_enable.IsStageEnabled(static_cast<u32>(HwStage::Local))) ||
-             lowers_user_clip_planes) &&
-            profile.needs_clip_distance_emulation;
+        info.hw.fs.clip_distance_emulation = NeedsClipDistanceEmulation(regs, profile);
         break;
     }
     case HwStage::Compute: {
@@ -617,6 +620,14 @@ bool PipelineCache::RefreshGraphicsStages() {
     bind_stage(HwStage::Fragment, SwStage::Fragment);
 
     const auto* fs_info = infos[static_cast<u32>(SwStage::Fragment)];
+    if (!fs_info) {
+        // Without a pixel shader the pipeline adds the discard fragment shader from this runtime
+        // info. Keeping the previous draw's made that depend on the draw before (NVIDIA clip
+        // distance emulation). (From the inFAMOUS Second Son PC port by HayatoG.)
+        auto& fs_runtime = runtime_infos[static_cast<u32>(SwStage::Fragment)];
+        fs_runtime = {};
+        fs_runtime.hw.fs.clip_distance_emulation = NeedsClipDistanceEmulation(regs, profile);
+    }
     key.mrt_mask = fs_info ? fs_info->mrt_mask : 0u;
     key.num_color_attachments = std::bit_width(key.mrt_mask);
 
