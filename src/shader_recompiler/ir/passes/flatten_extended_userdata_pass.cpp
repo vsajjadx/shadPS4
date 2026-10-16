@@ -712,6 +712,14 @@ static bool ComputeOffset(Xbyak::CodeGenerator& c, Xbyak::Reg32 reg, PassInfo& p
             c.mov(reg, ptr[rsi + (offset << 2)]);
             return true;
         }
+        if (Common::HackFeatures::isTheOrder1886) {
+            // Same fallback as the run-time selected indices below: the first table entry
+            // is a real texture, an unresolved slot is garbage that gets rejected.
+            LOG_WARNING(Render_Recompiler, "Unflattened SRT offset source replaced by 0: {}",
+                        DescribeOffsetValue(off_dw));
+            c.xor_(reg, reg);
+            return true;
+        }
         return false;
     case IR::Opcode::IAdd32:
         ABORT_ON_FAILURE(EmitComputeOffsetIAdd32(c, reg, pass_info, inst));
@@ -795,6 +803,35 @@ static inline void PopPtr(Xbyak::CodeGenerator& c) {
     c.pop(rdi);
 }
 
+// Finds a ReadConst in an offset tree that hasn't been given a flattened buffer slot yet. The
+// walker reads such values from the flattened buffer, so they must be copied before the offset
+// that uses them is evaluated.
+static const IR::Inst* FindUnflattenedDependency(PassInfo& pass_info, const IR::Value& value,
+                                                 u32 depth = 0) {
+    if (value.IsImmediate() || depth > MaxResolveDepth) {
+        return nullptr;
+    }
+    IR::Inst* inst = value.Inst();
+    switch (inst->GetOpcode()) {
+    case IR::Opcode::ReadConst:
+    case IR::Opcode::ReadConstBuffer:
+        return GetFlatbufOffset(pass_info.DeduplicateInstruction(inst)) == 0 ? inst : nullptr;
+    case IR::Opcode::GetUserData:
+        return nullptr;
+    default:
+        break;
+    }
+    if (!IsAllowedOffsetInstruction(inst)) {
+        return nullptr;
+    }
+    for (size_t arg = 0; arg < inst->NumArgs(); ++arg) {
+        if (const IR::Inst* dep = FindUnflattenedDependency(pass_info, inst->Arg(arg), depth + 1)) {
+            return dep;
+        }
+    }
+    return nullptr;
+}
+
 static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& pass_info,
                          Xbyak::CodeGenerator& c) {
     if (subtree->GetOpcode() == IR::Opcode::ReadConst && subtree->Flags<u16>() == 0 ||
@@ -815,12 +852,66 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
     // flattened buffer.
     // TODO src and dst are contiguous. Optimize with wider loads/stores
     // TODO if this subtree is dynamically indexed, don't compact it (keep it sparse)
-    for (auto [src_off_dw, use] : *use_list) {
+    //
+    // Uses are sorted by block address, not by dominance, so a use whose offset reads another
+    // value of this table (e.g. an index loaded inside a loop) can come before that value.
+    // Copy uses in dependency order so every value an offset needs is flattened first.
+    boost::container::small_vector<std::pair<IR::Value, IR::Inst*>, 32> ordered;
+    {
+        boost::container::small_vector<std::pair<IR::Value, IR::Inst*>, 32> pending(
+            use_list->begin(), use_list->end());
+        boost::container::small_vector<IR::Inst*, 32> placed;
+        const auto blocking_dependency = [&](const IR::Value& off) -> const IR::Inst* {
+            // Treat ReadConsts of this level that are already ordered as available
+            if (off.IsImmediate()) {
+                return nullptr;
+            }
+            const IR::Inst* dep = FindUnflattenedDependency(pass_info, off);
+            if (dep && std::ranges::find(placed, pass_info.DeduplicateInstruction(
+                                                     const_cast<IR::Inst*>(dep))) != placed.end()) {
+                return nullptr;
+            }
+            return dep;
+        };
+        bool progress = true;
+        while (!pending.empty() && progress) {
+            progress = false;
+            for (auto it = pending.begin(); it != pending.end();) {
+                if (!blocking_dependency(it->first)) {
+                    placed.push_back(pass_info.DeduplicateInstruction(it->second));
+                    ordered.push_back(*it);
+                    it = pending.erase(it);
+                    progress = true;
+                } else {
+                    ++it;
+                }
+            }
+        }
+        for (const auto& entry : pending) {
+            LOG_ERROR(Render_Recompiler,
+                      "SRT offset depends on a value outside this table, {}: needs {}",
+                      DescribeOffsetValue(entry.first),
+                      DescribeOffsetValue(IR::Value{const_cast<IR::Inst*>(
+                          FindUnflattenedDependency(pass_info, entry.first))}));
+            ordered.push_back(entry);
+        }
+    }
+    for (auto [src_off_dw, use] : ordered) {
         if (src_off_dw.IsImmediate()) {
             c.mov(r10d, ptr[rdi + (src_off_dw.U32() << 2)]);
         } else {
+            // Placed uses only get their slot once emitted, so check against the real state
+            if (const IR::Inst* dep = FindUnflattenedDependency(pass_info, src_off_dw);
+                dep && !Common::HackFeatures::isTheOrder1886) {
+                LOG_ERROR(Render_Recompiler,
+                          "Failed to compute offset for SRT walker, {}: {} isn't flattened",
+                          DescribeOffsetValue(src_off_dw),
+                          DescribeOffsetValue(IR::Value{const_cast<IR::Inst*>(dep)}));
+                continue;
+            }
             if (!ComputeOffset(c, r10d, pass_info, src_off_dw)) {
-                LOG_ERROR(Render_Recompiler, "Failed to compute offset for SRT walker");
+                LOG_ERROR(Render_Recompiler, "Failed to compute offset for SRT walker, {}",
+                          DescribeOffsetValue(src_off_dw));
                 continue;
             }
             c.shl(r10d, 2);
