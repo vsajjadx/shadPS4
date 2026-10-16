@@ -1,37 +1,51 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include "videodec2_impl.h"
-
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "video_utils.h"
+#include "videodec2_impl.h"
 #include "videodec_error.h"
-
-#include "common/support/avdec.h"
 
 namespace Libraries::Videodec2 {
 
 VdecDecoder::VdecDecoder(const OrbisVideodec2DecoderConfigInfo& config_info,
                          const OrbisVideodec2DecoderMemoryInfo& memory_info) {
-    const AVCodec* codec = avcodec_find_decoder(
-        config_info.codec_type == OrbisVideodec2CodecType::Avc ? AV_CODEC_ID_H264
-                                                               : AV_CODEC_ID_HEVC);
-    ASSERT(codec);
-
+    const AVCodecID codec_id = config_info.codec_type == OrbisVideodec2CodecType::Avc
+                                   ? AV_CODEC_ID_H264
+                                   : AV_CODEC_ID_HEVC;
+    const AVCodec* codec = avcodec_find_decoder(codec_id);
     m_codec_context = avcodec_alloc_context3(codec);
-    ASSERT(m_codec_context);
-    m_codec_context->width = config_info.max_frame_width;
-    m_codec_context->height = config_info.max_frame_height;
-    m_codec_context->flags |= AV_CODEC_FLAG_COPY_OPAQUE;
 
-    avcodec_open2(m_codec_context, codec, nullptr);
+    int res = avcodec_open2(m_codec_context, codec, nullptr);
+    ASSERT_MSG(res >= 0, "Could not open codec");
 }
 
 VdecDecoder::~VdecDecoder() {
+    while (!m_frame_queue.empty()) {
+        AVFrame* frame = m_frame_queue.front();
+        m_frame_queue.pop();
+        av_frame_free(&frame);
+    }
     avcodec_free_context(&m_codec_context);
     sws_freeContext(m_sws_context);
+}
+
+void VdecDecoder::DrainFrames() {
+    while (true) {
+        AVFrame* frame = av_frame_alloc();
+        if (!frame) {
+            break;
+        }
+        int ret = avcodec_receive_frame(m_codec_context, frame);
+        if (ret == 0) {
+            m_frame_queue.push(frame);
+        } else {
+            av_frame_free(&frame);
+            break;
+        }
+    }
 }
 
 s32 VdecDecoder::Decode(const OrbisVideodec2InputData& input_data,
@@ -42,11 +56,11 @@ s32 VdecDecoder::Decode(const OrbisVideodec2InputData& input_data,
     output_info.picture_count = 0;
 
     if (!input_data.au_data) {
-        LOG_ERROR(Lib_Vdec2, "ORBIS_VIDEODEC2_ERROR_ACCESS_UNIT_POINTER");
+        LOG_ERROR(Lib_Vdec2, "Invalid access unit data pointer");
         return ORBIS_VIDEODEC2_ERROR_ACCESS_UNIT_POINTER;
     }
     if (input_data.au_size == 0) {
-        LOG_ERROR(Lib_Vdec2, "ORBIS_VIDEODEC2_ERROR_ACCESS_UNIT_SIZE");
+        LOG_ERROR(Lib_Vdec2, "Invalid access unit size");
         return ORBIS_VIDEODEC2_ERROR_ACCESS_UNIT_SIZE;
     }
 
@@ -68,34 +82,29 @@ s32 VdecDecoder::Decode(const OrbisVideodec2InputData& input_data,
         avcodec_flush_buffers(m_codec_context);
         ret = avcodec_send_packet(m_codec_context, packet);
     }
+    if (ret == AVERROR(EAGAIN)) {
+        DrainFrames();
+        ret = avcodec_send_packet(m_codec_context, packet);
+    }
     if (ret < 0) {
         LOG_ERROR(Lib_Vdec2, "Error sending packet to decoder: {}", ret);
         av_packet_free(&packet);
         return ORBIS_VIDEODEC2_ERROR_API_FAIL;
     }
 
-    AVFrame* frame = av_frame_alloc();
-    if (frame == nullptr) {
-        LOG_ERROR(Lib_Vdec2, "Failed to allocate frame");
-        av_packet_free(&packet);
-        return ORBIS_VIDEODEC2_ERROR_API_FAIL;
+    av_packet_free(&packet);
+
+    DrainFrames();
+
+    if (m_frame_queue.empty()) {
+        return ORBIS_OK;
     }
 
-    ret = avcodec_receive_frame(m_codec_context, frame);
-    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
-        LOG_TRACE(Lib_Vdec2, "AVERROR_EOF or AVERROR(EAGAIN)");
-        av_packet_free(&packet);
-        av_frame_free(&frame);
-        return ORBIS_OK;
-    } else if (ret < 0) {
-        LOG_ERROR(Lib_Vdec2, "Error receiving frame from decoder: {}", ret);
-        av_packet_free(&packet);
-        av_frame_free(&frame);
-        return ORBIS_VIDEODEC2_ERROR_API_FAIL;
-    }
+    AVFrame* frame = m_frame_queue.front();
+    m_frame_queue.pop();
 
     if (frame->flags & AV_FRAME_FLAG_INTERLACED) {
-        LOG_ERROR(Lib_Vdec2, "Interlaced video output is not suported.");
+        LOG_ERROR(Lib_Vdec2, "Interlaced video output is not supported.");
     }
 
     if (frame->format != AV_PIX_FMT_NV12) {
@@ -163,7 +172,6 @@ s32 VdecDecoder::Decode(const OrbisVideodec2InputData& input_data,
         picture_info.frame_crop_bottom_offset = height - frame->height;
     }
 
-    av_packet_free(&packet);
     av_frame_free(&frame);
     return ORBIS_OK;
 }
@@ -174,22 +182,17 @@ s32 VdecDecoder::Flush(OrbisVideodec2FrameBuffer& frame_buffer,
     output_info.is_valid = false;
     output_info.picture_count = 0;
 
-    AVFrame* frame = av_frame_alloc();
-    if (!frame) {
-        LOG_ERROR(Lib_Vdec2, "Failed to allocate frame");
-        return ORBIS_VIDEODEC2_ERROR_API_FAIL;
+    if (m_frame_queue.empty()) {
+        avcodec_send_packet(m_codec_context, nullptr);
+        DrainFrames();
     }
 
-    avcodec_send_packet(m_codec_context, nullptr);
-    int ret = avcodec_receive_frame(m_codec_context, frame);
-    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
-        av_frame_free(&frame);
+    if (m_frame_queue.empty()) {
         return ORBIS_OK;
-    } else if (ret < 0) {
-        LOG_ERROR(Lib_Vdec2, "Error receiving frame from decoder: {}", ret);
-        av_frame_free(&frame);
-        return ORBIS_VIDEODEC2_ERROR_API_FAIL;
     }
+
+    AVFrame* frame = m_frame_queue.front();
+    m_frame_queue.pop();
 
     if (frame->format != AV_PIX_FMT_NV12) {
         AVFrame* nv12_frame = ConvertNV12Frame(*frame);
@@ -261,6 +264,11 @@ s32 VdecDecoder::Flush(OrbisVideodec2FrameBuffer& frame_buffer,
 }
 
 s32 VdecDecoder::Reset() {
+    while (!m_frame_queue.empty()) {
+        AVFrame* frame = m_frame_queue.front();
+        m_frame_queue.pop();
+        av_frame_free(&frame);
+    }
     avcodec_flush_buffers(m_codec_context);
     return ORBIS_OK;
 }
