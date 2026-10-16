@@ -16,6 +16,7 @@ constexpr char g_scm_desc[]        = "@GIT_DESC@";
 constexpr char g_scm_remote_name[] = "@GIT_REMOTE_NAME@";
 constexpr char g_scm_remote_url[]  = "@GIT_REMOTE_URL@";
 constexpr char g_scm_date[]        = "@BUILD_DATE@";
+constexpr char g_shader_cache_hash[] = "@SHADER_CACHE_HASH@";
 
 const std::string GetRemoteNameFromLink() {
     std::string remote_url(Common::g_scm_remote_url);

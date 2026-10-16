@@ -221,6 +221,30 @@ set_source_files_properties(src/dist/shadps4.rc PROPERTIES COMPILE_DEFINITIONS "
 set(APP_VERSION_NUM "${EMULATOR_VERSION_MAJOR}.${EMULATOR_VERSION_MINOR}.${EMULATOR_VERSION_PATCH}")
 set(APP_VERSION "${APP_VERSION_NUM} WIP")
 set(APP_IS_RELEASE false)
+# Pipeline cache entries are only valid for the code that produced them. Hash the sources that
+# decide the recompiled shaders and their metadata, so a build that changes any of them starts a
+# new cache instead of mixing entries from different generations.
+file(GLOB_RECURSE SHADER_CACHE_SOURCES CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/shader_recompiler/*.cpp"
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/shader_recompiler/*.h"
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/video_core/amdgpu/*.cpp"
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/video_core/amdgpu/*.h"
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/video_core/renderer_vulkan/vk_pipeline_*.cpp"
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/video_core/renderer_vulkan/vk_pipeline_*.h"
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/video_core/renderer_vulkan/vk_graphics_pipeline.*"
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/video_core/renderer_vulkan/vk_compute_pipeline.*"
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/video_core/renderer_vulkan/liverpool_to_vk.*"
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/common/hack_features.*")
+list(SORT SHADER_CACHE_SOURCES)
+set(SHADER_CACHE_DIGESTS "")
+foreach(SHADER_CACHE_SOURCE ${SHADER_CACHE_SOURCES})
+  file(SHA256 "${SHADER_CACHE_SOURCE}" SHADER_CACHE_SOURCE_HASH)
+  file(RELATIVE_PATH SHADER_CACHE_SOURCE_REL "${CMAKE_CURRENT_SOURCE_DIR}" "${SHADER_CACHE_SOURCE}")
+  string(APPEND SHADER_CACHE_DIGESTS "${SHADER_CACHE_SOURCE_REL}:${SHADER_CACHE_SOURCE_HASH};")
+endforeach()
+string(SHA256 SHADER_CACHE_HASH "${SHADER_CACHE_DIGESTS}")
+message(STATUS "Shader cache hash: ${SHADER_CACHE_HASH}")
+
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/common/scm_rev.cpp.in" "${CMAKE_CURRENT_BINARY_DIR}/src/common/scm_rev.cpp" @ONLY)
 
 message("-- end git things, remote: ${GIT_REMOTE_NAME}, branch: ${GIT_BRANCH}, link: ${GIT_REMOTE_URL}")

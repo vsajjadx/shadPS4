@@ -3,6 +3,7 @@
 
 #include <chrono>
 
+#include "common/scm_rev.h"
 #include "common/serdes.h"
 #include "core/emulator_settings.h"
 #include "shader_recompiler/frontend/fetch_shader.h"
@@ -313,48 +314,56 @@ void PipelineCache::WarmUp() {
 
     Storage::DataBase::Instance().Open();
 
+    auto& db = Storage::DataBase::Instance();
+    const std::string_view build_id{Common::g_shader_cache_hash};
+
+    const auto start_new_cache = [&] {
+        db.FinishPreload();
+        std::vector<u8> profile_blob(sizeof(profile));
+        std::memcpy(profile_blob.data(), &profile, sizeof(profile));
+        db.Save(Storage::BlobType::ShaderProfile, "profile", std::move(profile_blob));
+        db.Save(Storage::BlobType::ShaderProfile, "build",
+                std::vector<u8>(build_id.begin(), build_id.end()));
+    };
+
     // Check if cache is compatible
     std::vector<u8> profile_data{};
-    Storage::DataBase::Instance().Load(Storage::BlobType::ShaderProfile, "profile", profile_data);
+    db.Load(Storage::BlobType::ShaderProfile, "profile", profile_data);
     LOG_INFO(Render, "Pipeline cache at {}, profile size {}",
-             Common::FS::PathToUTF8String(Storage::DataBase::Instance().GetCachePath()),
-             profile_data.size());
+             Common::FS::PathToUTF8String(db.GetCachePath()), profile_data.size());
     if (profile_data.empty()) {
         LOG_WARNING(Render, "Pipeline cache has no profile, starting a new cache");
-        Storage::DataBase::Instance().FinishPreload();
-
-        profile_data.resize(sizeof(profile));
-        std::memcpy(profile_data.data(), &profile, sizeof(profile));
-        Storage::DataBase::Instance().Save(Storage::BlobType::ShaderProfile, "profile",
-                                           std::move(profile_data));
-        return;
-    }
-    if (profile_data.size() != sizeof(Shader::Profile)) {
-        LOG_WARNING(Render,
-                    "Pipeline cache profile has unexpected size ({} != {}). Ignoring the cache",
-                    profile_data.size(), sizeof(Shader::Profile));
-        Storage::DataBase::Instance().Close();
+        start_new_cache();
         return;
     }
 
+    std::vector<u8> build_data{};
+    db.Load(Storage::BlobType::ShaderProfile, "build", build_data);
+
+    // Entries written by a build with a different shader recompiler can't be mixed with the
+    // ones of this build: a module, its metadata and the pipelines using it must all come from
+    // the same code, or shaders read their resources from the wrong places.
     Shader::Profile cached_profile{};
-    std::memcpy(&cached_profile, profile_data.data(), sizeof(cached_profile));
-    if (cached_profile != profile) {
-        // Closing the cache here would also stop saving new pipelines, so it would never
-        // recover. Start over with this system's profile instead.
-        if (Storage::DataBase::Instance().Reset()) {
-            LOG_WARNING(Render, "Pipeline cache was made for a different system, starting a new "
-                                "cache");
-            Storage::DataBase::Instance().FinishPreload();
-            profile_data.resize(sizeof(profile));
-            std::memcpy(profile_data.data(), &profile, sizeof(profile));
-            Storage::DataBase::Instance().Save(Storage::BlobType::ShaderProfile, "profile",
-                                               std::move(profile_data));
+    if (profile_data.size() == sizeof(cached_profile)) {
+        std::memcpy(&cached_profile, profile_data.data(), sizeof(cached_profile));
+    }
+    const char* reason = nullptr;
+    if (profile_data.size() != sizeof(Shader::Profile)) {
+        reason = "has an unexpected profile size";
+    } else if (cached_profile != profile) {
+        reason = "was made for a different system";
+    } else if (std::string_view{reinterpret_cast<const char*>(build_data.data()),
+                                build_data.size()} != build_id) {
+        reason = "was made by a build with a different shader recompiler";
+    }
+    if (reason) {
+        if (db.Reset()) {
+            LOG_WARNING(Render, "Pipeline cache {}, starting a new cache", reason);
+            start_new_cache();
             return;
         }
-        LOG_WARNING(Render,
-                    "Pipeline cache isn't compatible with current system. Ignoring the cache");
-        Storage::DataBase::Instance().Close();
+        LOG_WARNING(Render, "Pipeline cache {}. Ignoring the cache", reason);
+        db.Close();
         return;
     }
 
