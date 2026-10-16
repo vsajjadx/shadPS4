@@ -9,6 +9,7 @@
 #include <xbyak/xbyak_util.h>
 #include "common/arch.h"
 #include "common/decoder.h"
+#include "common/hack_features.h"
 #include "common/io_file.h"
 #include "common/logging/log.h"
 #include "common/path_util.h"
@@ -748,6 +749,22 @@ static bool ComputeOffset(Xbyak::CodeGenerator& c, Xbyak::Reg32 reg, PassInfo& p
     case IR::Opcode::BitFieldUExtract:
         ABORT_ON_FAILURE(EmitComputeOffsetBitFieldUExtract(c, reg, pass_info, inst));
         return true;
+    case IR::Opcode::ReadLane:
+    case IR::Opcode::ReadFirstLane:
+    case IR::Opcode::Phi:
+        if (Common::HackFeatures::isTheOrder1886) {
+            // The Order: 1886 picks T#s at run time: a waterfall loop scalarizes a per-pixel
+            // index loaded from a typed buffer (ReadLane(LoadBufferFormat(..), BallotFindLsb))
+            // or a loop counter walks a table. The walker can't know those values, and leaving
+            // the slot unresolved binds garbage (e.g. its irradiance volumes get rejected and
+            // every area outside direct light is black). Use the first table entry instead,
+            // which at least yields a real texture of the right kind.
+            LOG_WARNING(Render_Recompiler, "Dynamic SRT offset replaced by the first entry: {}",
+                        DescribeOffsetValue(off_dw));
+            c.xor_(reg, reg);
+            return true;
+        }
+        [[fallthrough]];
     default:
         LOG_ERROR(Render_Recompiler, "Unexpected instruction for offset computation, {}: {}",
                   magic_enum::enum_name(inst->GetOpcode()), DescribeOffsetValue(off_dw));
