@@ -382,6 +382,40 @@ const Buffer* BufferCache::GetArena(u64 first_block, u64 last_block) {
     return new_arena;
 }
 
+void BufferCache::AllocateBackingSlab() {
+    // Sparse backing used to be allocated with one vkAllocateMemory per EnsureResident call, often
+    // a single 64 KB block, and never freed. Drivers limit the number of live allocations
+    // (maxMemoryAllocationCount is 4096 on NVIDIA on Windows); once a game made about 4000 ranges
+    // resident (NHL 24 after 6-13 minutes) the GPU thread stalled and the game froze. Backing is
+    // now sub-allocated from large slabs.
+    const vk::MemoryAllocateFlagsInfo alloc_flags = {
+        .flags = vk::MemoryAllocateFlagBits::eDeviceAddress,
+    };
+    const auto device = instance.GetDevice();
+    for (u64 slab_size = BACKING_SLAB_SIZE;; slab_size /= 2) {
+        slab_size = std::max<u64>(slab_size, block_size);
+        const vk::MemoryAllocateInfo alloc_info = {
+            .pNext = &alloc_flags,
+            .allocationSize = slab_size,
+            .memoryTypeIndex = arena_memory_type_index,
+        };
+        const auto [result, memory] = device.allocateMemory(alloc_info);
+        if (result == vk::Result::eSuccess) {
+            backing_slab = memory;
+            backing_slab_blocks = slab_size >> block_shift;
+            backing_slab_used = 0;
+            ++num_backing_slabs;
+            LOG_INFO(Render, "Allocated sparse backing slab #{} of {} MB", num_backing_slabs,
+                     slab_size >> 20);
+            return;
+        }
+        ASSERT_MSG(slab_size > block_size, "Failed to allocate sparse backing memory: {}",
+                   vk::to_string(result));
+        LOG_WARNING(Render, "Failed to allocate a {} MB sparse backing slab ({}), retrying smaller",
+                    slab_size >> 20, vk::to_string(result));
+    }
+}
+
 void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_block) {
     u32 resident_blocks{};
     IntervalList bind_ranges;
@@ -394,48 +428,47 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
         return;
     }
 
-    const vk::MemoryAllocateFlagsInfo alloc_flags = {
-        .flags = vk::MemoryAllocateFlagBits::eDeviceAddress,
-    };
-    const vk::MemoryAllocateInfo alloc_info = {
-        .pNext = &alloc_flags,
-        .allocationSize = resident_blocks << block_shift,
-        .memoryTypeIndex = arena_memory_type_index,
-    };
-    const auto device_memory = Vulkan::Check(instance.GetDevice().allocateMemory(alloc_info));
-
     boost::container::small_vector<vk::BufferCopy, 8> copies;
     const auto staging =
         staging_pool.Request(resident_blocks * sizeof(vk::DeviceAddress), MemoryType::HostUncached);
 
-    u64 memory_offset{};
     ArenaBinds* binds = BindsForArena(arena);
     auto* bda_addrs = reinterpret_cast<vk::DeviceAddress*>(staging.mapped);
     u64 offset = staging.offset;
     for (const auto& range : bind_ranges) {
-        Backing backing;
-        backing.start = range.start;
-        backing.end = range.end;
-        backing.memory = device_memory;
-        backing.offset = memory_offset >> block_shift;
-        resident_ranges.Add(backing);
+        // A range may be split across two backing slabs.
+        for (u64 start = range.start; start < range.end;) {
+            if (backing_slab_used == backing_slab_blocks) {
+                AllocateBackingSlab();
+            }
+            const u64 num_blocks =
+                std::min<u64>(range.end - start, backing_slab_blocks - backing_slab_used);
 
-        LOG_INFO(Render, "Making range start={}, end={} resident", backing.start, backing.end);
+            Backing backing;
+            backing.start = start;
+            backing.end = start + num_blocks;
+            backing.memory = backing_slab;
+            backing.offset = backing_slab_used;
+            resident_ranges.Add(backing);
+            backing_slab_used += num_blocks;
 
-        const auto& bind = binds->binds.emplace_back(vk::SparseMemoryBind{
-            .resourceOffset = (range.start << block_shift) - arena->cpu_addr,
-            .size = (range.end - range.start) << block_shift,
-            .memory = device_memory,
-            .memoryOffset = memory_offset,
-        });
-        memory_offset += bind.size;
+            LOG_INFO(Render, "Making range start={}, end={} resident", backing.start, backing.end);
 
-        for (u32 block = 0; block < bind.size; block += block_size) {
-            *(bda_addrs++) = arena->BufferDeviceAddress() + bind.resourceOffset + block;
+            const auto& bind = binds->binds.emplace_back(vk::SparseMemoryBind{
+                .resourceOffset = (backing.start << block_shift) - arena->cpu_addr,
+                .size = num_blocks << block_shift,
+                .memory = backing.memory,
+                .memoryOffset = backing.offset << block_shift,
+            });
+
+            for (u64 block = 0; block < bind.size; block += block_size) {
+                *(bda_addrs++) = arena->BufferDeviceAddress() + bind.resourceOffset + block;
+            }
+            const u64 copy_size = num_blocks * sizeof(vk::DeviceAddress);
+            copies.emplace_back(offset, backing.start * sizeof(vk::DeviceAddress), copy_size);
+            offset += copy_size;
+            start = backing.end;
         }
-        const u64 copy_size = (backing.end - backing.start) * sizeof(vk::DeviceAddress);
-        copies.emplace_back(offset, backing.start * sizeof(vk::DeviceAddress), copy_size);
-        offset += copy_size;
     }
 
     staging.Flush();

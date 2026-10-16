@@ -53,6 +53,7 @@ class BufferCache {
     static constexpr u64 NUM_ARENA_PAGES = u64{1} << (ADDRESS_SPACE_BITS - ARENA_PAGE_BITS);
     static constexpr u64 MIN_BLOCK_SIZE = 16_KB;
     static constexpr u64 STREAM_THRESHOLD = 16_KB;
+    static constexpr u64 BACKING_SLAB_SIZE = 64_MB;
 
 public:
     explicit BufferCache(const Vulkan::Instance& instance, Vulkan::Scheduler& scheduler,
@@ -142,6 +143,8 @@ private:
 
     const Buffer* GetArena(u64 first_block, u64 last_block);
 
+    void AllocateBackingSlab();
+
     void EnsureResident(const Buffer* arena, u64 first_block, u64 last_block);
 
     void DownloadMemory(const Buffer* arena, VAddr device_addr, u64 size, bool is_write,
@@ -186,6 +189,10 @@ private:
         }
     };
     IntervalList<Backing> resident_ranges;
+    vk::DeviceMemory backing_slab{};
+    u64 backing_slab_blocks{};
+    u64 backing_slab_used{};
+    u32 num_backing_slabs{};
 
     u32 arena_memory_type_index{};
     u32 block_size{};
