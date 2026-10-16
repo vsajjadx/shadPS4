@@ -3,7 +3,6 @@
 
 #include <optional>
 #include <unordered_map>
-#include <unordered_set>
 #include <boost/container/flat_map.hpp>
 #include <queue>
 #include <xbyak/xbyak.h>
@@ -20,7 +19,6 @@
 #include "shader_recompiler/info.h"
 #include "shader_recompiler/ir/ir_emitter.h"
 #include "shader_recompiler/ir/opcodes.h"
-#include "shader_recompiler/ir/passes/ir_passes.h"
 #include "shader_recompiler/ir/passes/srt.h"
 #include "shader_recompiler/ir/program.h"
 #include "shader_recompiler/ir/reg.h"
@@ -1050,129 +1048,11 @@ void SimplifyReadConstAddressAdd(IR::Inst& inst) {
     }
 }
 
-static bool IsConstLoad(const IR::Inst* inst) {
-    return inst->GetOpcode() == IR::Opcode::ReadConst ||
-           inst->GetOpcode() == IR::Opcode::ReadConstBuffer;
-}
-
-// Collects the constant loads the SRT walker has to flatten for resource binding: the sources of
-// every discovered sharp, and transitively the pointers and offsets those loads are read through.
-static void CollectWalkerNeededLoads(IR::Inst* inst, std::unordered_set<IR::Inst*>& needed,
-                                     u32 depth = 0) {
-    if (depth > MaxResolveDepth || !IsConstLoad(inst) || !needed.insert(inst).second) {
-        return;
-    }
-    const auto visit_tree = [&](const IR::Value& root) {
-        boost::container::small_vector<IR::Inst*, 16> stack;
-        boost::container::small_vector<IR::Inst*, 32> visited;
-        const auto push = [&](const IR::Value& value) {
-            const IR::Value resolved = ResolveUniformValue(value);
-            if (resolved.IsImmediate()) {
-                return;
-            }
-            IR::Inst* node = resolved.Inst();
-            if (node->GetOpcode() == IR::Opcode::ReadFirstLane && !node->Arg(0).IsImmediate()) {
-                node = node->Arg(0).Inst();
-            }
-            if (std::ranges::find(visited, node) == visited.end()) {
-                visited.push_back(node);
-                stack.push_back(node);
-            }
-        };
-        push(root);
-        while (!stack.empty()) {
-            IR::Inst* node = stack.back();
-            stack.pop_back();
-            if (IsConstLoad(node)) {
-                CollectWalkerNeededLoads(node, needed, depth + 1);
-                continue;
-            }
-            const bool is_pointer = node->GetOpcode() == IR::Opcode::CompositeConstructU32x2 ||
-                                    node->GetOpcode() == IR::Opcode::CompositeConstructU32x4;
-            if (!is_pointer && !IsAllowedOffsetInstruction(node)) {
-                continue;
-            }
-            for (size_t arg = 0; arg < node->NumArgs(); ++arg) {
-                push(node->Arg(arg));
-            }
-        }
-    };
-    visit_tree(inst->Arg(0));
-    visit_tree(inst->Arg(1));
-}
-
-// True if a constant load's address depends on a value only known on the GPU, e.g. an index
-// read from a buffer and scalarized by a waterfall loop. The SRT walker can't evaluate those.
-static bool HasDynamicAddress(const IR::Value& value, std::unordered_map<IR::Inst*, bool>& memo,
-                              u32 depth = 0) {
-    const IR::Value resolved = ResolveUniformValue(value);
-    if (resolved.IsImmediate()) {
-        return false;
-    }
-    if (depth > MaxResolveDepth) {
-        return true;
-    }
-    IR::Inst* inst = resolved.Inst();
-    if (const auto it = memo.find(inst); it != memo.end()) {
-        return it->second;
-    }
-    bool dynamic = false;
-    switch (inst->GetOpcode()) {
-    case IR::Opcode::GetUserData:
-        break;
-    case IR::Opcode::ReadConst:
-    case IR::Opcode::ReadConstBuffer:
-    case IR::Opcode::CompositeConstructU32x2:
-    case IR::Opcode::CompositeConstructU32x4:
-        for (size_t arg = 0; arg < inst->NumArgs() && !dynamic; ++arg) {
-            dynamic = HasDynamicAddress(inst->Arg(arg), memo, depth + 1);
-        }
-        break;
-    default:
-        if (!IsAllowedOffsetInstruction(inst)) {
-            dynamic = true;
-            break;
-        }
-        for (size_t arg = 0; arg < inst->NumArgs() && !dynamic; ++arg) {
-            dynamic = HasDynamicAddress(inst->Arg(arg), memo, depth + 1);
-        }
-        break;
-    }
-    memo[inst] = dynamic;
-    return dynamic;
-}
-
 } // Anonymous namespace
 
-void FlattenExtendedUserdataPass(IR::Program& program, const ResourceDiscoveryList& resources) {
+void FlattenExtendedUserdataPass(IR::Program& program) {
     auto& post_order = program.post_order_blocks;
     PassInfo pass_info;
-
-    // The Order: 1886 reads per-light data (e.g. shadow matrices) with s_load at an offset built
-    // from a light index the shader loads from a buffer and scalarizes in a waterfall loop. The
-    // walker can only flatten one entry, so every light ended up with the first light's shadow
-    // transform and its shadow lookups produced black blotches on lit surfaces. Leave plain data
-    // loads like that unflattened so they are read from guest memory at run time; only loads that
-    // feed resource sharps still have to go through the walker.
-    std::unordered_set<IR::Inst*> walker_needed;
-    std::unordered_map<IR::Inst*, bool> dynamic_memo;
-    if (Common::HackFeatures::isTheOrder1886) {
-        for (const auto& resource : resources) {
-            for (const auto& sharp : resource.sharps) {
-                for (u32 i = 0; i < sharp.num_dwords; ++i) {
-                    IR::Inst* source = sharp.dwords[i].TryInst();
-                    if (source && source->GetOpcode() == IR::Opcode::ReadFirstLane &&
-                        !source->Arg(0).IsImmediate()) {
-                        source = source->Arg(0).Inst();
-                    }
-                    if (source) {
-                        CollectWalkerNeededLoads(source, walker_needed);
-                    }
-                }
-            }
-        }
-    }
-    u32 num_runtime_loads = 0;
 
     // traverse at end and assign offsets to duplicate readconsts, using
     // vn_to_inst as the source
@@ -1198,14 +1078,6 @@ void FlattenExtendedUserdataPass(IR::Program& program, const ResourceDiscoveryLi
 
             SimplifyReadConstAddressAdd(inst);
             ResolveOffsetLaneOps(inst);
-
-            if (Common::HackFeatures::isTheOrder1886 &&
-                inst.GetOpcode() == IR::Opcode::ReadConst && !walker_needed.contains(&inst) &&
-                HasDynamicAddress(IR::Value{&inst}, dynamic_memo)) {
-                // Keeps flatbuf offset 0, which makes the backend load it from memory
-                ++num_runtime_loads;
-                continue;
-            }
 
             all_readconsts.push_back(&inst);
 
@@ -1291,12 +1163,6 @@ void FlattenExtendedUserdataPass(IR::Program& program, const ResourceDiscoveryLi
         SetFlatbufOffset(readconst, GetFlatbufOffset(original));
     }
 
-    if (num_runtime_loads != 0) {
-        LOG_INFO(Render_Recompiler,
-                 "{} shader {:#x}: {} dynamically indexed constant loads read from memory",
-                 program.info.hw_stage, program.info.pgm_hash, num_runtime_loads);
-    }
-
     program.info.RefreshFlatBuf();
 }
 
@@ -1312,7 +1178,7 @@ PFN_SrtWalker RegisterWalkerCode(const u8* ptr, size_t size) {
 
 namespace Optimization {
 
-void FlattenExtendedUserdataPass(IR::Program& program, const ResourceDiscoveryList& resources) {
+void FlattenExtendedUserdataPass(IR::Program& program) {
     UNREACHABLE_MSG("FlattenExtendedUserdataPass unimplemented for target architecture.");
 }
 
