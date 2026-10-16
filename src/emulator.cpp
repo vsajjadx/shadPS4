@@ -454,6 +454,13 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         EmulatorSettings.SetReadbacksMode(GpuReadbacksMode::Relaxed, true);
         LOG_INFO(Config, "NHL 24: GPU readbacks forced to Relaxed");
     }
+    // UFC 4 runs on the same EA engine and also reads GPU-written data on the CPU: without
+    // readbacks every fight renders a black arena with only the HUD visible.
+    if ((id == "CUSA14204" || id == "CUSA14209") &&
+        EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Disabled) {
+        EmulatorSettings.SetReadbacksMode(GpuReadbacksMode::Relaxed, true);
+        LOG_INFO(Config, "UFC 4: GPU readbacks forced to Relaxed");
+    }
     game_info.title = title;
     game_info.app_ver = app_version;
     game_info.firmware_ver = fw_version & 0xFFF00000;
