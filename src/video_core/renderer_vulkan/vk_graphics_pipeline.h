@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <boost/container/static_vector.hpp>
 #include <xxhash.h>
 
@@ -90,8 +91,16 @@ public:
                      std::span<const Shader::RuntimeInfo, MaxShaderStages> runtime_infos,
                      const Shader::Gcn::FetchShaderData* fetch_shader,
                      std::span<const vk::ShaderModule> modules, SerializationSupport& sdata,
-                     bool preloading);
+                     bool preloading, bool defer_build = false);
     ~GraphicsPipeline();
+
+    /// Creates the Vulkan pipeline. Called by the constructor unless `defer_build` is set, in
+    /// which case it may run on any thread. Only depends on state copied by the constructor.
+    void Build();
+
+    [[nodiscard]] bool IsReady() const noexcept {
+        return ready.load(std::memory_order_acquire);
+    }
 
     const Shader::Gcn::FetchShaderData& GetFetchShader() const noexcept {
         return fetch_shader;
@@ -114,6 +123,10 @@ private:
 private:
     GraphicsPipelineKey key;
     Shader::Gcn::FetchShaderData fetch_shader{};
+    SerializationSupport build_data{};
+    std::array<vk::ShaderModule, MaxShaderStages> stage_modules{};
+    vk::PipelineCache pipeline_cache_handle{};
+    std::atomic<bool> ready{false};
 };
 
 struct ClipDistanceShaderKey {

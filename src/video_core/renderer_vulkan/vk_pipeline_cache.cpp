@@ -1,12 +1,15 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <ranges>
 
 #include "common/hack_features.h"
 #include "common/hash.h"
 #include "common/io_file.h"
 #include "common/path_util.h"
+#include "common/polyfill_thread.h"
+#include "common/thread.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
@@ -36,6 +39,63 @@ constexpr static std::array DescriptorHeapSizes = {
     vk::DescriptorPoolSize{vk::DescriptorType::eStorageImage, 1024},
     vk::DescriptorPoolSize{vk::DescriptorType::eSampler, 1024},
 };
+
+static u32 NumCompileWorkers() {
+    const u32 hw_threads = std::max(std::thread::hardware_concurrency(), 2u);
+    return std::clamp(hw_threads / 2, 2u, 8u);
+}
+
+PipelineCompileWorkers::PipelineCompileWorkers(u32 num_threads) {
+    threads.reserve(num_threads);
+    for (u32 i = 0; i < num_threads; ++i) {
+        threads.emplace_back([this, i](std::stop_token stoken) { Run(stoken, i); });
+    }
+}
+
+PipelineCompileWorkers::~PipelineCompileWorkers() {
+    WaitIdle();
+    for (auto& thread : threads) {
+        thread.request_stop();
+    }
+    work_cv.notify_all();
+    threads.clear();
+}
+
+void PipelineCompileWorkers::Submit(std::function<void()>&& task) {
+    {
+        std::scoped_lock lk{mutex};
+        tasks.emplace(std::move(task));
+        ++in_flight;
+    }
+    work_cv.notify_one();
+}
+
+void PipelineCompileWorkers::WaitIdle() {
+    std::unique_lock lk{mutex};
+    idle_cv.wait(lk, [this] { return in_flight == 0; });
+}
+
+void PipelineCompileWorkers::Run(std::stop_token stoken, u32 index) {
+    Common::SetCurrentThreadName(fmt::format("shadPS4:PipelineCompile{}", index).c_str());
+    while (true) {
+        std::function<void()> task;
+        {
+            std::unique_lock lk{mutex};
+            Common::CondvarWait(work_cv, lk, stoken, [this] { return !tasks.empty(); });
+            if (tasks.empty()) {
+                return;
+            }
+            task = std::move(tasks.front());
+            tasks.pop();
+        }
+        task();
+        {
+            std::scoped_lock lk{mutex};
+            --in_flight;
+        }
+        idle_cv.notify_all();
+    }
+}
 
 static u32 MapOutputs(std::span<Shader::OutputMap, 3> outputs, const AmdGpu::VsOutputControl& ctl) {
     u32 num_outputs = 0;
@@ -273,7 +333,8 @@ const Shader::RuntimeInfo& PipelineCache::BuildRuntimeInfo(HwStage stage, SwStag
 PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
                              AmdGpu::Liverpool* liverpool_, u32 sparse_page_shift)
     : instance{instance_}, scheduler{scheduler_}, liverpool{liverpool_},
-      desc_heap{instance, scheduler.GetWorkSemaphore(), DescriptorHeapSizes} {
+      desc_heap{instance, scheduler.GetWorkSemaphore(), DescriptorHeapSizes},
+      compile_workers{NumCompileWorkers()} {
     const auto& vk12_props = instance.GetVk12Properties();
     profile = Shader::Profile{
         .max_viewport_width = instance.GetMaxViewportWidth(),
@@ -329,12 +390,14 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
         .needs_clip_distance_emulation = instance.GetDriverID() == vk::DriverId::eNvidiaProprietary,
         .supports_shader_stencil_export = instance_.IsShaderStencilExportSupported(),
     };
-    WarmUp();
-
+    // Created before the warm-up so the preloaded pipelines share it with the ones compiled
+    // at run time.
     auto [cache_result, cache] = instance.GetDevice().createPipelineCacheUnique({});
     ASSERT_MSG(cache_result == vk::Result::eSuccess, "Failed to create pipeline cache: {}",
                vk::to_string(cache_result));
     pipeline_cache = std::move(cache);
+
+    WarmUp();
 }
 
 PipelineCache::~PipelineCache() = default;
@@ -349,10 +412,18 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         const auto pipeline_hash = std::hash<GraphicsPipelineKey>{}(graphics_key);
         LOG_INFO(Render_Vulkan, "Compiling graphics pipeline {:#x}", pipeline_hash);
 
+        // With asynchronous compilation the guest-dependent part of the pipeline is set up here
+        // and the driver compilation, which is what stalls the GPU thread for tens of
+        // milliseconds, runs on a worker. Draws using it are skipped until it is ready.
+        const bool async_build = EmulatorSettings.IsAsyncShaderCompilation();
         GraphicsPipeline::SerializationSupport sdata{};
         it.value() = std::make_unique<GraphicsPipeline>(
             instance, scheduler, desc_heap, profile, graphics_key, *pipeline_cache, infos,
-            runtime_infos, fetch_shader, modules, sdata, false);
+            runtime_infos, fetch_shader, modules, sdata, false, async_build);
+        if (async_build) {
+            auto* pipeline = it.value().get();
+            compile_workers.Submit([pipeline] { pipeline->Build(); });
+        }
 
         RegisterPipelineData(graphics_key, pipeline_hash, sdata);
         ++num_new_pipelines;
@@ -366,7 +437,15 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
             }
         }
     }
-    return it->second.get();
+    const GraphicsPipeline* pipeline = it->second.get();
+    if (!pipeline->IsReady()) {
+        if ((num_pending_draws_skipped++ % 256) == 0) {
+            LOG_INFO(Render_Vulkan, "Skipping draws while pipelines compile ({} so far)",
+                     num_pending_draws_skipped);
+        }
+        return nullptr;
+    }
+    return pipeline;
 }
 
 const ComputePipeline* PipelineCache::GetComputePipeline() {
@@ -736,6 +815,7 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
 
 std::optional<vk::ShaderModule> PipelineCache::ReplaceShader(vk::ShaderModule module,
                                                              std::span<const u32> spv_code) {
+    compile_workers.WaitIdle();
     std::optional<vk::ShaderModule> new_module{};
     for (const auto& [_, program] : program_cache) {
         for (auto& m : program->modules) {

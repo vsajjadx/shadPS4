@@ -21,8 +21,6 @@
 
 namespace {
 
-std::mutex submit_mutex{};
-u32 num_requests{};
 std::condition_variable_any request_cv{};
 std::queue<std::packaged_task<void()>> req_queue{};
 std::mutex m_request{};
@@ -37,33 +35,21 @@ namespace Storage {
 void ProcessIO(const std::stop_token& stoken) {
     Common::SetCurrentThreadName("shadPS4:PipelineCacheIO");
 
-    while (!stoken.stop_requested()) {
+    // Requests still queued when a stop is requested are written before exiting, otherwise
+    // every pipeline compiled shortly before shutdown would be missing from the next warm-up.
+    while (true) {
+        std::packaged_task<void()> request{};
         {
-            std::unique_lock lk{submit_mutex};
-            Common::CondvarWait(request_cv, lk, stoken, [&] { return num_requests; });
-        }
-
-        if (stoken.stop_requested()) {
-            break;
-        }
-
-        while (num_requests) {
-            std::packaged_task<void()> request{};
-            {
-                std::scoped_lock lock{m_request};
-                if (req_queue.empty()) {
-                    continue;
-                }
-                request = std::move(req_queue.front());
-                req_queue.pop();
+            std::unique_lock lk{m_request};
+            Common::CondvarWait(request_cv, lk, stoken, [&] { return !req_queue.empty(); });
+            if (req_queue.empty()) {
+                break;
             }
-
-            if (request.valid()) {
-                request();
-                request.get_future().wait();
-            }
-
-            --num_requests;
+            request = std::move(req_queue.front());
+            req_queue.pop();
+        }
+        if (request.valid()) {
+            request();
         }
     }
 }
@@ -159,9 +145,6 @@ bool WriteVector(const BlobType type, std::filesystem::path&& path_, std::vector
         std::scoped_lock lock{m_request};
         req_queue.emplace(std::move(request));
     }
-
-    std::scoped_lock lk{submit_mutex};
-    ++num_requests;
     request_cv.notify_one();
     return true;
 }
@@ -257,6 +240,20 @@ void DataBase::ForEachBlob(BlobType type, const std::function<void(std::vector<u
             }
         }
     }
+}
+
+bool DataBase::Reset() {
+    if (!opened || EmulatorSettings.IsPipelineCacheArchived()) {
+        return false;
+    }
+    std::error_code ec{};
+    for (const auto& entry : std::filesystem::directory_iterator{cache_path, ec}) {
+        const auto ext = entry.path().extension().string();
+        if (ext == ".key" || ext == ".meta" || ext == ".spv" || ext == ".bin") {
+            std::filesystem::remove(entry.path(), ec);
+        }
+    }
+    return true;
 }
 
 void DataBase::FinishPreload() {

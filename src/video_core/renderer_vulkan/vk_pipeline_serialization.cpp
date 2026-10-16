@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
+
 #include "common/serdes.h"
 #include "core/emulator_settings.h"
 #include "shader_recompiler/frontend/fetch_shader.h"
@@ -234,9 +236,12 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar) {
     const auto [it, is_new] = graphics_pipelines.try_emplace(graphics_key);
     ASSERT(is_new);
 
+    // The driver compilation runs on the workers, WarmUp waits for all of them.
     it.value() = std::make_unique<GraphicsPipeline>(
         instance, scheduler, desc_heap, profile, graphics_key, *pipeline_cache, infos,
-        runtime_infos, fetch_shader, modules, sdata, true);
+        runtime_infos, fetch_shader, modules, sdata, true, true);
+    auto* pipeline = it.value().get();
+    compile_workers.Submit([pipeline] { pipeline->Build(); });
 
     infos.fill(nullptr);
     modules.fill(nullptr);
@@ -312,7 +317,8 @@ void PipelineCache::WarmUp() {
     std::vector<u8> profile_data{};
     Storage::DataBase::Instance().Load(Storage::BlobType::ShaderProfile, "profile", profile_data);
     LOG_INFO(Render, "Pipeline cache at {}, profile size {}",
-             Common::FS::PathToUTF8String(Storage::DataBase::Instance().GetCachePath()), profile_data.size());
+             Common::FS::PathToUTF8String(Storage::DataBase::Instance().GetCachePath()),
+             profile_data.size());
     if (profile_data.empty()) {
         LOG_WARNING(Render, "Pipeline cache has no profile, starting a new cache");
         Storage::DataBase::Instance().FinishPreload();
@@ -334,11 +340,25 @@ void PipelineCache::WarmUp() {
     Shader::Profile cached_profile{};
     std::memcpy(&cached_profile, profile_data.data(), sizeof(cached_profile));
     if (cached_profile != profile) {
+        // Closing the cache here would also stop saving new pipelines, so it would never
+        // recover. Start over with this system's profile instead.
+        if (Storage::DataBase::Instance().Reset()) {
+            LOG_WARNING(Render, "Pipeline cache was made for a different system, starting a new "
+                                "cache");
+            Storage::DataBase::Instance().FinishPreload();
+            profile_data.resize(sizeof(profile));
+            std::memcpy(profile_data.data(), &profile, sizeof(profile));
+            Storage::DataBase::Instance().Save(Storage::BlobType::ShaderProfile, "profile",
+                                               std::move(profile_data));
+            return;
+        }
         LOG_WARNING(Render,
                     "Pipeline cache isn't compatible with current system. Ignoring the cache");
         Storage::DataBase::Instance().Close();
         return;
     }
+
+    const auto warm_up_start = std::chrono::steady_clock::now();
 
     u32 num_pipelines{};
     u32 num_total_pipelines{};
@@ -371,7 +391,13 @@ void PipelineCache::WarmUp() {
             }
         });
 
-    LOG_INFO(Render, "Preloaded {} pipelines", num_pipelines);
+    // Every cached pipeline is compiled before the game starts, like RPCS3 does at boot.
+    compile_workers.WaitIdle();
+    const auto warm_up_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - warm_up_start)
+                                .count();
+    LOG_INFO(Render, "Preloaded {} pipelines in {} ms using {} threads", num_pipelines, warm_up_ms,
+             compile_workers.NumThreads());
     if (num_total_pipelines > num_pipelines) {
         LOG_WARNING(Render, "{} stale pipelines were found. Consider re-generating the cache",
                     num_total_pipelines - num_pipelines);

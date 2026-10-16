@@ -32,6 +32,8 @@ public:
         return opened;
     }
     void FinishPreload();
+    /// Deletes every blob of a directory based cache. Returns false for archived caches.
+    bool Reset();
     [[nodiscard]] const std::filesystem::path& GetCachePath() const {
         return cache_path;
     }
