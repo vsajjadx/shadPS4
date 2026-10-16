@@ -64,6 +64,11 @@ void SettingsWindow::LoadSettings(std::string profile) {
     fsrEnabledSetting = EmulatorSettings.IsFsrEnabled();
     rcasEnabledSetting = EmulatorSettings.IsRcasEnabled();
     rcasAttenuationSetting = static_cast<float>(EmulatorSettings.GetRcasAttenuation() * 0.001f);
+    {
+        const u32 aniso = EmulatorSettings.GetAnisotropicFiltering();
+        anisotropySetting = aniso >= 16 ? 4 : aniso >= 8 ? 3 : aniso >= 4 ? 2 : aniso >= 2 ? 1 : 0;
+    }
+    textureLodBiasSetting = EmulatorSettings.GetTextureLodBias();
 
     /////////// Input Tab
     motionControlsSetting = EmulatorSettings.IsMotionControlsEnabled();
@@ -121,6 +126,9 @@ void SettingsWindow::SaveSettings(std::string profile) {
     EmulatorSettings.SetRcasEnabled(rcasEnabledSetting, isSpecific);
     EmulatorSettings.SetRcasAttenuation(static_cast<int>(rcasAttenuationSetting * 1000),
                                         isSpecific);
+    EmulatorSettings.SetAnisotropicFiltering(anisotropySetting == 0 ? 0u : 1u << anisotropySetting,
+                                             isSpecific);
+    EmulatorSettings.SetTextureLodBias(textureLodBiasSetting, isSpecific);
 
     /////////// Input Tab
     EmulatorSettings.SetMotionControlsEnabled(motionControlsSetting, isSpecific);
@@ -731,6 +739,9 @@ void SettingsWindow::DrawSettingsTable(SettingsCategory category) {
             if (rcasEnabledSetting && fsrEnabledSetting) {
                 AddSettingSliderFloat("RCAS Attenuation", rcasAttenuationSetting, 0.0f, 3.0f, 3);
             }
+
+            AddSettingCombo("Anisotropic Filtering", anisotropySetting, anisotropyOptions);
+            AddSettingSliderInt("Texture LOD Bias (1/100 mip)", textureLodBiasSetting, -200, 100);
 
             ImGui::EndTable();
         }

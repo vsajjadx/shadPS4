@@ -431,6 +431,12 @@ struct GPUSettings {
     Setting<int> rcas_attenuation{250};
     Setting<bool> userfaultfd{false};
     Setting<bool> inline_fetch_shader{false};
+    // 0 = as the game sets it; 2, 4, 8 or 16 forces that anisotropy on filtered, mipmapped
+    // textures.
+    Setting<u32> anisotropic_filtering{0};
+    // Added to every texture's LOD bias, in hundredths of a mip level (-50 = sharper by half a
+    // level). Useful with a raised internal resolution.
+    Setting<int> texture_lod_bias{0};
 
     std::vector<OverrideItem> GetOverrideableFields() const {
         return std::vector<OverrideItem>{
@@ -455,6 +461,9 @@ struct GPUSettings {
             make_override<GPUSettings>("vblank_limit", &GPUSettings::vblank_limit),
             make_override<GPUSettings>("userfaultfd", &GPUSettings::userfaultfd),
             make_override<GPUSettings>("inline_fetch_shader", &GPUSettings::inline_fetch_shader),
+            make_override<GPUSettings>("anisotropic_filtering",
+                                       &GPUSettings::anisotropic_filtering),
+            make_override<GPUSettings>("texture_lod_bias", &GPUSettings::texture_lod_bias),
         };
     }
 };
@@ -464,7 +473,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GPUSettings, window_width, window_height, int
                                    direct_memory_access_enabled, dump_shaders, patch_shaders,
                                    vblank_limit, full_screen, full_screen_mode, present_mode,
                                    hdr_allowed, fsr_enabled, rcas_enabled, rcas_attenuation,
-                                   userfaultfd, inline_fetch_shader)
+                                   userfaultfd, inline_fetch_shader, anisotropic_filtering,
+                                   texture_lod_bias)
 
 // -------------------------------
 // Vulkan settings
@@ -762,6 +772,8 @@ public:
     SETTING_FORWARD_BOOL_READONLY(m_gpu, PatchShaders, patch_shaders)
     SETTING_FORWARD_BOOL(m_gpu, UserfaultfdTracking, userfaultfd)
     SETTING_FORWARD_BOOL_READONLY(m_gpu, InlineFetchShader, inline_fetch_shader)
+    SETTING_FORWARD(m_gpu, AnisotropicFiltering, anisotropic_filtering)
+    SETTING_FORWARD(m_gpu, TextureLodBias, texture_lod_bias)
 
     /// Vblank frequency in Hz, 0 means unlimited.
     u32 GetVblankFrequency() {

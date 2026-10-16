@@ -117,6 +117,7 @@ private:
     const std::vector<std::string> hideCursorOptions = {"Never", "Idle", "Always"};
     const std::vector<std::string> trophySideOptions = {"left", "right", "top", "bottom"};
     const std::vector<std::string> readbacksModeOptions = {"Disabled", "Relaxed", "Precise"};
+    const std::vector<std::string> anisotropyOptions = {"Game Default", "2x", "4x", "8x", "16x"};
 
     //////////////// Setting Variables
     //////////////// Note:: Use int for all comboboxes as needed by ImGui
@@ -136,6 +137,8 @@ private:
     bool fsrEnabledSetting;
     bool rcasEnabledSetting;
     float rcasAttenuationSetting;
+    int anisotropySetting;
+    int textureLodBiasSetting;
 
     // Input tab
     bool motionControlsSetting;
