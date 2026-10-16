@@ -118,6 +118,8 @@ private:
     u8 m_next_touch_id{1};
     u64 m_touch_down_timestamp{};
     u64 m_last_orientation_update{};
+    std::array<float, 3> m_up_reference{0.0f, 1.0f, 0.0f};
+    bool m_up_reference_valid{false};
     Colour colour;
     std::optional<Colour> override_colour{};
 

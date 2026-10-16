@@ -234,30 +234,35 @@ private:
     }
 
     void HandleTiming(u64 current_time) {
-        if (next_output_time == 0) [[unlikely]] {
-            // First output - set initial timing
+        // The schedule is kept as frames since a base time rather than adding a period rounded
+        // to whole microseconds, which ran slightly ahead of the device until the queue had to
+        // be cleared (an audible pop). (From KytyPS5, #966.)
+        const auto restart = [&] {
+            timing_base_time = current_time;
+            timing_frames = buffer_frames;
             next_output_time = current_time + period_us;
+        };
+        if (next_output_time == 0) [[unlikely]] {
+            restart();
             return;
         }
 
         const s64 time_diff = static_cast<s64>(current_time - next_output_time);
-
         if (time_diff > static_cast<s64>(TIMING_RESYNC_THRESHOLD_US)) [[unlikely]] {
             // We're far behind - resync
-            next_output_time = current_time + period_us;
-        } else if (time_diff < 0) {
+            restart();
+            return;
+        }
+
+        timing_frames += buffer_frames;
+        next_output_time = timing_base_time + timing_frames * 1000000ULL / sample_rate;
+        if (time_diff < 0) {
             // We're ahead of schedule - wait
             const u64 time_to_wait = static_cast<u64>(-time_diff);
-            next_output_time += period_us;
-
             if (time_to_wait > MIN_SLEEP_THRESHOLD_US) {
-                // Sleep for most of the wait period
                 const u64 sleep_duration = time_to_wait - MIN_SLEEP_THRESHOLD_US;
                 std::this_thread::sleep_for(std::chrono::microseconds(sleep_duration));
             }
-        } else {
-            // Slightly behind or on time - just advance
-            next_output_time += period_us;
         }
     }
 
@@ -654,6 +659,8 @@ private:
     alignas(64) u64 period_us{0};
     alignas(64) std::atomic<u64> last_output_time{0};
     u64 next_output_time{0};
+    u64 timing_base_time{0};
+    u64 timing_frames{0};
     u64 last_volume_check_time{0};
     u32 output_count{0};
 

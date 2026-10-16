@@ -1,6 +1,7 @@
 ﻿// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -189,14 +190,48 @@ void GameController::DisconnectController() {
 }
 
 void GameController::UpdateOrientationLocked(u64 timestamp) {
+    if (m_last_orientation_update == 0) {
+        m_up_reference_valid = false;
+    }
     if (m_last_orientation_update == 0 || timestamp <= m_last_orientation_update) {
         m_last_orientation_update = timestamp;
         return;
     }
     const float delta_time =
         static_cast<float>(timestamp - m_last_orientation_update) / 1'000'000.f;
+
+    // Mahony tilt correction: the gravity direction seen by the accelerometer pulls the
+    // integrated orientation back, so it no longer drifts. Heading can't be observed and stays
+    // gyro-only; the reported angular velocity is left raw. (From KytyPS5, #899.)
+    const auto& q = m_state.orientation;
+    const auto rotate = [](const Libraries::Pad::OrbisFQuaternion& r, const std::array<float, 3>& v) {
+        const std::array<float, 3> t{2.0f * (r.y * v[2] - r.z * v[1]),
+                                     2.0f * (r.z * v[0] - r.x * v[2]),
+                                     2.0f * (r.x * v[1] - r.y * v[0])};
+        return std::array<float, 3>{v[0] + r.w * t[0] + (r.y * t[2] - r.z * t[1]),
+                                    v[1] + r.w * t[1] + (r.z * t[0] - r.x * t[2]),
+                                    v[2] + r.w * t[2] + (r.x * t[1] - r.y * t[0])};
+    };
+    const auto& accel = m_state.acceleration;
+    const float g = std::sqrt(accel.x * accel.x + accel.y * accel.y + accel.z * accel.z) / 9.81f;
+    Libraries::Pad::OrbisFVector3 rate = m_state.angularVelocity;
+    if (g > 0.0f) {
+        const std::array<float, 3> measured{accel.x / (g * 9.81f), accel.y / (g * 9.81f),
+                                            accel.z / (g * 9.81f)};
+        if (!m_up_reference_valid && g > 0.9f && g < 1.1f) {
+            // Captured near 1 G to limit interference from linear acceleration.
+            m_up_reference = rotate(q, measured);
+            m_up_reference_valid = true;
+        } else if (m_up_reference_valid && g > 0.8f && g < 1.2f) {
+            const auto predicted = rotate({-q.x, -q.y, -q.z, q.w}, m_up_reference);
+            rate.x += measured[1] * predicted[2] - measured[2] * predicted[1];
+            rate.y += measured[2] * predicted[0] - measured[0] * predicted[2];
+            rate.z += measured[0] * predicted[1] - measured[1] * predicted[0];
+        }
+    }
+
     Libraries::Pad::OrbisFQuaternion orientation{};
-    CalculateOrientation(m_state.angularVelocity, delta_time, m_state.orientation, orientation);
+    CalculateOrientation(rate, delta_time, m_state.orientation, orientation);
     m_state.orientation = orientation;
     m_last_orientation_update = timestamp;
 }
