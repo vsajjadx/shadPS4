@@ -381,10 +381,16 @@ struct AudioSettings {
     Setting<std::string> openal_padSpk_output_device{"Default Device"};
     Setting<u32> openal_hrtf{OpenALHrtfMode::HrtfAuto};
     Setting<u32> openal_output_mode{OpenALOutputMode::OutputAuto};
+    // Play pad speaker ports on a connected DualSense's speaker (USB or Bluetooth).
+    Setting<bool> dualsense_speaker{true};
+    Setting<u32> dualsense_speaker_volume{100};
 
     std::vector<OverrideItem> GetOverrideableFields() const {
         return std::vector<OverrideItem>{
             make_override<AudioSettings>("audio_backend", &AudioSettings::audio_backend),
+            make_override<AudioSettings>("dualsense_speaker", &AudioSettings::dualsense_speaker),
+            make_override<AudioSettings>("dualsense_speaker_volume",
+                                         &AudioSettings::dualsense_speaker_volume),
             make_override<AudioSettings>("sdl_mic_device", &AudioSettings::sdl_mic_device),
             make_override<AudioSettings>("sdl_main_output_device",
                                          &AudioSettings::sdl_main_output_device),
@@ -403,7 +409,8 @@ struct AudioSettings {
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(AudioSettings, audio_backend, sdl_mic_device,
                                    sdl_main_output_device, sdl_padSpk_output_device,
                                    openal_mic_device, openal_main_output_device,
-                                   openal_padSpk_output_device, openal_hrtf, openal_output_mode)
+                                   openal_padSpk_output_device, openal_hrtf, openal_output_mode,
+                                   dualsense_speaker, dualsense_speaker_volume)
 
 // -------------------------------
 // GPU settings
@@ -744,6 +751,8 @@ public:
     SETTING_FORWARD(m_audio, OpenALMainOutputDevice, openal_main_output_device)
     SETTING_FORWARD(m_audio, OpenALPadSpkOutputDevice, openal_padSpk_output_device)
     SETTING_FORWARD(m_audio, OpenALHrtf, openal_hrtf)
+    SETTING_FORWARD_BOOL(m_audio, DualSenseSpeaker, dualsense_speaker)
+    SETTING_FORWARD(m_audio, DualSenseSpeakerVolume, dualsense_speaker_volume)
     SETTING_FORWARD(m_audio, OpenALOutputMode, openal_output_mode)
 
     // Debug settings

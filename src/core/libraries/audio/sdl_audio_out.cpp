@@ -13,6 +13,7 @@
 #include "core/emulator_settings.h"
 #include "core/libraries/audio/audioout.h"
 #include "core/libraries/audio/audioout_backend.h"
+#include "core/libraries/audio/dualsense_speaker.h"
 #include "core/libraries/kernel/threads.h"
 
 // SIMD support detection
@@ -66,9 +67,13 @@ public:
         if (!Initialize(port.type)) {
             LOG_ERROR(Lib_AudioOut, "Failed to initialize SDL audio backend");
         }
+        if (port.type == OrbisAudioOutPort::PadSpk && EmulatorSettings.IsDualSenseSpeaker()) {
+            dualsense = DualSenseSpeaker::Open(sample_rate);
+        }
     }
 
     ~SDLPortBackend() override {
+        DualSenseSpeaker::Close(dualsense);
         Cleanup();
     }
 
@@ -85,6 +90,18 @@ public:
         const u64 current_time = Kernel::sceKernelGetProcessTime();
         convert(ptr, internal_buffer, buffer_frames, nullptr);
         HandleTiming(current_time);
+
+        if (dualsense != nullptr && !ps4_downmix) {
+            // Pad speaker audio goes to the DualSense speaker when one takes it; otherwise it
+            // keeps playing on the pad speaker output device.
+            const float gain = game_gain.load(std::memory_order_acquire) *
+                               EmulatorSettings.GetDualSenseSpeakerVolume() * 0.01f;
+            if (DualSenseSpeaker::Queue(dualsense, static_cast<const float*>(internal_buffer),
+                                        buffer_frames, num_channels, gain) != 0) {
+                last_output_time.store(current_time, std::memory_order_release);
+                return;
+            }
+        }
 
         if ((output_count++ & 0xF) == 0) { // Check every 16 outputs
             ManageAudioQueue();
@@ -653,6 +670,7 @@ private:
 
     // SDL audio stream
     SDL_AudioStream* stream{nullptr};
+    DualSenseSpeaker::Stream* dualsense{nullptr};
     u32 queue_threshold{0};
 };
 

@@ -138,6 +138,8 @@ private:
     bool rcasEnabledSetting;
     float rcasAttenuationSetting;
     int anisotropySetting;
+    bool dualsenseSpeakerSetting;
+    int dualsenseSpeakerVolumeSetting;
     int textureLodBiasSetting;
 
     // Input tab

@@ -166,3 +166,6 @@
 	path = externals/imgui
 	url = https://github.com/shadexternals/imgui.git
 	branch = docking
+[submodule "externals/opus"]
+	path = externals/opus
+	url = https://github.com/xiph/opus.git

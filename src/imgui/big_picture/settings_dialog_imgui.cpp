@@ -53,6 +53,8 @@ void SettingsWindow::LoadSettings(std::string profile) {
     volumeSetting = EmulatorSettings.GetVolumeSlider();
     showSplashSetting = EmulatorSettings.IsShowSplash();
     audioBackendSetting = EmulatorSettings.GetAudioBackend();
+    dualsenseSpeakerSetting = EmulatorSettings.IsDualSenseSpeaker();
+    dualsenseSpeakerVolumeSetting = static_cast<int>(EmulatorSettings.GetDualSenseSpeakerVolume());
 
     /////////// Graphics Tab
     fullscreenModeSetting =
@@ -113,6 +115,9 @@ void SettingsWindow::SaveSettings(std::string profile) {
     EmulatorSettings.SetVolumeSlider(volumeSetting, isSpecific);
     EmulatorSettings.SetShowSplash(showSplashSetting, isSpecific);
     EmulatorSettings.SetAudioBackend(audioBackendSetting, isSpecific);
+    EmulatorSettings.SetDualSenseSpeaker(dualsenseSpeakerSetting, isSpecific);
+    EmulatorSettings.SetDualSenseSpeakerVolume(static_cast<u32>(dualsenseSpeakerVolumeSetting),
+                                               isSpecific);
 
     /////////// Graphics Tab
     bool isFullscreen = fullscreenModeSetting != 0;
@@ -717,6 +722,11 @@ void SettingsWindow::DrawSettingsTable(SettingsCategory category) {
             AddSettingSliderInt("Volume", volumeSetting, 0, 500);
             AddSettingCheckbox("Show Splash Screen When Launching Game", showSplashSetting);
             AddSettingCombo("Audio Backend", audioBackendSetting, audioBackendOptions);
+            AddSettingCheckbox("Controller Speaker Sound (DualSense)", dualsenseSpeakerSetting);
+            if (dualsenseSpeakerSetting) {
+                AddSettingSliderInt("Controller Speaker Volume", dualsenseSpeakerVolumeSetting, 0,
+                                    100);
+            }
 
             ImGui::EndTable();
         }
