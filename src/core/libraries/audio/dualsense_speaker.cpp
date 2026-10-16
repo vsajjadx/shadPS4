@@ -80,27 +80,54 @@ SDL_hid_device* OpenDevice(int controller) {
                           SDL_GetGamepadConnectionState(pad) == SDL_JOYSTICK_CONNECTION_WIRELESS;
     const auto vendor  = wireless ? SDL_GetGamepadVendor(pad) : 0;
     const auto product = wireless ? SDL_GetGamepadProduct(pad) : 0;
-    const auto address = wireless ? Address(SDL_GetGamepadSerial(pad)) : std::string {};
+    const char* serial = wireless ? SDL_GetGamepadSerial(pad) : nullptr;
+    const auto address = Address(serial);
     SDL_UnlockJoysticks();
-    if (vendor != 0x054c || (product != 0x0ce6 && product != 0x0df2) || address.empty()) {
+    if (vendor != 0x054c || (product != 0x0ce6 && product != 0x0df2)) {
+        LOG_WARNING(Lib_AudioOut, "DualSense Bluetooth: not a wireless DualSense ({:04x}:{:04x})",
+                    vendor, product);
         return nullptr;
     }
+    // Match the HID interface by the controller's Bluetooth address. Windows doesn't always
+    // report it the same way on both sides (or SDL has no serial for the pad), so with exactly
+    // one candidate interface that one is used.
     auto*       devices = SDL_hid_enumerate(vendor, product);
-    std::string path;
-    bool        ambiguous = false;
+    std::string matched, only;
+    int         candidates = 0;
+    bool        ambiguous  = false;
     for (auto* device = devices; device != nullptr; device = device->next) {
-        if (device->bus_type == SDL_HID_API_BUS_BLUETOOTH && device->path != nullptr &&
-            Address(device->serial_number) == address &&
-            (device->usage_page == 0 || (device->usage_page == 1 && device->usage == 5))) {
-            if (!path.empty()) {
+        if (device->path == nullptr || device->bus_type == SDL_HID_API_BUS_USB ||
+            !(device->usage_page == 0 || (device->usage_page == 1 && device->usage == 5))) {
+            continue;
+        }
+        ++candidates;
+        only = device->path;
+        if (!address.empty() && Address(device->serial_number) == address) {
+            if (!matched.empty()) {
                 ambiguous = true;
-                break;
             }
-            path = device->path;
+            matched = device->path;
         }
     }
     SDL_hid_free_enumeration(devices);
-    return !ambiguous && !path.empty() ? SDL_hid_open_path(path.c_str()) : nullptr;
+    const std::string path = !ambiguous && !matched.empty() ? matched
+                             : candidates == 1             ? only
+                                                           : std::string{};
+    if (path.empty()) {
+        LOG_WARNING(Lib_AudioOut,
+                    "DualSense Bluetooth: no HID interface for the controller (serial '{}', "
+                    "{} candidates)",
+                    serial != nullptr ? serial : "", candidates);
+        return nullptr;
+    }
+    auto* hid = SDL_hid_open_path(path.c_str());
+    if (hid == nullptr) {
+        LOG_WARNING(Lib_AudioOut, "DualSense Bluetooth: cannot open the HID interface: {}",
+                    SDL_GetError());
+    } else {
+        LOG_INFO(Lib_AudioOut, "DualSense Bluetooth: opened the HID interface for speaker audio");
+    }
+    return hid;
 }
 
 void FinishReport(std::array<uint8_t, REPORT_BYTES>& report) {
@@ -362,6 +389,7 @@ Stream* Open(uint32_t freq, bool speaker, int controller, void (*tick)()) {
         }
     }
     if (speaker && !session->CreateEncoder()) {
+        LOG_WARNING(Lib_AudioOut, "DualSense Bluetooth: cannot create the Opus encoder");
         return nullptr;
     }
     const SDL_AudioSpec source {SDL_AUDIO_F32, 2, static_cast<int>(freq)};
@@ -493,6 +521,14 @@ constexpr int FRAME_BYTES = 4 * sizeof(float);
 constexpr u32 MAX_QUEUE_MS = 80;
 std::mutex g_mutex;
 SDL_JoystickID g_speaker_controller = 0;
+std::atomic<int> g_last_status{-1};
+
+/// Logs why the speaker audio isn't (or is again) going to a DualSense, once per change.
+void ReportStatus(int status, const char* message) {
+    if (g_last_status.exchange(status) != status) {
+        LOG_INFO(Lib_AudioOut, "DualSense speaker: {}", message);
+    }
+}
 std::map<SDL_JoystickID, int> g_speaker_streams;
 
 bool RouteSpeaker(SDL_JoystickID controller, bool speaker) { // Caller holds g_mutex.
@@ -733,17 +769,22 @@ u64 Queue(Stream* stream, const float* data, u32 frames, u32 channels, float gai
     bool wireless = false;
     const SDL_JoystickID controller = FindController(wireless);
     if (controller == 0) {
+        ReportStatus(1, "no DualSense connected (or several wired), pad speaker audio plays "
+                        "on the pad speaker output device");
         CloseDevice(stream);
         stream->next_check = 0; // Look for the device as soon as a DualSense is active again.
         return 0;
     }
     RefreshDevice(stream, controller, wireless);
     if (stream->sdl == nullptr && stream->bluetooth == nullptr) {
+        ReportStatus(2, wireless ? "the DualSense's Bluetooth audio could not be opened"
+                                 : "no DualSense USB audio device (4 channels) found");
         return 0;
     }
     {
         std::scoped_lock lock{g_mutex};
         if (!SelectSpeaker(controller)) {
+            ReportStatus(3, "the controller refused the speaker routing report");
             CloseDevice(stream);
             return 0;
         }
@@ -762,10 +803,13 @@ u64 Queue(Stream* stream, const float* data, u32 frames, u32 channels, float gai
         wireless ? Bluetooth::Queue(stream->bluetooth, stream->buffer.data(), frames)
                  : QueueUsbAudio(stream, frames);
     if (queued_us == 0) {
+        ReportStatus(4, "sending audio to the DualSense failed");
         CloseDevice(stream);
         stream->next_check = SDL_GetTicks() + 2000;
         return 0;
     }
+    ReportStatus(0, wireless ? "playing on the DualSense speaker over Bluetooth"
+                             : "playing on the DualSense speaker over USB");
     return queued_us;
 }
 

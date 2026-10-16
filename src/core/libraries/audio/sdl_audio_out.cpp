@@ -69,6 +69,8 @@ public:
         }
         if (port.type == OrbisAudioOutPort::PadSpk && EmulatorSettings.IsDualSenseSpeaker()) {
             dualsense = DualSenseSpeaker::Open(sample_rate);
+            LOG_INFO(Lib_AudioOut, "Pad speaker port opened ({} ch, {} Hz), DualSense speaker {}",
+                     num_channels, sample_rate, dualsense ? "ready" : "unavailable");
         }
     }
 
