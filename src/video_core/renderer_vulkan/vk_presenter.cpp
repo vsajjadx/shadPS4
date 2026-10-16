@@ -6,6 +6,7 @@
 #include "common/io_file.h"
 #include "common/path_util.h"
 #include "common/singleton.h"
+#include "common/thread.h"
 #include "core/debug_state.h"
 #include "core/devtools/layer.h"
 #include "core/emulator_settings.h"
@@ -41,6 +42,7 @@
 #include <span>
 #include <sstream>
 #include <system_error>
+#include <utility>
 #include <vector>
 #include <imgui.h>
 #include <stb_image_write.h>
@@ -841,13 +843,21 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
 }
 
 void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame) {
-    // Free the frame for reuse
+    // Free the frame for reuse.
+    // The frame that was just presented stays reserved, because DrawLastFrame re-presents it while
+    // no new flip arrives; the previously presented frame is released to the GPU thread instead.
+    // Releasing the shown frame let the GPU thread render into it, recreate it or overwrite its
+    // ready semaphore/tick while the present thread was re-presenting it and resetting its fence,
+    // which could leave the present fence unsignalled forever and freeze the GPU thread in
+    // GetRenderFrame.
     const auto free_frame = [&] {
         if (!is_reusing_frame) {
-            last_submit_frame = frame;
-            std::scoped_lock fl{free_mutex};
-            free_queue.push(frame);
-            free_cv.notify_one();
+            Frame* const previous = std::exchange(last_submit_frame, frame);
+            if (previous != nullptr && previous != frame) {
+                std::scoped_lock fl{free_mutex};
+                free_queue.push(previous);
+                free_cv.notify_one();
+            }
         }
     };
 
@@ -1092,7 +1102,13 @@ Frame* Presenter::GetRenderFrame() {
     Frame* frame;
     {
         std::unique_lock lock{free_mutex};
-        free_cv.wait(lock, [this] { return !free_queue.empty(); });
+        u32 waited_s = 0;
+        while (!free_cv.wait_for(lock, std::chrono::seconds(5),
+                                 [this] { return !free_queue.empty(); })) {
+            waited_s += 5;
+            LOG_WARNING(Render_Vulkan, "GetRenderFrame: waited {}s for a free frame (thread {})",
+                        waited_s, Common::GetCurrentThreadName());
+        }
         LOG_DEBUG(Render_Vulkan, "Got render frame, remaining {}", free_queue.size() - 1);
 
         // Take the frame from the queue
@@ -1103,8 +1119,15 @@ Frame* Presenter::GetRenderFrame() {
     const vk::Device device = instance.GetDevice();
     vk::Result result{};
 
+    u32 fence_waited_s = 0;
     const auto wait = [&]() {
-        result = device.waitForFences(frame->present_done, false, std::numeric_limits<u64>::max());
+        result = device.waitForFences(frame->present_done, false, 2'000'000'000ULL);
+        if (result == vk::Result::eTimeout) {
+            fence_waited_s += 2;
+            LOG_WARNING(Render_Vulkan,
+                        "GetRenderFrame: waited {}s for the present fence of frame {} (thread {})",
+                        fence_waited_s, frame->id, Common::GetCurrentThreadName());
+        }
         return result;
     };
 
