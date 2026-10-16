@@ -447,6 +447,11 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     game_info.initialized = true;
     game_info.game_serial = id;
     Common::HackFeatures::Init(id);
+    // Compile every shader seen in earlier sessions before the game starts, for every game.
+    if (!EmulatorSettings.IsPipelineCacheEnabled()) {
+        EmulatorSettings.SetPipelineCacheEnabled(true, true);
+        LOG_INFO(Config, "Pipeline cache forced on to precompile shaders at boot");
+    }
     // NHL 24 (Frostbite) reads GPU-written culling/visibility data back on the CPU. With
     // readbacks disabled the CPU sees stale memory and the ice and arena floor go black after
     // the first frames of a match (the NHL 24 PC port ships with readbacks_mode = Relaxed).
