@@ -492,11 +492,28 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
 
     ASSERT(info.guest_address != 0);
 
+    // A heavy frame looks the same few hundred textures up thousands of times. Exact matches
+    // are remembered until the set of registered images changes. (From the inFAMOUS PC port.)
+    FoundImage& found =
+        found_images[((info.guest_address >> 12) ^ (info.guest_address >> 23) ^ info.guest_size ^
+                      (u64(info.pixel_format) << 3)) &
+                     (found_images.size() - 1)];
+    if (found.generation == image_set_generation && found.guest_address == info.guest_address &&
+        found.guest_size == info.guest_size && found.size == info.size &&
+        found.pixel_format == info.pixel_format && found.type == info.type &&
+        found.exact_fmt == exact_fmt) {
+        Image& image = slot_images[found.image_id];
+        image.tick_accessed_last = scheduler.CurrentTick();
+        TouchImage(image);
+        return found.image_id;
+    }
+
     SmallVector<ImageId, 8> image_ids;
     ForEachImageInRegion(info.guest_address, info.guest_size,
                          [&](ImageId image_id, Image& image) { image_ids.push_back(image_id); });
 
     ImageId image_id{};
+    bool perfect_match = false;
 
     // Check for a perfect match first
     for (const auto& cache_id : image_ids) {
@@ -518,6 +535,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
             continue;
         }
         image_id = cache_id;
+        perfect_match = true;
     }
 
     // Try to resolve overlaps (if any)
@@ -560,6 +578,12 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     Image& image = slot_images[image_id];
     image.tick_accessed_last = scheduler.CurrentTick();
     TouchImage(image);
+
+    // Anything resolved through an overlap or created just now goes through the full path again.
+    if (perfect_match && image.info.guest_address == info.guest_address) {
+        found = {image_set_generation, info.guest_address, info.guest_size, info.size,
+                 info.pixel_format, info.type, exact_fmt, image_id};
+    }
 
     // If the image requested is a subresource of the image from cache record its location.
     if (view_mip > 0) {
@@ -802,6 +826,9 @@ void TextureCache::RefreshImage(Image& image) {
 
     scheduler.EndRendering();
 
+    const bool was_fully_tracked = image.track_addr == image.info.guest_address &&
+                                   image.track_addr_end ==
+                                       image.info.guest_address + image.info.guest_size;
     const auto [in_buffer, in_offset] =
         buffer_cache.ObtainBufferForImage(image.info.guest_address, image.info.guest_size);
     const auto [buffer, offset] = tile_manager.DetileImage(in_buffer, in_offset, image.info);
@@ -810,6 +837,18 @@ void TextureCache::RefreshImage(Image& image) {
     }
 
     runtime.UploadImage(&image, buffer, image_copies);
+    if (was_fully_tracked) {
+        // A guest write that faulted while the data above was being read has untracked the
+        // image and set its dirty flag, which the upload then cleared. Nothing would fault
+        // again and the image would keep half-written data (textures still being streamed
+        // in), so keep it dirty. (From the SotC/inFAMOUS PC ports.)
+        std::scoped_lock lk{image.mutex};
+        if (True(image.flags & ImageFlagBits::Registered) &&
+            (image.track_addr != image.info.guest_address ||
+             image.track_addr_end != image.info.guest_address + image.info.guest_size)) {
+            image.flags |= ImageFlagBits::CpuDirty;
+        }
+    }
 }
 
 vk::Sampler TextureCache::GetSampler(const AmdGpu::Sampler& sharp,
@@ -831,6 +870,7 @@ vk::Sampler TextureCache::GetSampler(const AmdGpu::Sampler& sharp,
 }
 
 void TextureCache::RegisterImage(ImageId image_id) {
+    ++image_set_generation;
     Image& image = slot_images[image_id];
     ASSERT_MSG(False(image.flags & ImageFlagBits::Registered),
                "Trying to register an already registered image");
@@ -850,6 +890,7 @@ void TextureCache::RegisterImage(ImageId image_id) {
 }
 
 void TextureCache::UnregisterImage(ImageId image_id) {
+    ++image_set_generation;
     Image& image = slot_images[image_id];
     ASSERT_MSG(True(image.flags & ImageFlagBits::Registered),
                "Trying to unregister an already unregistered image");

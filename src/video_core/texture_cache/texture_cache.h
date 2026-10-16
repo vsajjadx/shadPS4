@@ -409,6 +409,18 @@ private:
     TileManager tile_manager;
     absl::flat_hash_map<u64, SamplerId> samplers;
     absl::flat_hash_set<ImageId> download_images;
+    struct FoundImage {
+        u64 generation = 0;
+        VAddr guest_address = 0;
+        u32 guest_size = 0;
+        Extent3D size{};
+        vk::Format pixel_format{};
+        AmdGpu::ImageType type{};
+        bool exact_fmt = false;
+        ImageId image_id{};
+    };
+    std::array<FoundImage, 2048> found_images{};
+    u64 image_set_generation = 1;
     u64 total_used_memory = 0;
     u64 trigger_gc_memory = 0;
     u64 pressure_gc_memory = 0;
