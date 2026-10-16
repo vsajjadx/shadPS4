@@ -363,6 +363,8 @@ set(KERNEL_LIB src/core/libraries/kernel/coredump/coredump.cpp
                src/core/libraries/kernel/threads/pthread_spec.cpp
                src/core/libraries/kernel/threads/rwlock.cpp
                src/core/libraries/kernel/threads/semaphore.cpp
+               src/core/libraries/kernel/threads/hang_diag.cpp
+               src/core/libraries/kernel/threads/hang_diag.h
                src/core/libraries/kernel/threads/sleepq.cpp
                src/core/libraries/kernel/threads/sleepq.h
                src/core/libraries/kernel/threads/stack.cpp
@@ -1449,6 +1451,8 @@ if (WIN32)
     # Disable ASLR so we can reserve the user area
     if (MSVC)
         target_link_options(shadps4 PRIVATE /DYNAMICBASE:NO)
+        # Symbol map for resolving the shadPS4.exe+offset addresses printed by hang dumps.
+        target_link_options(shadps4 PRIVATE /MAP:${CMAKE_BINARY_DIR}/shadPS4.map)
     else()
         target_link_options(shadps4 PRIVATE -Wl,--disable-dynamicbase)
     endif()

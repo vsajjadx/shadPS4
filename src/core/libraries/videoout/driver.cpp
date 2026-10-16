@@ -9,6 +9,7 @@
 #include "common/thread.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
+#include "core/libraries/kernel/threads/hang_diag.h"
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/videoout/driver.h"
 #include "core/libraries/videoout/videoout_error.h"
@@ -362,10 +363,15 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
              unlimited ? std::string{"unlimited"} : std::to_string(vblank_frequency));
 
     Common::SetCurrentThreadName("shadPS4:PresentThread");
+    Libraries::Kernel::RegisterHangDiagHostThread("shadPS4:PresentThread");
     Common::SetCurrentThreadRealtime(vblank_period);
 
     Common::AccurateTimer timer{vblank_period};
     auto last_draw = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point last_flip{};
+    constexpr std::chrono::seconds flip_stall_timeout{10};
+    bool stall_dumped = false;
+    u32 stall_dumps = 0;
 
     const auto wait_for_request = [&] {
         std::unique_lock lk{mutex};
@@ -423,7 +429,19 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
             } else {
                 Flip(request);
                 last_draw = std::chrono::steady_clock::now();
+                last_flip = last_draw;
+                stall_dumped = false;
                 FRAME_END;
+            }
+        }
+
+        // Hang watchdog: once the game has started flipping, dump every thread's state when no
+        // flip arrives for a while, so freezes can be traced from the log.
+        if (main_port.is_open && last_flip != std::chrono::steady_clock::time_point{} &&
+            !stall_dumped && std::chrono::steady_clock::now() - last_flip > flip_stall_timeout) {
+            stall_dumped = true;
+            if (stall_dumps++ < 3) {
+                Libraries::Kernel::DumpThreadsForHang("no flip for 10 seconds");
             }
         }
 

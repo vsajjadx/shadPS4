@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <chrono>
 #include <climits>
 #include <cstdint>
@@ -11,6 +12,7 @@
 #include <sys/time.h>
 #endif
 #include <ranges>
+#include <string_view>
 #include <thread>
 #include <vector>
 #include <magic_enum/magic_enum.hpp>
@@ -35,6 +37,7 @@
 #include "core/libraries/kernel/file_system.h"
 #include "core/libraries/kernel/orbis_error.h"
 #include "core/libraries/kernel/posix_error.h"
+#include "core/libraries/kernel/threads/hang_diag.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/net/net_kernel.h"
 #include "core/memory.h"
@@ -89,6 +92,16 @@ namespace Libraries::Kernel {
 
 s32 PS4_SYSV_ABI open(const char* raw_path, s32 flags, u16 mode) {
     LOG_INFO(Kernel_Fs, "path = {} flags = {:#x} mode = {:#o}", raw_path, flags, mode);
+
+    // EA games (NHL 24 and other Frostbite titles) write a "_hang" error report from their
+    // heartbeat thread when the game stops responding; dump what every thread is doing then.
+    if (raw_path != nullptr &&
+        std::string_view{raw_path}.find("_hang.st.dat") != std::string_view::npos) {
+        static std::atomic<u32> hang_dumps{0};
+        if (hang_dumps.fetch_add(1) < 3) {
+            DumpThreadsForHang(fmt::format("game reported a hang ({})", raw_path));
+        }
+    }
 
     auto* h = Common::Singleton<Core::FileSys::HandleTable>::Instance();
     auto* mnt = Common::Singleton<Core::FileSys::MntPoints>::Instance();

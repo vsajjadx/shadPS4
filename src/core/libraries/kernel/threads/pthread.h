@@ -16,6 +16,7 @@
 #include "core/libraries/kernel/sync/mutex.h"
 #include "core/libraries/kernel/sync/semaphore.h"
 #include "core/libraries/kernel/threads/exception.h"
+#include "core/libraries/kernel/threads/hang_diag.h"
 #include "core/libraries/kernel/time.h"
 #include "core/thread.h"
 #include "core/tls.h"
@@ -358,6 +359,12 @@ struct Pthread {
     OrbisKernelExceptionHandlerStack sigaltstack{};
     Mcontext suspended_context{};
     std::atomic_bool is_suspended_in_signal{false};
+
+    // Hang diagnostics: the HLE wait this thread is blocked in, see hang_diag.h.
+    std::atomic<WaitKind> hang_wait_kind{WaitKind::None};
+    const void* hang_wait_obj{};
+    const void* hang_wait_caller{};
+    u64 hang_wait_since_ms{};
 
     bool IsSignalBlocked(s32 sig) const;
     void QueueSignal(s32 sig);

@@ -426,7 +426,11 @@ int PS4_SYSV_ABI sceKernelWaitEventFlag(OrbisKernelEventFlag ef, u64 bitPattern,
         UNREACHABLE();
     }
 
-    const int result = ef->Wait(bitPattern, wait, clear, pResultPat, pTimeout);
+    int result;
+    {
+        HANG_DIAG_WAIT(EventFlag, ef);
+        result = ef->Wait(bitPattern, wait, clear, pResultPat, pTimeout);
+    }
     if (result != ORBIS_OK && result != ORBIS_KERNEL_ERROR_ETIMEDOUT) {
         LOG_DEBUG(Kernel_Event, "returned {:#x}", result);
     }

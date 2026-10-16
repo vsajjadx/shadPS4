@@ -10,6 +10,7 @@
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/kernel/orbis_error.h"
 #include "core/libraries/kernel/posix_error.h"
+#include "core/libraries/kernel/threads/hang_diag.h"
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/libs.h"
 
@@ -62,6 +63,7 @@ static s32 posix_nanosleep_impl(const OrbisKernelTimespec* rqtp, OrbisKernelTime
     }
     const auto duration = std::chrono::nanoseconds(rqtp->tv_sec * 1'000'000'000 + rqtp->tv_nsec);
     std::chrono::nanoseconds remain;
+    HANG_DIAG_WAIT(Sleep, nullptr);
     const auto uninterrupted = Common::AccurateSleep(duration, &remain, interruptible);
     if (rmtp) {
         rmtp->tv_sec = remain.count() / 1'000'000'000;

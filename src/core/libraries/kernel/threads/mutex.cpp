@@ -234,6 +234,7 @@ s32 PthreadMutex::Lock(const OrbisKernelTimespec* abstime, u64 usec) {
         }
     }
 
+    HANG_DIAG_WAIT(Mutex, this);
     s32 ret = 0;
     if (abstime == nullptr) {
         m_lock.lock();

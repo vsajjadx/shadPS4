@@ -11,6 +11,7 @@
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/kernel/process.h"
+#include "core/libraries/kernel/threads/hang_diag.h"
 #include "core/libraries/videoout/driver.h"
 #include "core/memory.h"
 #include "core/platform.h"
@@ -133,6 +134,7 @@ void Liverpool::ProcessCommands() {
 
 void Liverpool::Process(std::stop_token stoken) {
     Common::SetCurrentThreadName("shadPS4:GpuCommandProcessor");
+    Libraries::Kernel::RegisterHangDiagHostThread("shadPS4:GpuCommandProcessor");
     gpu_id = std::this_thread::get_id();
 #ifdef __linux__
     gpu_tid = gettid();

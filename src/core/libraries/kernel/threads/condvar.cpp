@@ -211,6 +211,7 @@ int PthreadCond::Wait(PthreadMutexT* mutex, const OrbisKernelTimespec* abstime, 
 int PS4_SYSV_ABI posix_pthread_cond_wait(PthreadCondT* cond, PthreadMutexT* mutex) {
     PthreadCond* cvp{};
     CHECK_AND_INIT_COND
+    HANG_DIAG_WAIT(Cond, cvp);
     return cvp->Wait(mutex, nullptr);
 }
 
@@ -223,6 +224,7 @@ int PS4_SYSV_ABI posix_pthread_cond_timedwait(PthreadCondT* cond, PthreadMutexT*
 
     PthreadCond* cvp{};
     CHECK_AND_INIT_COND
+    HANG_DIAG_WAIT(Cond, cvp);
     return cvp->Wait(mutex, abstime);
 }
 
@@ -230,6 +232,7 @@ int PS4_SYSV_ABI posix_pthread_cond_reltimedwait_np(PthreadCondT* cond, PthreadM
                                                     u64 usec) {
     PthreadCond* cvp{};
     CHECK_AND_INIT_COND
+    HANG_DIAG_WAIT(Cond, cvp);
     return cvp->Wait(mutex, THR_RELTIME, usec);
 }
 
