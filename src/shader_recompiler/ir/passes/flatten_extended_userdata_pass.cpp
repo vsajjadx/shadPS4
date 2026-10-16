@@ -218,6 +218,35 @@ static inline void SetFlatbufOffset(IR::Inst* inst, u16 offset) {
     UNREACHABLE_MSG("Instruction not supported");
 }
 
+// Short textual form of an offset expression, used to diagnose trees the walker can't evaluate.
+static std::string DescribeOffsetValue(const IR::Value& value, u32 depth = 0) {
+    if (value.IsImmediate()) {
+        return fmt::format("#{:#x}", value.U32());
+    }
+    const IR::Inst* inst = value.Inst();
+    std::string out{magic_enum::enum_name(inst->GetOpcode())};
+    if (inst->GetOpcode() == IR::Opcode::GetUserData) {
+        return fmt::format("{}(s{})", out, static_cast<u32>(inst->Arg(0).ScalarReg()));
+    }
+    if (depth >= 5) {
+        return out + "(..)";
+    }
+    out += '(';
+    for (size_t arg = 0; arg < inst->NumArgs(); ++arg) {
+        if (arg != 0) {
+            out += ", ";
+        }
+        const IR::Value a = inst->Arg(arg);
+        if (!a.IsImmediate() || a.Type() == IR::Type::U32) {
+            out += DescribeOffsetValue(a, depth + 1);
+        } else {
+            out += "imm";
+        }
+    }
+    out += ')';
+    return out;
+}
+
 static bool ComputeOffset(Xbyak::CodeGenerator& c, Xbyak::Reg32 reg, PassInfo& pass_info,
                           const IR::Value& off_dw);
 
@@ -720,8 +749,8 @@ static bool ComputeOffset(Xbyak::CodeGenerator& c, Xbyak::Reg32 reg, PassInfo& p
         ABORT_ON_FAILURE(EmitComputeOffsetBitFieldUExtract(c, reg, pass_info, inst));
         return true;
     default:
-        LOG_ERROR(Render_Recompiler, "Unexpected instruction for offset computation, {}",
-                  magic_enum::enum_name(inst->GetOpcode()));
+        LOG_ERROR(Render_Recompiler, "Unexpected instruction for offset computation, {}: {}",
+                  magic_enum::enum_name(inst->GetOpcode()), DescribeOffsetValue(off_dw));
         return false;
     }
 }
