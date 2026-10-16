@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/hack_features.h"
 #include "core/emulator_settings.h"
 #include "shader_recompiler/ir/program.h"
 #include "shader_recompiler/profile.h"
@@ -217,7 +218,10 @@ void CollectShaderInfoPass(IR::Program& program, const Profile& profile) {
         }
     }
 
-    if (!EmulatorSettings.IsDirectMemoryAccessEnabled()) {
+    // The Order: 1886 leaves dynamically indexed constant loads unflattened on purpose (see
+    // FlattenExtendedUserdataPass), they must be read from memory even without DMA enabled.
+    const bool forced_dma = Common::HackFeatures::isTheOrder1886 && info.uses_dma;
+    if (!EmulatorSettings.IsDirectMemoryAccessEnabled() && !forced_dma) {
         info.uses_dma = false;
         info.readconst_types = Info::ReadConstType::None;
     }
