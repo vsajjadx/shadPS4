@@ -888,6 +888,12 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
             }
         }
         for (const auto& entry : pending) {
+            // The Order: 1886 hits this for every dword of its run-time selected T#s; the
+            // fallback in ComputeOffset already reports it once per value.
+            if (Common::HackFeatures::isTheOrder1886) {
+                ordered.push_back(entry);
+                continue;
+            }
             LOG_ERROR(Render_Recompiler,
                       "SRT offset depends on a value outside this table, {}: needs {}",
                       DescribeOffsetValue(entry.first),

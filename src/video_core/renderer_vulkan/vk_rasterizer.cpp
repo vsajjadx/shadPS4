@@ -1032,10 +1032,12 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
                 // walker failure in The Order: 1886): absurd extents or a range that isn't
                 // mapped. Creating it makes the driver fail the allocation and we assert.
                 LOG_WARNING(Render_Vulkan,
-                            "Rejecting implausible T# address={:#x}, size={}x{}x{}, levels={}, "
+                            "Rejecting implausible T# in {} {:#x} image {}: address={:#x}, "
+                            "size={}x{}x{}, levels={}, "
                             "layers={}, guest_size={:#x}, data_format={}, tile_mode={}, type={}, "
                             "base_array={}, last_array={}, pitch={}",
-                            desc.info.guest_address, desc.info.size.width, desc.info.size.height,
+                            stage.hw_stage, stage.pgm_hash, desc_idx, desc.info.guest_address,
+                            desc.info.size.width, desc.info.size.height,
                             desc.info.size.depth, desc.info.resources.levels,
                             desc.info.resources.layers, desc.info.guest_size,
                             static_cast<u32>(data_fmt), static_cast<u32>(tsharp.GetTileMode()),
