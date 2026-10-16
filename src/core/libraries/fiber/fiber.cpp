@@ -60,7 +60,8 @@ static void* HostStackTop(OrbisFiber* fiber) {
     std::scoped_lock lock{host_stacks_mutex};
     auto& stack = host_stacks[fiber];
     if (!stack) {
-        stack = std::make_unique<u8[]>(HostFiberStackSize);
+        // Left uninitialised so the pages are only committed when the fiber touches them.
+        stack.reset(new u8[HostFiberStackSize]);
     }
     return stack.get() + HostFiberStackSize;
 }
