@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
+#include <string>
+
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/thread.h"
@@ -331,24 +334,49 @@ void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_
 
     LOG_DEBUG(Lib_VideoOut, "flip submitted: index={} arg={} eop={} pending={}", index, flip_arg,
               is_eop, port->flip_status.flip_pending_num);
-    std::scoped_lock lock{mutex};
-    requests.push({
-        .frame = frame,
-        .port = port,
-        .flip_arg = flip_arg,
-        .index = index,
-        .eop = is_eop,
-    });
+    {
+        std::scoped_lock lock{mutex};
+        requests.push({
+            .frame = frame,
+            .port = port,
+            .flip_arg = flip_arg,
+            .index = index,
+            .eop = is_eop,
+        });
+    }
+    request_cv.notify_one();
 }
 
 void VideoOutDriver::PresentThread(std::stop_token token) {
-    const std::chrono::nanoseconds vblank_period(1000000000 /
-                                                 EmulatorSettings.GetVblankFrequency());
+    // With no limit, a vblank is signalled as soon as a flip is presented, or after at most
+    // max_idle_period when the game doesn't flip, so a game waiting on vblank never stalls.
+    using namespace std::chrono_literals;
+    const u32 vblank_frequency = EmulatorSettings.GetVblankFrequency();
+    const bool unlimited = vblank_frequency == 0;
+    constexpr std::chrono::nanoseconds max_idle_period = 1ms;
+    // Frames redrawn without a flip request (blank screen, overlays) stay at about 60 per second.
+    constexpr std::chrono::nanoseconds redraw_period = 16ms;
+    const std::chrono::nanoseconds vblank_period =
+        unlimited ? max_idle_period : std::chrono::nanoseconds(1000000000 / vblank_frequency);
+    LOG_INFO(Lib_VideoOut, "Vblank frequency: {}",
+             unlimited ? std::string{"unlimited"} : std::to_string(vblank_frequency));
 
     Common::SetCurrentThreadName("shadPS4:PresentThread");
     Common::SetCurrentThreadRealtime(vblank_period);
 
     Common::AccurateTimer timer{vblank_period};
+    auto last_draw = std::chrono::steady_clock::now();
+
+    const auto wait_for_request = [&] {
+        std::unique_lock lk{mutex};
+        request_cv.wait_for(lk, max_idle_period, [&] { return !requests.empty(); });
+    };
+    const auto may_redraw = [&] {
+        if (unlimited) {
+            return std::chrono::steady_clock::now() - last_draw >= redraw_period;
+        }
+        return timer.GetTotalWait().count() < 0; // Dont draw too fast
+    };
 
     const auto receive_request = [this] -> Request {
         std::scoped_lock lk{mutex};
@@ -361,11 +389,20 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
     };
 
     while (!token.stop_requested()) {
-        timer.Start();
+        if (unlimited) {
+            wait_for_request();
+        } else {
+            timer.Start();
+        }
 
         if (DebugState.IsGuestThreadsPaused()) {
-            DrawLastFrame();
-            timer.End();
+            if (!unlimited || may_redraw()) {
+                DrawLastFrame();
+                last_draw = std::chrono::steady_clock::now();
+            }
+            if (!unlimited) {
+                timer.End();
+            }
             continue;
         }
 
@@ -374,15 +411,18 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
         if (vblank_status.count % (main_port.flip_rate + 1) == 0) {
             const auto request = receive_request();
             if (!request) {
-                if (timer.GetTotalWait().count() < 0) { // Dont draw too fast
+                if (may_redraw()) {
                     if (!main_port.is_open) {
                         DrawBlankFrame();
+                        last_draw = std::chrono::steady_clock::now();
                     } else if (ImGui::Core::MustKeepDrawing()) {
                         DrawLastFrame();
+                        last_draw = std::chrono::steady_clock::now();
                     }
                 }
             } else {
                 Flip(request);
+                last_draw = std::chrono::steady_clock::now();
                 FRAME_END;
             }
         }
@@ -411,7 +451,9 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
             main_port.vblank_cv.notify_all();
         }
 
-        timer.End();
+        if (!unlimited) {
+            timer.End();
+        }
     }
 }
 

@@ -420,7 +420,8 @@ struct GPUSettings {
     Setting<bool> direct_memory_access_enabled{false};
     Setting<bool> dump_shaders{false};
     Setting<bool> patch_shaders{false};
-    Setting<u32> vblank_frequency{60};
+    // 0 = unlimited: vblank is signalled as fast as frames are presented.
+    Setting<u32> vblank_limit{0};
     Setting<bool> full_screen{false};
     Setting<std::string> full_screen_mode{"Windowed"};
     Setting<std::string> present_mode{"Mailbox"};
@@ -451,7 +452,7 @@ struct GPUSettings {
                                        &GPUSettings::readback_linear_images_enabled),
             make_override<GPUSettings>("direct_memory_access_enabled",
                                        &GPUSettings::direct_memory_access_enabled),
-            make_override<GPUSettings>("vblank_frequency", &GPUSettings::vblank_frequency),
+            make_override<GPUSettings>("vblank_limit", &GPUSettings::vblank_limit),
             make_override<GPUSettings>("userfaultfd", &GPUSettings::userfaultfd),
             make_override<GPUSettings>("inline_fetch_shader", &GPUSettings::inline_fetch_shader),
         };
@@ -461,7 +462,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GPUSettings, window_width, window_height, int
                                    internal_screen_height, null_gpu, copy_gpu_buffers,
                                    readbacks_mode, readback_linear_images_enabled,
                                    direct_memory_access_enabled, dump_shaders, patch_shaders,
-                                   vblank_frequency, full_screen, full_screen_mode, present_mode,
+                                   vblank_limit, full_screen, full_screen_mode, present_mode,
                                    hdr_allowed, fsr_enabled, rcas_enabled, rcas_attenuation,
                                    userfaultfd, inline_fetch_shader)
 
@@ -762,18 +763,15 @@ public:
     SETTING_FORWARD_BOOL(m_gpu, UserfaultfdTracking, userfaultfd)
     SETTING_FORWARD_BOOL_READONLY(m_gpu, InlineFetchShader, inline_fetch_shader)
 
+    /// Vblank frequency in Hz, 0 means unlimited.
     u32 GetVblankFrequency() {
-        if (m_gpu.vblank_frequency.value < 30) {
-            return 30;
-        }
-        return m_gpu.vblank_frequency.get();
+        return m_gpu.vblank_limit.get();
     }
     void SetVblankFrequency(const u32& v, bool is_specific = false) {
-        u32 val = v < 30 ? 30 : v;
         if (is_specific) {
-            m_gpu.vblank_frequency.game_specific_value = val;
+            m_gpu.vblank_limit.game_specific_value = v;
         } else {
-            m_gpu.vblank_frequency.value = val;
+            m_gpu.vblank_limit.value = v;
         }
     }
 

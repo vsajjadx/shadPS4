@@ -783,7 +783,8 @@ void SettingsWindow::DrawSettingsTable(SettingsCategory category) {
             ImGui::TableSetupColumn("Value");
 
             AddSettingSliderInt("Additional DMem Allocation", extraDmemSetting, 0, 20000);
-            AddSettingSliderInt("Vblank Frequency", vblankFrequencySetting, 30, 360);
+            AddSettingSliderInt("Vblank Frequency (0 = unlimited)", vblankFrequencySetting, 0,
+                                1000);
             AddSettingCombo("Readbacks Mode", readbacksModeSetting, readbacksModeOptions);
             AddSettingCheckbox("Enable Readback Linear Images", readbackLinearImagesSetting);
             AddSettingCheckbox("Enable Direct Memory Access", directMemoryAccessSetting);

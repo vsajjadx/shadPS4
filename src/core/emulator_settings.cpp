@@ -618,7 +618,7 @@ bool EmulatorSettingsImpl::TransferSettings() {
         setFromToml(s.direct_memory_access_enabled, gpu, "directMemoryAccess");
         setFromToml(s.dump_shaders, gpu, "dumpShaders");
         setFromToml(s.patch_shaders, gpu, "patchShaders");
-        setFromToml(s.vblank_frequency, gpu, "vblankFrequency");
+        setFromToml(s.vblank_limit, gpu, "vblankFrequency");
         setFromToml(s.full_screen, gpu, "Fullscreen");
         setFromToml(s.full_screen_mode, gpu, "FullscreenMode");
         setFromToml(s.present_mode, gpu, "presentMode");
