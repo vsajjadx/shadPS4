@@ -311,7 +311,10 @@ void PipelineCache::WarmUp() {
     // Check if cache is compatible
     std::vector<u8> profile_data{};
     Storage::DataBase::Instance().Load(Storage::BlobType::ShaderProfile, "profile", profile_data);
+    LOG_INFO(Render, "Pipeline cache at {}, profile size {}",
+             Common::FS::PathToUTF8String(Storage::DataBase::Instance().GetCachePath()), profile_data.size());
     if (profile_data.empty()) {
+        LOG_WARNING(Render, "Pipeline cache has no profile, starting a new cache");
         Storage::DataBase::Instance().FinishPreload();
 
         profile_data.resize(sizeof(profile));

@@ -32,6 +32,9 @@ public:
         return opened;
     }
     void FinishPreload();
+    [[nodiscard]] const std::filesystem::path& GetCachePath() const {
+        return cache_path;
+    }
 
     bool Save(BlobType type, const std::string& name, std::vector<u8>&& data);
     bool Save(BlobType type, const std::string& name, std::vector<u32>&& data);
