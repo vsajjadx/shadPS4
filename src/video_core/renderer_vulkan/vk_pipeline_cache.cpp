@@ -415,7 +415,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         // With asynchronous compilation the guest-dependent part of the pipeline is set up here
         // and the driver compilation, which is what stalls the GPU thread for tens of
         // milliseconds, runs on a worker. Draws using it are skipped until it is ready.
-        const bool async_build = EmulatorSettings.IsAsyncShaderCompilation();
+        const bool async_build = EmulatorSettings.IsAsyncPipelineCompilation();
         GraphicsPipeline::SerializationSupport sdata{};
         it.value() = std::make_unique<GraphicsPipeline>(
             instance, scheduler, desc_heap, profile, graphics_key, *pipeline_cache, infos,

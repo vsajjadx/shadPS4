@@ -538,8 +538,8 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     LOG_INFO(Config, "Vulkan PipelineCacheEnabled: {}", EmulatorSettings.IsPipelineCacheEnabled());
     LOG_INFO(Config, "Vulkan PipelineCacheArchived: {}",
              EmulatorSettings.IsPipelineCacheArchived());
-    LOG_INFO(Config, "Vulkan AsyncShaderCompilation: {}",
-             EmulatorSettings.IsAsyncShaderCompilation());
+    LOG_INFO(Config, "Vulkan AsyncPipelineCompilation: {}",
+             EmulatorSettings.IsAsyncPipelineCompilation());
 
     hwinfo::Memory ram;
     hwinfo::OS os;
