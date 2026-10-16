@@ -18,8 +18,8 @@ Sampler::Sampler(const Vulkan::Instance& instance, const AmdGpu::Sampler& sample
     // lookups and depth compares must stay exact.
     const u32 forced_aniso = EmulatorSettings.GetAnisotropicFiltering();
     const bool force_aniso = forced_aniso > 1 && !is_depth &&
-                             sampler.xy_min_filter != AmdGpu::Filter::Point &&
-                             sampler.mip_filter != AmdGpu::MipFilter::None;
+                             sampler.xy_min_filter.Value() != AmdGpu::Filter::Point &&
+                             sampler.mip_filter.Value() != AmdGpu::MipFilter::None;
     const bool anisotropy_enable =
         instance.IsAnisotropicFilteringSupported() && (game_aniso || force_aniso);
     float max_anisotropy = 1.0f;
