@@ -178,6 +178,16 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
         gpu_modified_ranges.Subtract(address, size);
     });
     if (total_size_bytes == 0) {
+        // The tracker still has these pages GPU modified (and protected) but there is nothing
+        // left to download, e.g. their ranges were taken by an asynchronous readback. Returning
+        // without unmarking them leaves the faulting access retrying forever, which on the GPU
+        // thread freezes the game.
+        if (!async && memory_tracker->IsRegionGpuModified(device_addr, size)) {
+            memory_tracker->UnmarkRegionAsGpuModified(device_addr, size, false);
+            if (is_write) {
+                memory_tracker->MarkRegionAsCpuModified(device_addr, size);
+            }
+        }
         return;
     }
     const auto download =

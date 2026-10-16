@@ -208,13 +208,32 @@ void TextureCache::InvalidateMemoryFromGPU(VAddr address, size_t max_size) {
     });
 }
 
+/// Hashes guest memory through the backing pages, which are never protected. Reading the guest
+/// address directly faults on GPU modified pages when readbacks are enabled, and these hashes are
+/// taken on the GPU thread, which then services its own readback fault or, if the range is
+/// already being read back asynchronously, keeps faulting forever.
+static u64 HashGuestMemory(VAddr addr, u64 size) {
+    constexpr u64 ChunkSize = 16_KB;
+    alignas(64) u8 chunk[ChunkSize];
+    XXH3_state_t* const state = XXH3_createState();
+    XXH3_64bits_reset(state);
+    auto* memory = Core::Memory::Instance();
+    while (size != 0) {
+        const u64 chunk_size = std::min(size, ChunkSize - (addr % ChunkSize));
+        memory->CopySparseMemory(addr, chunk, chunk_size);
+        XXH3_64bits_update(state, chunk, chunk_size);
+        addr += chunk_size;
+        size -= chunk_size;
+    }
+    const u64 hash = XXH3_64bits_digest(state);
+    XXH3_freeState(state);
+    return hash;
+}
+
 void TextureCache::MarkAsMaybeGpuDirty(VAddr addr, size_t size) {
     ForEachImageInRegion(addr, size, [&](ImageId image_id, Image& image) {
         if (image.gpu_hash == 0) {
-            // Read backing pages directly, without faulting through the guest readback path.
-            // An unavailable baseline keeps the conservative GC behavior.
-            const u8* addr = std::bit_cast<u8*>(image.info.guest_address);
-            image.gpu_hash = XXH3_64bits(addr, image.info.guest_size);
+            image.gpu_hash = HashGuestMemory(image.info.guest_address, image.info.guest_size);
         }
         image.flags |= ImageFlagBits::MaybeGpuDirty;
     });
@@ -992,8 +1011,7 @@ void TextureCache::GarbageCollectImages() {
 
         for (const auto& image_id : maybe_download) {
             const auto& image = slot_images[image_id];
-            const u8* addr = std::bit_cast<u8*>(image.info.guest_address);
-            const u64 hash = XXH3_64bits(addr, image.info.guest_size);
+            const u64 hash = HashGuestMemory(image.info.guest_address, image.info.guest_size);
             if (image.gpu_hash == hash) {
                 download_queue.push_back(image_id);
             } else {
