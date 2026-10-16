@@ -32,9 +32,27 @@ using namespace Xbyak::util;
 static Xbyak::CodeGenerator g_srt_codegen(32_MB);
 static const u8* g_srt_codegen_start = nullptr;
 
+namespace {
+static bool SrtWalkerSignalHandler(void* context, void* fault_address);
+} // namespace
+
+// Every walker, whether generated here or loaded from the pipeline cache, must lie past the
+// start address the fault handler checks, or a fault in it is not recovered.
+static void EnsureSrtWalkerHandler() {
+    if (g_srt_codegen_start != nullptr) {
+        return;
+    }
+    g_srt_codegen_start = g_srt_codegen.getCurr();
+    auto* signals = Core::Signals::Instance();
+    // Call after the memory invalidation handler
+    constexpr u32 priority = 1;
+    signals->RegisterAccessViolationHandler(SrtWalkerSignalHandler, priority);
+}
+
 namespace Shader {
 
 PFN_SrtWalker RegisterWalkerCode(const u8* ptr, size_t size) {
+    EnsureSrtWalkerHandler();
     const auto func_addr = (PFN_SrtWalker)g_srt_codegen.getCurr();
     g_srt_codegen.db(ptr, size);
     g_srt_codegen.ready();
@@ -947,14 +965,7 @@ static void GenerateSrtProgram(Info& info, PassInfo& pass_info) {
         return;
     }
 
-    // Register the signal handler for SRT walker, if not already registered
-    if (g_srt_codegen_start == nullptr) {
-        g_srt_codegen_start = c.getCurr();
-        auto* signals = Core::Signals::Instance();
-        // Call after the memory invalidation handler
-        constexpr u32 priority = 1;
-        signals->RegisterAccessViolationHandler(SrtWalkerSignalHandler, priority);
-    }
+    EnsureSrtWalkerHandler();
 
     info.srt_info.walker_func = c.getCurr<PFN_SrtWalker>();
     pass_info.dst_off_dw = NUM_USER_DATA_REGS;
