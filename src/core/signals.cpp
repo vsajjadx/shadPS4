@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <chrono>
 #include <string>
 #include <fmt/format.h>
 #include "common/arch.h"
@@ -112,6 +113,36 @@ static bool TryRecoverGuestFault(EXCEPTION_POINTERS* pExp) {
     return true;
 }
 
+// A handler that claims a fault without removing its cause makes the thread re-run the faulting
+// instruction forever. Hand such a fault on once it has repeated far more often than any real
+// page-tracking fault does.
+static bool IsRepeatingFault(EXCEPTION_POINTERS* pExp) {
+    static constexpr u32 RepeatLimit = 100000;
+    thread_local u64 last_rip = 0;
+    thread_local u64 last_address = 0;
+    thread_local u32 repeats = 0;
+    thread_local std::chrono::steady_clock::time_point first_seen{};
+    const u64 rip = pExp->ContextRecord->Rip;
+    const u64 address = pExp->ExceptionRecord->NumberParameters > 1
+                            ? pExp->ExceptionRecord->ExceptionInformation[1]
+                            : 0;
+    const auto now = std::chrono::steady_clock::now();
+    if (rip != last_rip || address != last_address || now - first_seen > std::chrono::seconds(2)) {
+        last_rip = rip;
+        last_address = address;
+        first_seen = now;
+        repeats = 0;
+        return false;
+    }
+    if (++repeats < RepeatLimit) {
+        return false;
+    }
+    repeats = 0;
+    LOG_ERROR(Core, "Access violation at {:#x} (address {:#x}) keeps repeating after being handled",
+              rip, address);
+    return true;
+}
+
 static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
     using namespace Libraries::Kernel;
     const auto* signals = Signals::Instance();
@@ -210,6 +241,10 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
         return EXCEPTION_EXECUTE_HANDLER;
     default:
         break;
+    }
+
+    if (handled && code == EXCEPTION_ACCESS_VIOLATION && IsRepeatingFault(pExp)) {
+        handled = false;
     }
 
     if (handled) {

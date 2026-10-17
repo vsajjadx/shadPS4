@@ -49,7 +49,7 @@ bool IsWriteError(void* ctx) {
 
 bool IsExecuteError(void* ctx) {
 #if defined(_WIN32)
-    return ((EXCEPTION_POINTERS*)ctx)->ExceptionRecord->ExceptionInformation[0] == 0xf;
+    return ((EXCEPTION_POINTERS*)ctx)->ExceptionRecord->ExceptionInformation[0] == 8;
 #elif defined(__APPLE__) && defined(ARCH_X86_64)
     return ((ucontext_t*)ctx)->uc_mcontext->__es.__err & 0x10;
 #elif defined(__FreeBSD__) && defined(ARCH_X86_64)

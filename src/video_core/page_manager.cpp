@@ -436,6 +436,11 @@ struct SignalImpl : public PageManager::Impl {
         const auto size = std::min<u64>(8, PageManager::GetNextPageAddr(addr) - addr);
         const auto is_gpu_thread =
             std::this_thread::get_id() == rasterizer->GetGpuCommandProcessorThread();
+        if (Common::IsExecuteError(context)) {
+            // Tracking only ever removes read/write access; claiming an execute fault would
+            // re-run the faulting jump forever.
+            return false;
+        }
         if (Common::IsWriteError(context)) {
             return rasterizer->InvalidateMemory(addr, size, is_gpu_thread);
         } else {
