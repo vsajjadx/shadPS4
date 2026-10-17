@@ -826,7 +826,7 @@ s32 PS4_SYSV_ABI posix_lstat(const char* path, OrbisKernelStat* sb) {
 s32 PS4_SYSV_ABI sceKernelStat(const char* path, OrbisKernelStat* sb) {
     s32 result = posix_stat(path, sb);
     if (result < 0) {
-        LOG_ERROR(Kernel_Fs, "error = {}", *__Error());
+        LOG_ERROR(Kernel_Fs, "path = {}, error = {}", path ? path : "(null)", *__Error());
         return ErrnoToSceKernelError(*__Error());
     }
     return result;

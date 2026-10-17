@@ -188,6 +188,27 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
                 }
                 LOG_CRITICAL(Debug, "CodeBytes@rip: {}", bytes);
             }
+            // Poor man's backtrace: every stack slot that points into guest code (eboot text is
+            // mapped at 0x5790000..0xa3e8000 in the logs seen so far; log raw values in range).
+            {
+                std::string frames;
+                int found = 0;
+                const u64 rsp = cr->Rsp;
+                for (u64 i = 0; i < 2048 && found < 40; i++) {
+                    MEMORY_BASIC_INFORMATION sbi{};
+                    const u64 slot_addr = rsp + i * 8;
+                    if (VirtualQuery(reinterpret_cast<void*>(slot_addr), &sbi, sizeof(sbi)) == 0 ||
+                        sbi.State != MEM_COMMIT || (sbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
+                        break;
+                    }
+                    const u64 v = *reinterpret_cast<const u64*>(slot_addr);
+                    if (v >= 0x5790000ull && v < 0xa3e8000ull) {
+                        frames += fmt::format("{:#x}(+{:#x}) ", v, v - 0x5790000ull);
+                        found++;
+                    }
+                }
+                LOG_CRITICAL(Debug, "StackCodeRefs: {}", frames);
+            }
         }
         Common::Singleton<Core::Emulator>::Instance()->Shutdown();
     }
