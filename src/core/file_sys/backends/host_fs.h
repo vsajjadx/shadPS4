@@ -53,6 +53,18 @@ public:
 
     void Stat(FileStat& out) override;
 
+    bool IsRecyclable() const override {
+        return m_recyclable;
+    }
+
+    void SetRecyclable() {
+        m_recyclable = true;
+    }
+
+    const std::filesystem::path& Path() const {
+        return m_path;
+    }
+
 private:
     bool OpenPositionalHandle();
 
@@ -61,7 +73,11 @@ private:
     bool m_read_only;
     std::once_flag m_positional_once;
     intptr_t m_positional_handle{-1};
+    bool m_recyclable{false};
 };
+
+/// Keeps a closed recyclable file open for its next open, or destroys it otherwise.
+void RecycleFile(std::unique_ptr<IFile> file);
 
 /// Streaming iterator over a host directory.
 class HostDirectory final : public IDirectory {

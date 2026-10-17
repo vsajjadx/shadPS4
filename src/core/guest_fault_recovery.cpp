@@ -6,6 +6,7 @@
 #include <cstring>
 #include <optional>
 #include <string>
+#include <fmt/format.h>
 #include "common/decoder.h"
 #include "common/logging/log.h"
 #include "core/guest_fault_recovery.h"
@@ -24,6 +25,33 @@ constexpr u64 ARITH_FLAGS = FLAG_CF | FLAG_PF | FLAG_AF | FLAG_ZF | FLAG_SF | FL
 
 std::atomic_bool g_enabled{true};
 std::atomic<u64> g_recoveries{0};
+std::atomic<AddressDescriber> g_describer{nullptr};
+
+std::string Describe(u64 address) {
+    if (const auto describer = g_describer.load(std::memory_order_relaxed)) {
+        return describer(address);
+    }
+    return fmt::format("{:#x}", address);
+}
+
+// Return addresses found on the stack, for tracing where a bad pointer came from.
+std::string StackTrace(const RegisterFile& regs, const MemoryProbe& probe) {
+    std::string trace;
+    const u64 rsp = *regs.gpr[ZYDIS_REGISTER_RSP - ZYDIS_REGISTER_RAX];
+    u32 found = 0;
+    for (u64 slot = rsp; slot < rsp + 0x800 && found < 8; slot += 8) {
+        if (!probe.is_accessible(slot, 8, false, probe.user)) {
+            break;
+        }
+        const u64 value = *reinterpret_cast<const u64*>(slot);
+        if (probe.is_executable(value, probe.user)) {
+            trace += Describe(value);
+            trace += ' ';
+            found++;
+        }
+    }
+    return trace;
+}
 
 struct Decoded {
     ZydisDecodedInstruction inst;
@@ -462,6 +490,10 @@ Outcome EmulateInstruction(RegisterFile& regs, const Decoded& d, const MemoryPro
 
 } // Anonymous namespace
 
+void SetAddressDescriber(AddressDescriber describer) {
+    g_describer.store(describer, std::memory_order_relaxed);
+}
+
 void SetEnabled(bool enabled) {
     g_enabled.store(enabled, std::memory_order_relaxed);
 }
@@ -549,8 +581,8 @@ bool TryRecover(RegisterFile& regs, u64 fault_address, bool is_execute, const Me
         if (n < 64 || (n & (n - 1)) == 0) {
             LOG_WARNING(Core,
                         "Guest fault recovery #{} [{}]: call into invalid code {:#x}, returning 0 "
-                        "to {:#x} (rsp={:#x})",
-                        n + 1, name, rip, *regs.rip, rsp);
+                        "to {} (rsp={:#x}), stack: {}",
+                        n + 1, name, rip, Describe(*regs.rip), rsp, StackTrace(regs, probe));
         }
         return true;
     }
@@ -592,10 +624,10 @@ bool TryRecover(RegisterFile& regs, u64 fault_address, bool is_execute, const Me
     const u64 n = g_recoveries.fetch_add(1, std::memory_order_relaxed);
     if (n < 64 || (n & (n - 1)) == 0) {
         LOG_WARNING(Core,
-                    "Guest fault recovery #{} [{}]: '{}' at {:#x} touched invalid address {:#x} "
-                    "(fault {:#x}), continuing at {:#x}",
+                    "Guest fault recovery #{} [{}]: '{}' at {} touched invalid address {:#x} "
+                    "(fault {:#x}), continuing at {:#x}, stack: {}",
                     n + 1, name, Common::Decoder::Instance()->disassembleInst(d.inst, d.ops, rip),
-                    rip, bad_address, fault_address, *regs.rip);
+                    Describe(rip), bad_address, fault_address, *regs.rip, StackTrace(regs, probe));
     }
     return true;
 }

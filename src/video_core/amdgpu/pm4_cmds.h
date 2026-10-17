@@ -489,7 +489,8 @@ struct PM4CmdEventWriteEop {
             break;
         }
         default: {
-            UNREACHABLE();
+            LOG_ERROR(Render, "Ignoring unknown PM4 selector in a command packet");
+            break;
         }
         }
 
@@ -506,7 +507,8 @@ struct PM4CmdEventWriteEop {
             break;
         }
         default: {
-            UNREACHABLE();
+            LOG_ERROR(Render, "Ignoring unknown PM4 selector in a command packet");
+            break;
         }
         }
     }
@@ -724,7 +726,8 @@ struct PM4CmdWaitRegMem {
         case Function::Reserved:
             [[fallthrough]];
         default: {
-            UNREACHABLE();
+            // A reserved or garbage compare function must not hang the GPU thread forever.
+            return true;
         }
         }
     }
@@ -808,7 +811,8 @@ struct PM4CmdEventWriteEos {
             break;
         }
         default: {
-            UNREACHABLE_MSG("Unknown command {}", u32(cmd));
+            LOG_ERROR(Render, "Ignoring unknown fence command {}", u32(cmd));
+            break;
         }
         }
     }
@@ -973,7 +977,8 @@ struct PM4CmdReleaseMem {
             break;
         }
         default: {
-            UNREACHABLE();
+            LOG_ERROR(Render, "Ignoring unknown PM4 selector in a command packet");
+            break;
         }
         }
 
@@ -989,7 +994,8 @@ struct PM4CmdReleaseMem {
             break;
         }
         default: {
-            UNREACHABLE();
+            LOG_ERROR(Render, "Ignoring unknown PM4 selector in a command packet");
+            break;
         }
         }
     }
@@ -1238,7 +1244,9 @@ struct PM4CmdMemSemaphore {
             *ptr = 1;
             break;
         default:
-            UNREACHABLE_MSG("Unknown signal type {}", static_cast<u32>(signal_type.Value()));
+            LOG_ERROR(Render, "Ignoring unknown signal type {}",
+                      static_cast<u32>(signal_type.Value()));
+            break;
         }
     }
 };

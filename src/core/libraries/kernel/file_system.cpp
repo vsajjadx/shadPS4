@@ -23,6 +23,7 @@
 #include "common/logging/log.h"
 #include "common/scope_exit.h"
 #include "common/singleton.h"
+#include "core/file_sys/backends/host_fs.h"
 #include "core/file_sys/devices/console_device.h"
 #include "core/file_sys/devices/deci_tty_device.h"
 #include "core/file_sys/devices/logger.h"
@@ -383,7 +384,7 @@ s32 PS4_SYSV_ABI close(s32 fd) {
         return Libraries::Net::KernelClose(fd);
     }
     if (file->type == Core::FileSys::FileType::Regular) {
-        file->handle.reset();
+        Core::FileSys::RecycleFile(std::move(file->handle));
     }
     file->is_opened = false;
     LOG_INFO(Kernel_Fs, "Closing {}", file->m_guest_name);
@@ -672,6 +673,30 @@ s64 PS4_SYSV_ABI read(s32 fd, void* buf, u64 nbytes) {
 
     if (file->type == Core::FileSys::FileType::Socket) {
         return Libraries::Net::KernelRead(fd, buf, nbytes);
+    }
+    // Read-only host files: only claiming the range advances the file position under the lock,
+    // the read itself runs in parallel with other threads using the same file.
+    if (file->type == Core::FileSys::FileType::Regular && file->handle &&
+        file->handle->SupportsReadAt()) {
+        u64 position{};
+        u64 length{};
+        {
+            std::scoped_lock lk{file->m_mutex};
+            position = static_cast<u64>(file->Tell());
+            const u64 size = file->GetSize();
+            length = std::min<u64>(nbytes, position < size ? size - position : 0);
+            file->Seek(static_cast<s64>(position + length));
+        }
+        const OrbisKernelIovec iov{buf, length};
+        if (const auto result = ReadFileAt(file, &iov, 1, static_cast<s64>(position))) {
+            if (static_cast<u64>(*result) != length) {
+                std::scoped_lock lk{file->m_mutex};
+                file->Seek(static_cast<s64>(position + *result));
+            }
+            return *result;
+        }
+        std::scoped_lock lk{file->m_mutex};
+        file->Seek(static_cast<s64>(position));
     }
     const auto lock_start = IoStats::Clock::now();
     std::scoped_lock lk{file->m_mutex};

@@ -5,6 +5,7 @@
 
 #include <array>
 #include <optional>
+#include <string>
 #include "common/types.h"
 
 namespace Core::GuestFaultRecovery {
@@ -22,6 +23,10 @@ struct MemoryProbe {
     bool (*is_executable)(u64 address, void* user);
     void* user;
 };
+
+// Formats a code address for recovery logs, e.g. as module+offset.
+using AddressDescriber = std::string (*)(u64 address);
+void SetAddressDescriber(AddressDescriber describer);
 
 void SetEnabled(bool enabled);
 bool IsEnabled();

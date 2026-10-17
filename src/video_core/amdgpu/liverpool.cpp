@@ -205,8 +205,9 @@ Liverpool::Task Liverpool::ProcessCeUpdate(std::span<const u32> ccb) {
         const auto* header = reinterpret_cast<const PM4Header*>(ccb.data());
         const u32 type = header->type;
         if (type != 3) {
-            // No other types of packets were spotted so far
-            UNREACHABLE_MSG("Invalid PM4 type {}", type);
+            // Garbage in the constant engine buffer; drop the rest of it.
+            LOG_ERROR(Render, "Invalid PM4 type {} in CE buffer, skipping the rest", type);
+            break;
         }
 
         const PM4ItOpcode opcode = header->type3.opcode;
@@ -254,9 +255,9 @@ Liverpool::Task Liverpool::ProcessCeUpdate(std::span<const u32> ccb) {
             break;
         }
         default:
-            const u32 count = header->type3.NumWords();
-            UNREACHABLE_MSG("Unknown PM4 type 3 opcode {:#x} with count {}",
-                            static_cast<u32>(opcode), count);
+            LOG_ERROR(Render, "Skipping unknown CE PM4 opcode {:#x} with count {}",
+                      static_cast<u32>(opcode), header->type3.NumWords());
+            break;
         }
         ccb = NextPacket(ccb, header->type3.NumWords() + 1);
     }
@@ -288,12 +289,15 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
 
         switch (type) {
         default:
-            UNREACHABLE_MSG("Wrong PM4 type {}", type);
-            break;
+            // Garbage in the command buffer; drop the rest of it rather than run random data.
+            LOG_ERROR(Render, "Wrong PM4 type {}, skipping the rest of the command buffer", type);
+            dcb = {};
+            continue;
         case 0:
-            UNREACHABLE_MSG("Unimplemented PM4 type 0, base reg: {}, size: {}",
-                            header->type0.base.Value(), header->type0.NumWords());
-            break;
+            LOG_ERROR(Render, "Skipping unimplemented PM4 type 0, base reg: {}, size: {}",
+                      header->type0.base.Value(), header->type0.NumWords());
+            dcb = NextPacket(dcb, header->type0.NumWords() + 1);
+            continue;
         case 2:
             // Type-2 packet are used for padding purposes
             dcb = NextPacket(dcb, 1);
@@ -798,23 +802,26 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                            dma_data->SrcAddress<VAddr>(), dma_data->NumBytes(),
                                            false, false);
                 } else {
-                    UNREACHABLE_MSG("WriteData src_sel = {}, dst_sel = {}", u32(dma_data->src_sel),
-                                    u32(dma_data->dst_sel));
+                    LOG_ERROR(Render, "Skipping DmaData with src_sel = {}, dst_sel = {}",
+                              u32(dma_data->src_sel), u32(dma_data->dst_sel));
                 }
                 break;
             }
             case PM4ItOpcode::WriteData: {
                 const auto* write_data = reinterpret_cast<const PM4CmdWriteData*>(header);
-                ASSERT(write_data->dst_sel.Value() == 2 || write_data->dst_sel.Value() == 5);
                 const u32 data_size = (header->type3.count.Value() - 2) * 4;
                 u64* address = write_data->Address<u64*>();
-                if (!write_data->wr_one_addr.Value()) {
+                if (write_data->dst_sel.Value() != 2 && write_data->dst_sel.Value() != 5) {
+                    LOG_ERROR(Render, "Skipping WriteData to dst_sel {}",
+                              u32(write_data->dst_sel.Value()));
+                } else if (!write_data->wr_one_addr.Value()) {
                     if (rasterizer) {
                         rasterizer->OnFence();
                     }
                     std::memcpy(address, write_data->data, data_size);
-                } else {
-                    UNREACHABLE();
+                } else if (data_size >= 4) {
+                    // Every dword goes to the same address, so only the last one remains.
+                    std::memcpy(address, &write_data->data[data_size / 4 - 1], sizeof(u32));
                 }
                 break;
             }
@@ -953,8 +960,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 break;
             }
             default:
-                UNREACHABLE_MSG("Unknown PM4 type 3 opcode {:#x} with count {}",
-                                static_cast<u32>(opcode), count);
+                LOG_ERROR(Render, "Skipping unknown PM4 type 3 opcode {:#x} with count {}",
+                          static_cast<u32>(opcode), count);
+                break;
             }
             dcb = NextPacket(dcb, header->type3.NumWords() + 1);
             break;
@@ -1022,8 +1030,14 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
         }
 
         if (header->type != 3) {
-            // No other types of packets were spotted so far
-            UNREACHABLE_MSG("Invalid PM4 type {}", header->type.Value());
+            LOG_ERROR(Render, "Skipping invalid PM4 type {} dword in compute queue",
+                      header->type.Value());
+            acb = NextPacket(acb, 1);
+            if constexpr (!is_indirect) {
+                *queue.read_addr += 1;
+                *queue.read_addr %= queue.ring_size_dw;
+            }
+            continue;
         }
 
         const PM4ItOpcode opcode = header->type3.opcode;
@@ -1088,8 +1102,8 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
                     rasterizer->CopyBuffer(dst_addr, src_addr, num_bytes, false, false);
                 }
             } else {
-                UNREACHABLE_MSG("WriteData src_sel = {}, dst_sel = {}", u32(dma_data->src_sel),
-                                u32(dma_data->dst_sel));
+                LOG_ERROR(Render, "Skipping DmaData with src_sel = {}, dst_sel = {}",
+                          u32(dma_data->src_sel), u32(dma_data->dst_sel));
             }
             break;
         }
@@ -1175,15 +1189,18 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
         }
         case PM4ItOpcode::WriteData: {
             const auto* write_data = reinterpret_cast<const PM4CmdWriteData*>(header);
-            ASSERT(write_data->dst_sel.Value() == 2 || write_data->dst_sel.Value() == 5);
             const u32 data_size = (header->type3.count.Value() - 2) * 4;
-            if (!write_data->wr_one_addr.Value()) {
+            if (write_data->dst_sel.Value() != 2 && write_data->dst_sel.Value() != 5) {
+                LOG_ERROR(Render, "Skipping WriteData to dst_sel {}",
+                          u32(write_data->dst_sel.Value()));
+            } else if (!write_data->wr_one_addr.Value()) {
                 if (rasterizer) {
                     rasterizer->OnFence();
                 }
                 std::memcpy(write_data->Address<void*>(), write_data->data, data_size);
-            } else {
-                UNREACHABLE();
+            } else if (data_size >= 4) {
+                std::memcpy(write_data->Address<void*>(), &write_data->data[data_size / 4 - 1],
+                            sizeof(u32));
             }
             break;
         }
@@ -1247,8 +1264,9 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
             break;
         }
         default:
-            UNREACHABLE_MSG("Unknown PM4 type 3 opcode {:#x} with count {}",
-                            static_cast<u32>(opcode), header->type3.NumWords());
+            LOG_ERROR(Render, "Skipping unknown compute PM4 opcode {:#x} with count {}",
+                      static_cast<u32>(opcode), header->type3.NumWords());
+            break;
         }
 
         acb = NextPacket(acb, next_dw_off);

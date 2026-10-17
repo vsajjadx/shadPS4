@@ -105,6 +105,12 @@ public:
         return true;
     }
 
+    // Files of read-only mounts can be kept open after the guest closes them and handed out
+    // again on the next open of the same path.
+    virtual bool IsRecyclable() const {
+        return false;
+    }
+
     virtual bool IsWriteOnly() const {
         return false;
     }

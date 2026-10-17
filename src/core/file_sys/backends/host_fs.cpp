@@ -5,6 +5,8 @@
 #include <cerrno>
 #include <chrono>
 #include <fstream>
+#include <list>
+#include <mutex>
 #include <system_error>
 
 #ifdef _WIN32
@@ -318,6 +320,53 @@ bool HostFsBackend::IsDirectory(std::string_view rel_path) {
     return std::filesystem::is_directory(Resolve(rel_path), ec);
 }
 
+namespace {
+
+// Games open and close the same archive files over and over while streaming; reopening a
+// host file costs a path lookup and an fopen each time.
+class RecycledFiles {
+public:
+    static RecycledFiles& Instance() {
+        static RecycledFiles instance;
+        return instance;
+    }
+
+    void Park(std::unique_ptr<HostFile> file) {
+        std::scoped_lock lk{mutex};
+        files.push_front(std::move(file));
+        if (files.size() > Capacity) {
+            files.pop_back();
+        }
+    }
+
+    std::unique_ptr<HostFile> Take(const std::filesystem::path& path) {
+        std::scoped_lock lk{mutex};
+        for (auto it = files.begin(); it != files.end(); ++it) {
+            if ((*it)->Path() == path) {
+                auto file = std::move(*it);
+                files.erase(it);
+                return file;
+            }
+        }
+        return nullptr;
+    }
+
+private:
+    static constexpr size_t Capacity = 64;
+    std::mutex mutex;
+    std::list<std::unique_ptr<HostFile>> files;
+};
+
+} // Anonymous namespace
+
+void RecycleFile(std::unique_ptr<IFile> file) {
+    if (!file || !file->IsRecyclable() || !file->Seek(0, Common::FS::SeekOrigin::SetOrigin)) {
+        return;
+    }
+    RecycledFiles::Instance().Park(
+        std::unique_ptr<HostFile>{static_cast<HostFile*>(file.release())});
+}
+
 std::unique_ptr<IFile> HostFsBackend::Open(std::string_view rel_path,
                                            Common::FS::FileAccessMode mode) {
     const bool writable = mode != Common::FS::FileAccessMode::Read;
@@ -325,6 +374,11 @@ std::unique_ptr<IFile> HostFsBackend::Open(std::string_view rel_path,
         return nullptr;
     }
     const auto path = Resolve(rel_path);
+    if (m_read_only) {
+        if (auto recycled = RecycledFiles::Instance().Take(path)) {
+            return recycled;
+        }
+    }
     std::error_code ec;
     if (mode != Common::FS::FileAccessMode::Create && !std::filesystem::is_regular_file(path, ec)) {
         return nullptr;
@@ -332,6 +386,9 @@ std::unique_ptr<IFile> HostFsBackend::Open(std::string_view rel_path,
     auto handle = std::make_unique<HostFile>(path, mode, m_read_only || !writable);
     if (!handle->IsOpen()) {
         return nullptr;
+    }
+    if (m_read_only) {
+        handle->SetRecyclable();
     }
     return handle;
 }

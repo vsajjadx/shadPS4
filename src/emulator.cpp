@@ -518,6 +518,13 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
              EmulatorSettings.IsRedZonePatchingEnabled());
 #endif
     Core::GuestFaultRecovery::SetEnabled(EmulatorSettings.IsGuestFaultRecoveryEnabled());
+    Core::GuestFaultRecovery::SetAddressDescriber([](u64 address) -> std::string {
+        auto* linker = Common::Singleton<Core::Linker>::Instance();
+        if (auto* module = linker->FindByAddress(address)) {
+            return fmt::format("{}+{:#x}", module->name, address - module->GetBaseAddress());
+        }
+        return fmt::format("{:#x}", address);
+    });
     LOG_INFO(Config, "General guestFaultRecovery: {}",
              EmulatorSettings.IsGuestFaultRecoveryEnabled());
     LOG_INFO(Config, "General p2pPort: {}", EmulatorSettings.GetP2PPort());
