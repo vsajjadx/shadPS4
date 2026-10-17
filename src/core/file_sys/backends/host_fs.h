@@ -19,9 +19,11 @@ namespace Core::FileSys {
 class HostFile final : public IFile {
 public:
     HostFile(std::filesystem::path host_path, Common::FS::FileAccessMode mode, bool read_only);
-    ~HostFile() override = default;
+    ~HostFile() override;
 
     s64 Read(void* dst, u64 size) override;
+    bool SupportsReadAt() const override;
+    s64 ReadAt(void* dst, u64 size, u64 offset) override;
     s64 Write(const void* src, u64 size) override;
     bool Seek(s64 offset, Common::FS::SeekOrigin origin) override;
     u64 Tell() const override;
@@ -52,9 +54,13 @@ public:
     void Stat(FileStat& out) override;
 
 private:
+    bool OpenPositionalHandle();
+
     std::filesystem::path m_path;
     Common::FS::IOFile m_file;
     bool m_read_only;
+    std::once_flag m_positional_once;
+    intptr_t m_positional_handle{-1};
 };
 
 /// Streaming iterator over a host directory.

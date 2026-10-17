@@ -43,8 +43,10 @@ constexpr static std::array DescriptorHeapSizes = {
 };
 
 static u32 NumCompileWorkers() {
+    // Use every hardware thread but a few kept for the game, GPU and presentation threads, so the
+    // boot-time cache warm-up and in-game compiles finish as fast as the CPU allows.
     const u32 hw_threads = std::max(std::thread::hardware_concurrency(), 2u);
-    return std::clamp(hw_threads / 2, 2u, 8u);
+    return std::clamp(hw_threads > 4 ? hw_threads - 4 : 2u, 2u, 32u);
 }
 
 PipelineCompileWorkers::PipelineCompileWorkers(u32 num_threads) {

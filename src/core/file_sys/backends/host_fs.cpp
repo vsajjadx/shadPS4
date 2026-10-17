@@ -1,10 +1,18 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <fstream>
 #include <system_error>
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 #if defined(__linux__) || defined(__FreeBSD__) || defined(__APPLE__)
 #include <sys/stat.h>
 #endif
@@ -26,6 +34,100 @@ s64 HostFile::Read(void* dst, u64 size) {
         return -1;
     }
     return static_cast<s64>(m_file.ReadRaw<u8>(dst, size));
+}
+
+HostFile::~HostFile() {
+    if (m_positional_handle == -1) {
+        return;
+    }
+#ifdef _WIN32
+    CloseHandle(reinterpret_cast<HANDLE>(m_positional_handle));
+#else
+    ::close(static_cast<int>(m_positional_handle));
+#endif
+}
+
+bool HostFile::OpenPositionalHandle() {
+    std::call_once(m_positional_once, [this] {
+#ifdef _WIN32
+        // Overlapped, so concurrent reads on this handle are not serialized by the I/O manager.
+        const HANDLE handle = CreateFileW(m_path.c_str(), GENERIC_READ,
+                                          FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                          nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+        if (handle != INVALID_HANDLE_VALUE) {
+            m_positional_handle = reinterpret_cast<intptr_t>(handle);
+        }
+#else
+        const int fd = ::open(m_path.c_str(), O_RDONLY | O_CLOEXEC);
+        if (fd >= 0) {
+            m_positional_handle = fd;
+        }
+#endif
+    });
+    return m_positional_handle != -1;
+}
+
+bool HostFile::SupportsReadAt() const {
+    return m_read_only && m_file.IsOpen();
+}
+
+s64 HostFile::ReadAt(void* dst, u64 size, u64 offset) {
+    if (!SupportsReadAt() || !OpenPositionalHandle()) {
+        return -1;
+    }
+    auto* out = static_cast<u8*>(dst);
+    u64 total = 0;
+#ifdef _WIN32
+    thread_local HANDLE event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (event == nullptr) {
+        return -1;
+    }
+    const auto handle = reinterpret_cast<HANDLE>(m_positional_handle);
+    while (total < size) {
+        const u64 position = offset + total;
+        const DWORD chunk = static_cast<DWORD>(std::min<u64>(size - total, 1ull << 30));
+        OVERLAPPED overlapped{};
+        overlapped.Offset = static_cast<DWORD>(position);
+        overlapped.OffsetHigh = static_cast<DWORD>(position >> 32);
+        overlapped.hEvent = event;
+        ResetEvent(event);
+        DWORD transferred = 0;
+        if (!ReadFile(handle, out + total, chunk, nullptr, &overlapped) &&
+            GetLastError() != ERROR_IO_PENDING) {
+            if (GetLastError() == ERROR_HANDLE_EOF) {
+                break;
+            }
+            return total > 0 ? static_cast<s64>(total) : -1;
+        }
+        if (!GetOverlappedResult(handle, &overlapped, &transferred, TRUE)) {
+            if (GetLastError() == ERROR_HANDLE_EOF) {
+                break;
+            }
+            return total > 0 ? static_cast<s64>(total) : -1;
+        }
+        if (transferred == 0) {
+            break;
+        }
+        total += transferred;
+    }
+#else
+    const int fd = static_cast<int>(m_positional_handle);
+    while (total < size) {
+        const ssize_t got =
+            ::pread(fd, out + total, size - total, static_cast<off_t>(offset + total));
+        if (got < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return total > 0 ? static_cast<s64>(total) : -1;
+        }
+        if (got == 0) {
+            break;
+        }
+        total += static_cast<u64>(got);
+    }
+#endif
+    return static_cast<s64>(total);
 }
 
 s64 HostFile::Write(const void* src, u64 size) {

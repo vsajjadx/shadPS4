@@ -60,6 +60,14 @@ public:
     virtual ~IFile() = default;
 
     virtual s64 Read(void* dst, u64 size) = 0;
+    // Reads at an absolute offset without touching the file position. Backends that support it
+    // can serve several threads at once, so callers need not serialize such reads.
+    virtual bool SupportsReadAt() const {
+        return false;
+    }
+    virtual s64 ReadAt(void* dst, u64 size, u64 offset) {
+        return -1;
+    }
     virtual s64 Write(const void* src, u64 size) = 0;
     virtual bool Seek(s64 offset, Common::FS::SeekOrigin origin) = 0;
     virtual u64 Tell() const = 0;

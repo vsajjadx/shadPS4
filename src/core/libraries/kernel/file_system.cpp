@@ -6,6 +6,7 @@
 #include <climits>
 #include <cstdint>
 #include <map>
+#include <optional>
 #ifdef _WIN32
 #include <sys/utime.h>
 #else
@@ -462,6 +463,41 @@ s64 ReadFile(Core::FileSys::File* file, void* buf, u64 nbytes) {
     }
     std::memcpy(buf, file_buf.data(), bytes);
     return bytes;
+}
+
+static std::optional<s64> ReadFileAt(Core::FileSys::File* file, const OrbisKernelIovec* iov,
+                                     s32 iovcnt, s64 offset) {
+    const auto* memory = Core::Memory::Instance();
+    const u64 file_size = file->GetSize();
+    s64 total_read = 0;
+    for (s32 i = 0; i < iovcnt; i++) {
+        const u64 position = static_cast<u64>(offset) + total_read;
+        const u64 nbytes = iov[i].iov_len;
+        if (nbytes == 0) {
+            continue;
+        }
+        const u64 remaining = position < file_size ? file_size - position : 0;
+        memory->InvalidateMemory(reinterpret_cast<VAddr>(iov[i].iov_base),
+                                 std::min<u64>(nbytes, remaining));
+        if (file_buf.capacity() < nbytes) {
+            file_buf.reserve(nbytes);
+        }
+        const auto read_start = IoStats::Clock::now();
+        const s64 bytes = file->handle->ReadAt(file_buf.data(), nbytes, position);
+        g_io_stats.AddRead(IoStats::Clock::now() - read_start, bytes > 0 ? bytes : 0);
+        if (bytes < 0) {
+            if (total_read == 0) {
+                return std::nullopt;
+            }
+            break;
+        }
+        std::memcpy(iov[i].iov_base, file_buf.data(), bytes);
+        total_read += bytes;
+        if (static_cast<u64>(bytes) < nbytes) {
+            break;
+        }
+    }
+    return total_read;
 }
 
 s64 PS4_SYSV_ABI readv(s32 fd, const OrbisKernelIovec* iov, s32 iovcnt) {
@@ -1434,6 +1470,15 @@ s64 PS4_SYSV_ABI posix_preadv(s32 fd, OrbisKernelIovec* iov, s32 iovcnt, s64 off
     if (file == nullptr) {
         *__Error() = POSIX_EBADF;
         return -1;
+    }
+
+    // Positional reads of read-only host files don't use the file position, so threads
+    // streaming from the same file read in parallel instead of queueing on its lock.
+    if (file->type == Core::FileSys::FileType::Regular && file->handle &&
+        file->handle->SupportsReadAt()) {
+        if (const auto result = ReadFileAt(file, iov, iovcnt, offset)) {
+            return *result;
+        }
     }
 
     const auto lock_start = IoStats::Clock::now();
