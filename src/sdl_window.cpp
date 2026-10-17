@@ -237,9 +237,9 @@ void WindowSDL::WaitEvent() {
     case SDL_EVENT_MOUSE_WHEEL_OFF:
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP:
-        if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat && event.key.key == SDLK_F1 &&
-            (event.key.mod & SDL_KMOD_CTRL) && (event.key.mod & SDL_KMOD_SHIFT)) {
-            Libraries::Kernel::DumpThreadsForHang("requested with Ctrl+Shift+F1");
+        if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat && event.key.key == SDLK_L &&
+            (event.key.mod & SDL_KMOD_CTRL)) {
+            Libraries::Kernel::DumpThreadsForHang("requested with Ctrl+L");
             break;
         }
         OnKeyboardMouseInput(&event);
