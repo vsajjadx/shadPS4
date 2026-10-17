@@ -5,6 +5,7 @@
 #include <bit>
 #include <cstring>
 #include <optional>
+#include <string>
 #include "common/decoder.h"
 #include "common/logging/log.h"
 #include "core/guest_fault_recovery.h"
