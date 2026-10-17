@@ -830,6 +830,9 @@ public:
     SETTING_FORWARD_BOOL(m_vulkan, PipelineCacheEnabled, pipeline_cache_enabled)
     SETTING_FORWARD_BOOL(m_vulkan, PipelineCacheArchived, pipeline_cache_archived)
     SETTING_FORWARD_BOOL(m_vulkan, AsyncPipelineCompilation, async_pipeline_compilation)
+    bool IsAsyncPipelineCompilationGameSpecific() const {
+        return m_vulkan.async_pipeline_compilation.game_specific_value.has_value();
+    }
 
 #undef SETTING_FORWARD
 #undef SETTING_FORWARD_BOOL

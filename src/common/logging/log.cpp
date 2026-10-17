@@ -177,10 +177,10 @@ void Flush() {
     }
 }
 
-// Synchronous logging keeps crash logs complete, but writing every info line to the console
-// from the calling thread stalls game threads. Info and lower go through the async queue; warnings
-// and above drain the queue and are written and flushed synchronously, so ordering is kept and
-// nothing important is lost on a crash.
+// Synchronous logging keeps crash logs complete, but writing every line to the console from the
+// calling thread stalls game threads. Everything goes through the async queue except critical
+// messages (crash reports, hang dumps), which briefly drain the queue and are then written and
+// flushed synchronously so they survive the process going down.
 class SyncWarningsSink final : public spdlog::sinks::sink {
 public:
     SyncWarningsSink(std::shared_ptr<spdlog::sinks::async_sink> async,
@@ -188,11 +188,11 @@ public:
         : async{std::move(async)}, sinks{std::move(sinks)} {}
 
     void log(const spdlog::details::log_msg& msg) override {
-        if (msg.log_level < spdlog::level::warn) {
+        if (msg.log_level < spdlog::level::critical) {
             async->log(msg);
             return;
         }
-        async->wait_all();
+        static_cast<void>(async->wait_all(std::chrono::milliseconds(250)));
         for (const auto& sink : sinks) {
             if (sink->should_log(msg.log_level)) {
                 sink->log(msg);
@@ -203,7 +203,7 @@ public:
 
     void flush() override {
         async->flush();
-        async->wait_all();
+        static_cast<void>(async->wait_all(std::chrono::milliseconds(1000)));
         for (const auto& sink : sinks) {
             sink->flush();
         }

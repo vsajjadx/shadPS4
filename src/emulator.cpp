@@ -460,11 +460,13 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         EmulatorSettings.SetReadbacksMode(GpuReadbacksMode::Relaxed, true);
         LOG_INFO(Config, "NHL 24: GPU readbacks forced to Relaxed");
     }
-    // NHL 24 keeps meeting new pipelines all through a match; compiling them on the GPU thread
-    // freezes the game for tens of milliseconds each time. Build them on worker threads instead.
-    if (id == "CUSA37933" && !EmulatorSettings.IsAsyncPipelineCompilation()) {
+    // Compiling a new pipeline on the GPU thread freezes the game for tens of milliseconds, so
+    // pipelines are built on worker threads for every game. A game-specific config can still turn
+    // it off for a title that needs every draw of a pipeline's first frames.
+    if (!EmulatorSettings.IsAsyncPipelineCompilation() &&
+        !EmulatorSettings.IsAsyncPipelineCompilationGameSpecific()) {
         EmulatorSettings.SetAsyncPipelineCompilation(true, true);
-        LOG_INFO(Config, "NHL 24: asynchronous pipeline compilation forced on");
+        LOG_INFO(Config, "Asynchronous pipeline compilation forced on");
     }
     // UFC 4 reads GPU-rendered data back on the CPU, including images the GPU renders in linear
     // layout. Without precise readbacks every fight is a black arena with only the HUD, and

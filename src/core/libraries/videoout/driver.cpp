@@ -372,6 +372,8 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
     constexpr std::chrono::seconds flip_stall_timeout{10};
     bool stall_dumped = false;
     u32 stall_dumps = 0;
+    const auto session_start = std::chrono::steady_clock::now();
+    u32 timed_dumps = 0;
 
     const auto wait_for_request = [&] {
         std::unique_lock lk{mutex};
@@ -433,6 +435,16 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
                 stall_dumped = false;
                 FRAME_END;
             }
+        }
+
+        // Two one-off dumps a few minutes in, so endless loading screens that keep flipping can
+        // still be traced from the log.
+        if (main_port.is_open && timed_dumps < 2 &&
+            std::chrono::steady_clock::now() - session_start >
+                std::chrono::minutes(3 * (timed_dumps + 1))) {
+            Libraries::Kernel::DumpThreadsForHang(
+                fmt::format("{} minutes into the session", 3 * (timed_dumps + 1)));
+            timed_dumps++;
         }
 
         // Hang watchdog: once the game has started flipping, dump every thread's state when no
