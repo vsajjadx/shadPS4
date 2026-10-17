@@ -10,39 +10,49 @@
 
 namespace Libraries::Videodec2 {
 
+void VdecDecoder::ReleaseAVPacket(AVPacket* packet) {
+    av_packet_free(&packet);
+}
+
+void VdecDecoder::ReleaseAVFrame(AVFrame* frame) {
+    av_frame_free(&frame);
+}
+
+void VdecDecoder::ReleaseAVCodecContext(AVCodecContext* context) {
+    avcodec_free_context(&context);
+}
+
+void VdecDecoder::ReleaseSwsContext(SwsContext* context) {
+    sws_freeContext(context);
+}
+
 VdecDecoder::VdecDecoder(const OrbisVideodec2DecoderConfigInfo& config_info,
-                         const OrbisVideodec2DecoderMemoryInfo& memory_info) {
+                         const OrbisVideodec2DecoderMemoryInfo& memory_info)
+    : m_codec_context(nullptr, &ReleaseAVCodecContext), m_sws_context(nullptr, &ReleaseSwsContext) {
     const AVCodecID codec_id = config_info.codec_type == OrbisVideodec2CodecType::Avc
                                    ? AV_CODEC_ID_H264
                                    : AV_CODEC_ID_HEVC;
     const AVCodec* codec = avcodec_find_decoder(codec_id);
-    m_codec_context = avcodec_alloc_context3(codec);
+    m_codec_context = AVCodecContextPtr(avcodec_alloc_context3(codec), &ReleaseAVCodecContext);
+    ASSERT(m_codec_context);
+    m_codec_context->flags |= AV_CODEC_FLAG_COPY_OPAQUE;
 
-    int res = avcodec_open2(m_codec_context, codec, nullptr);
+    int res = avcodec_open2(m_codec_context.get(), codec, nullptr);
     ASSERT_MSG(res >= 0, "Could not open codec");
 }
 
-VdecDecoder::~VdecDecoder() {
-    while (!m_frame_queue.empty()) {
-        AVFrame* frame = m_frame_queue.front();
-        m_frame_queue.pop();
-        av_frame_free(&frame);
-    }
-    avcodec_free_context(&m_codec_context);
-    sws_freeContext(m_sws_context);
-}
+VdecDecoder::~VdecDecoder() = default;
 
 void VdecDecoder::DrainFrames() {
     while (true) {
-        AVFrame* frame = av_frame_alloc();
+        AVFramePtr frame{av_frame_alloc(), &ReleaseAVFrame};
         if (!frame) {
             break;
         }
-        int ret = avcodec_receive_frame(m_codec_context, frame);
+        int ret = avcodec_receive_frame(m_codec_context.get(), frame.get());
         if (ret == 0) {
-            m_frame_queue.push(frame);
+            m_frame_queue.push(std::move(frame));
         } else {
-            av_frame_free(&frame);
             break;
         }
     }
@@ -64,7 +74,7 @@ s32 VdecDecoder::Decode(const OrbisVideodec2InputData& input_data,
         return ORBIS_VIDEODEC2_ERROR_ACCESS_UNIT_SIZE;
     }
 
-    AVPacket* packet = av_packet_alloc();
+    AVPacketPtr packet{av_packet_alloc(), &ReleaseAVPacket};
     if (!packet) {
         LOG_ERROR(Lib_Vdec2, "Failed to allocate packet");
         return ORBIS_VIDEODEC2_ERROR_API_FAIL;
@@ -76,23 +86,22 @@ s32 VdecDecoder::Decode(const OrbisVideodec2InputData& input_data,
     packet->dts = input_data.dts_data;
     packet->opaque = reinterpret_cast<void*>(input_data.attached_data);
 
-    int ret = avcodec_send_packet(m_codec_context, packet);
+    int ret = avcodec_send_packet(m_codec_context.get(), packet.get());
     if (ret == AVERROR_EOF) {
         // Attempt to flush buffers and try again.
-        avcodec_flush_buffers(m_codec_context);
-        ret = avcodec_send_packet(m_codec_context, packet);
+        avcodec_flush_buffers(m_codec_context.get());
+        ret = avcodec_send_packet(m_codec_context.get(), packet.get());
     }
     if (ret == AVERROR(EAGAIN)) {
         DrainFrames();
-        ret = avcodec_send_packet(m_codec_context, packet);
+        ret = avcodec_send_packet(m_codec_context.get(), packet.get());
     }
     if (ret < 0) {
         LOG_ERROR(Lib_Vdec2, "Error sending packet to decoder: {}", ret);
-        av_packet_free(&packet);
         return ORBIS_VIDEODEC2_ERROR_API_FAIL;
     }
 
-    av_packet_free(&packet);
+    packet.reset();
 
     DrainFrames();
 
@@ -100,7 +109,7 @@ s32 VdecDecoder::Decode(const OrbisVideodec2InputData& input_data,
         return ORBIS_OK;
     }
 
-    AVFrame* frame = m_frame_queue.front();
+    AVFramePtr frame = std::move(m_frame_queue.front());
     m_frame_queue.pop();
 
     if (frame->flags & AV_FRAME_FLAG_INTERLACED) {
@@ -108,10 +117,9 @@ s32 VdecDecoder::Decode(const OrbisVideodec2InputData& input_data,
     }
 
     if (frame->format != AV_PIX_FMT_NV12) {
-        AVFrame* nv12_frame = ConvertNV12Frame(*frame);
+        AVFramePtr nv12_frame = ConvertNV12Frame(*frame);
         ASSERT(nv12_frame);
-        av_frame_free(&frame);
-        frame = nv12_frame;
+        frame = std::move(nv12_frame);
     }
 
     const bool is_avc = m_codec_context->codec_id == AV_CODEC_ID_H264;
@@ -172,7 +180,6 @@ s32 VdecDecoder::Decode(const OrbisVideodec2InputData& input_data,
         picture_info.frame_crop_bottom_offset = height - frame->height;
     }
 
-    av_frame_free(&frame);
     return ORBIS_OK;
 }
 
@@ -183,7 +190,7 @@ s32 VdecDecoder::Flush(OrbisVideodec2FrameBuffer& frame_buffer,
     output_info.picture_count = 0;
 
     if (m_frame_queue.empty()) {
-        avcodec_send_packet(m_codec_context, nullptr);
+        avcodec_send_packet(m_codec_context.get(), nullptr);
         DrainFrames();
     }
 
@@ -191,14 +198,13 @@ s32 VdecDecoder::Flush(OrbisVideodec2FrameBuffer& frame_buffer,
         return ORBIS_OK;
     }
 
-    AVFrame* frame = m_frame_queue.front();
+    AVFramePtr frame = std::move(m_frame_queue.front());
     m_frame_queue.pop();
 
     if (frame->format != AV_PIX_FMT_NV12) {
-        AVFrame* nv12_frame = ConvertNV12Frame(*frame);
+        AVFramePtr nv12_frame = ConvertNV12Frame(*frame);
         ASSERT(nv12_frame);
-        av_frame_free(&frame);
-        frame = nv12_frame;
+        frame = std::move(nv12_frame);
     }
 
     const bool is_avc = m_codec_context->codec_id == AV_CODEC_ID_H264;
@@ -259,22 +265,20 @@ s32 VdecDecoder::Flush(OrbisVideodec2FrameBuffer& frame_buffer,
         picture_info.frame_crop_bottom_offset = height - frame->height;
     }
 
-    av_frame_free(&frame);
     return ORBIS_OK;
 }
 
 s32 VdecDecoder::Reset() {
-    while (!m_frame_queue.empty()) {
-        AVFrame* frame = m_frame_queue.front();
-        m_frame_queue.pop();
-        av_frame_free(&frame);
-    }
-    avcodec_flush_buffers(m_codec_context);
+    m_frame_queue = {};
+    avcodec_flush_buffers(m_codec_context.get());
     return ORBIS_OK;
 }
 
-AVFrame* VdecDecoder::ConvertNV12Frame(AVFrame& frame) {
-    AVFrame* nv12_frame = av_frame_alloc();
+VdecDecoder::AVFramePtr VdecDecoder::ConvertNV12Frame(AVFrame& frame) {
+    AVFramePtr nv12_frame{av_frame_alloc(), &ReleaseAVFrame};
+    if (!nv12_frame) {
+        return {nullptr, &ReleaseAVFrame};
+    }
     nv12_frame->pts = frame.pts;
     nv12_frame->pkt_dts = frame.pkt_dts < 0 ? 0 : frame.pkt_dts;
     nv12_frame->format = AV_PIX_FMT_NV12;
@@ -287,19 +291,21 @@ AVFrame* VdecDecoder::ConvertNV12Frame(AVFrame& frame) {
     nv12_frame->crop_right = frame.crop_right;
     nv12_frame->opaque = frame.opaque;
 
-    av_frame_get_buffer(nv12_frame, 0);
+    av_frame_get_buffer(nv12_frame.get(), 0);
 
     if (m_sws_context == nullptr) {
-        m_sws_context = sws_getContext(frame.width, frame.height, AVPixelFormat(frame.format),
-                                       nv12_frame->width, nv12_frame->height, AV_PIX_FMT_NV12,
-                                       SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
+        m_sws_context =
+            SwsContextPtr{sws_getContext(frame.width, frame.height, AVPixelFormat(frame.format),
+                                         nv12_frame->width, nv12_frame->height, AV_PIX_FMT_NV12,
+                                         SWS_FAST_BILINEAR, nullptr, nullptr, nullptr),
+                          &ReleaseSwsContext};
     }
 
-    const auto res = sws_scale(m_sws_context, frame.data, frame.linesize, 0, frame.height,
+    const auto res = sws_scale(m_sws_context.get(), frame.data, frame.linesize, 0, frame.height,
                                nv12_frame->data, nv12_frame->linesize);
     if (res < 0) {
         LOG_ERROR(Lib_Vdec2, "Could not convert to NV12: {}", av_err2str(res));
-        return nullptr;
+        return {nullptr, &ReleaseAVFrame};
     }
 
     return nv12_frame;
