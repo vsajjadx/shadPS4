@@ -438,9 +438,9 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
             }
         }
 
-        if (main_port.is_open && diag_periodic_dumps < 6 &&
+        if (main_port.is_open && diag_periodic_dumps < 60 &&
             std::chrono::steady_clock::now() - diag_start >
-                std::chrono::seconds(60 + 30 * diag_periodic_dumps)) {
+                std::chrono::seconds(60 + 20 * diag_periodic_dumps)) {
             Libraries::Kernel::DumpThreadsForHang(
                 fmt::format("periodic diagnostic dump #{}", diag_periodic_dumps));
             diag_periodic_dumps++;
