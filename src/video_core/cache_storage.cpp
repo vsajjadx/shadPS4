@@ -4,6 +4,7 @@
 #include "common/elf_info.h"
 #include "common/io_file.h"
 #include "common/polyfill_thread.h"
+#include "common/scm_rev.h"
 #include "common/thread.h"
 #include "core/emulator_settings.h"
 
@@ -73,6 +74,41 @@ constexpr std::string GetBlobFileExtension(BlobType type) {
     }
 }
 
+// Caches used to be stored directly in the game's folder. Move one made by this build into the
+// build's own folder; one made by another build is moved into a folder named after that build.
+static void MigrateFlatCache(const std::filesystem::path& game_dir,
+                             const std::filesystem::path& build_dir,
+                             const std::string& build_hash) {
+    std::error_code ec{};
+    const auto build_file = game_dir / "build.bin";
+    if (!std::filesystem::is_regular_file(build_file, ec)) {
+        return;
+    }
+    std::string cached_build;
+    {
+        const Common::FS::IOFile file{build_file, Common::FS::FileAccessMode::Read};
+        if (!file.IsOpen()) {
+            return;
+        }
+        cached_build.resize(file.GetSize());
+        file.ReadSpan(std::span{cached_build.data(), cached_build.size()});
+    }
+    const auto target = cached_build == build_hash
+                            ? build_dir
+                            : game_dir / (cached_build.size() >= 16 ? cached_build.substr(0, 16)
+                                                                    : std::string{"old"});
+    std::filesystem::create_directories(target, ec);
+    for (const auto& entry : std::filesystem::directory_iterator{game_dir, ec}) {
+        if (!entry.is_regular_file(ec)) {
+            continue;
+        }
+        const auto ext = entry.path().extension().string();
+        if (ext == ".key" || ext == ".meta" || ext == ".spv" || ext == ".bin") {
+            std::filesystem::rename(entry.path(), target / entry.path().filename(), ec);
+        }
+    }
+}
+
 void DataBase::Open() {
     if (opened) {
         return;
@@ -96,9 +132,15 @@ void DataBase::Open() {
             mz_zip_writer_init_file(&zip_ar, cache_path.string().c_str(), 0);
         }
     } else {
-        cache_path = GetUserPath(PathType::CacheDir) / game_info.GameSerial();
-        if (!std::filesystem::exists(cache_path)) {
-            std::filesystem::create_directories(cache_path);
+        // Every build that compiles shaders differently keeps its own cache next to the others
+        // instead of wiping the previous one, so going back to a build finds its cache intact.
+        const auto game_dir = GetUserPath(PathType::CacheDir) / game_info.GameSerial();
+        const std::string build_hash{Common::g_shader_cache_hash};
+        cache_path = game_dir / build_hash.substr(0, 16);
+        std::error_code ec{};
+        if (!std::filesystem::exists(cache_path, ec)) {
+            std::filesystem::create_directories(cache_path, ec);
+            MigrateFlatCache(game_dir, cache_path, build_hash);
         }
     }
 

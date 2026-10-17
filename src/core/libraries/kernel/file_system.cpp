@@ -90,7 +90,77 @@ static std::map<std::string, FactoryDevice> available_device = {
 
 namespace Libraries::Kernel {
 
+// Streaming statistics, logged every 30 seconds while a game reads files, to tell whether slow
+// asset streaming comes from the host disk, from threads queueing on one file, or from opens.
+struct IoStats {
+    using Clock = std::chrono::steady_clock;
+    std::atomic<u64> reads{};
+    std::atomic<u64> read_bytes{};
+    std::atomic<u64> read_us{};
+    std::atomic<u64> max_read_us{};
+    std::atomic<u64> lock_wait_us{};
+    std::atomic<u64> max_lock_wait_us{};
+    std::atomic<u64> opens{};
+    std::atomic<u64> open_us{};
+    std::atomic<s64> window_start{Clock::now().time_since_epoch().count()};
+
+    static u64 Micros(Clock::duration d) {
+        return static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(d).count());
+    }
+
+    static void StoreMax(std::atomic<u64>& slot, u64 value) {
+        u64 current = slot.load(std::memory_order_relaxed);
+        while (value > current && !slot.compare_exchange_weak(current, value)) {
+        }
+    }
+
+    void AddRead(Clock::duration time, u64 bytes) {
+        const u64 us = Micros(time);
+        reads.fetch_add(1, std::memory_order_relaxed);
+        read_bytes.fetch_add(bytes, std::memory_order_relaxed);
+        read_us.fetch_add(us, std::memory_order_relaxed);
+        StoreMax(max_read_us, us);
+        MaybeReport();
+    }
+
+    void AddLockWait(Clock::duration time) {
+        const u64 us = Micros(time);
+        lock_wait_us.fetch_add(us, std::memory_order_relaxed);
+        StoreMax(max_lock_wait_us, us);
+    }
+
+    void AddOpen(Clock::duration time) {
+        opens.fetch_add(1, std::memory_order_relaxed);
+        open_us.fetch_add(Micros(time), std::memory_order_relaxed);
+    }
+
+    void MaybeReport() {
+        const s64 now = Clock::now().time_since_epoch().count();
+        s64 start = window_start.load(std::memory_order_relaxed);
+        if (Clock::duration(now - start) < std::chrono::seconds(30) ||
+            !window_start.compare_exchange_strong(start, now)) {
+            return;
+        }
+        const double seconds = std::chrono::duration<double>(Clock::duration(now - start)).count();
+        const u64 n = reads.exchange(0);
+        const u64 bytes = read_bytes.exchange(0);
+        LOG_INFO(Kernel_Fs,
+                 "IO stats over {:.0f}s: {} reads, {:.1f} MB ({:.1f} MB/s), {} ms reading "
+                 "(max {} ms), {} ms waiting for file locks (max {} ms), {} opens taking {} ms",
+                 seconds, n, bytes / 1048576.0, bytes / 1048576.0 / seconds,
+                 read_us.exchange(0) / 1000, max_read_us.exchange(0) / 1000,
+                 lock_wait_us.exchange(0) / 1000, max_lock_wait_us.exchange(0) / 1000,
+                 opens.exchange(0), open_us.exchange(0) / 1000);
+    }
+};
+
+static IoStats g_io_stats;
+
 s32 PS4_SYSV_ABI open(const char* raw_path, s32 flags, u16 mode) {
+    const auto open_start = IoStats::Clock::now();
+    SCOPE_EXIT {
+        g_io_stats.AddOpen(IoStats::Clock::now() - open_start);
+    };
     LOG_INFO(Kernel_Fs, "path = {} flags = {:#x} mode = {:#o}", raw_path, flags, mode);
 
     // EA games (NHL 24 and other Frostbite titles) write a "_hang" error report from their
@@ -384,7 +454,9 @@ s64 ReadFile(Core::FileSys::File* file, void* buf, u64 nbytes) {
     if (file_buf.capacity() < nbytes) {
         file_buf.reserve(nbytes);
     }
+    const auto read_start = IoStats::Clock::now();
     s64 bytes = file->Read(file_buf.data(), nbytes);
+    g_io_stats.AddRead(IoStats::Clock::now() - read_start, bytes > 0 ? bytes : 0);
     if (bytes < 0) {
         return bytes;
     }
@@ -565,7 +637,9 @@ s64 PS4_SYSV_ABI read(s32 fd, void* buf, u64 nbytes) {
     if (file->type == Core::FileSys::FileType::Socket) {
         return Libraries::Net::KernelRead(fd, buf, nbytes);
     }
+    const auto lock_start = IoStats::Clock::now();
     std::scoped_lock lk{file->m_mutex};
+    g_io_stats.AddLockWait(IoStats::Clock::now() - lock_start);
     if (file->type == Core::FileSys::FileType::Device) {
         s64 result = file->device->read(buf, nbytes);
         if (result < 0) {
@@ -1362,7 +1436,9 @@ s64 PS4_SYSV_ABI posix_preadv(s32 fd, OrbisKernelIovec* iov, s32 iovcnt, s64 off
         return -1;
     }
 
+    const auto lock_start = IoStats::Clock::now();
     std::scoped_lock lk{file->m_mutex};
+    g_io_stats.AddLockWait(IoStats::Clock::now() - lock_start);
     if (file->type == Core::FileSys::FileType::Device) {
         s64 result = file->device->preadv(iov, iovcnt, offset);
         if (result < 0) {
