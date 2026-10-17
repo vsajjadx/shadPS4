@@ -37,6 +37,7 @@
 #include "core/file_format/psf.h"
 #include "core/file_format/trp.h"
 #include "core/file_sys/fs.h"
+#include "core/guest_fault_recovery.h"
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/np/np_handler/np_handler.h"
@@ -459,6 +460,12 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         EmulatorSettings.SetReadbacksMode(GpuReadbacksMode::Relaxed, true);
         LOG_INFO(Config, "NHL 24: GPU readbacks forced to Relaxed");
     }
+    // NHL 24 keeps meeting new pipelines all through a match; compiling them on the GPU thread
+    // freezes the game for tens of milliseconds each time. Build them on worker threads instead.
+    if (id == "CUSA37933" && !EmulatorSettings.IsAsyncPipelineCompilation()) {
+        EmulatorSettings.SetAsyncPipelineCompilation(true, true);
+        LOG_INFO(Config, "NHL 24: asynchronous pipeline compilation forced on");
+    }
     // UFC 4 reads GPU-rendered data back on the CPU, including images the GPU renders in linear
     // layout. Without precise readbacks every fight is a black arena with only the HUD, and
     // without linear image readbacks the fighters stay black silhouettes (shadPS4 #4375).
@@ -508,6 +515,9 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     LOG_INFO(Config, "General isRedZonePatchingEnabled: {}",
              EmulatorSettings.IsRedZonePatchingEnabled());
 #endif
+    Core::GuestFaultRecovery::SetEnabled(EmulatorSettings.IsGuestFaultRecoveryEnabled());
+    LOG_INFO(Config, "General guestFaultRecovery: {}",
+             EmulatorSettings.IsGuestFaultRecoveryEnabled());
     LOG_INFO(Config, "General p2pPort: {}", EmulatorSettings.GetP2PPort());
     LOG_INFO(Config, "Log sync: {}", EmulatorSettings.IsLogSync());
     LOG_INFO(Config, "Log skipDuplicate: {}", EmulatorSettings.IsLogSkipDuplicate());

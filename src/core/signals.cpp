@@ -9,6 +9,7 @@
 #include "common/decoder.h"
 #include "common/signal_context.h"
 #include "core/cpu_patches.h" // Windows static guest red-zone protection
+#include "core/guest_fault_recovery.h"
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/kernel/threads/exception.h"
 #include "core/libraries/kernel/threads/pthread.h"
@@ -20,6 +21,7 @@
 static constexpr DWORD MS_VC_EXCEPTION = 0x406D1388;
 #else
 #include <csignal>
+#include <dlfcn.h>
 #include <pthread.h>
 #ifdef ARCH_X86_64
 #include <Zydis/Formatter.h>
@@ -29,6 +31,86 @@ static constexpr DWORD MS_VC_EXCEPTION = 0x406D1388;
 namespace Core {
 
 #if defined(_WIN32)
+
+static constexpr u64 GuestUserAddressLimit = 0x800000000000ull;
+
+static bool WindowsIsAccessible(u64 address, u64 size, bool write, void*) {
+    const u64 last = address + (size ? size : 1) - 1;
+    if (address < 0x10000 || last < address || last >= GuestUserAddressLimit) {
+        return false;
+    }
+    u64 page = address & ~0xFFFull;
+    while (page <= last) {
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (VirtualQuery(reinterpret_cast<void*>(page), &mbi, sizeof(mbi)) == 0 ||
+            mbi.State != MEM_COMMIT || (mbi.Protect & PAGE_GUARD)) {
+            return false;
+        }
+        const DWORD prot = mbi.Protect & 0xFF;
+        if (prot == PAGE_NOACCESS) {
+            return false;
+        }
+        if (write && !(prot & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE |
+                               PAGE_EXECUTE_WRITECOPY))) {
+            return false;
+        }
+        page = reinterpret_cast<u64>(mbi.BaseAddress) + mbi.RegionSize;
+    }
+    return true;
+}
+
+static bool WindowsIsExecutable(u64 address, void*) {
+    if (address < 0x10000 || address >= GuestUserAddressLimit) {
+        return false;
+    }
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(reinterpret_cast<void*>(address), &mbi, sizeof(mbi)) == 0 ||
+        mbi.State != MEM_COMMIT) {
+        return false;
+    }
+    return (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
+                           PAGE_EXECUTE_WRITECOPY)) != 0;
+}
+
+static bool IsHostModuleCode(u64 address) {
+    HMODULE module{};
+    return GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                  GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                              reinterpret_cast<LPCWSTR>(address), &module) != 0;
+}
+
+static bool TryRecoverGuestFault(EXCEPTION_POINTERS* pExp) {
+    using namespace Libraries::Kernel;
+    if (!GuestFaultRecovery::IsEnabled() || pExp == nullptr || pExp->ExceptionRecord == nullptr ||
+        pExp->ContextRecord == nullptr || g_curthread == nullptr) {
+        return false;
+    }
+    auto* cr = pExp->ContextRecord;
+    const auto* er = pExp->ExceptionRecord;
+    if (IsHostModuleCode(cr->Rip)) {
+        return false;
+    }
+    const u64 access_kind = er->NumberParameters > 0 ? er->ExceptionInformation[0] : 0;
+    const u64 fault_address = er->NumberParameters > 1 ? er->ExceptionInformation[1] : 0;
+
+    u64 rflags = cr->EFlags;
+    GuestFaultRecovery::RegisterFile regs{};
+    regs.gpr = {&cr->Rax, &cr->Rcx, &cr->Rdx, &cr->Rbx, &cr->Rsp, &cr->Rbp, &cr->Rsi, &cr->Rdi,
+                &cr->R8,  &cr->R9,  &cr->R10, &cr->R11, &cr->R12, &cr->R13, &cr->R14, &cr->R15};
+    regs.rip = &cr->Rip;
+    regs.rflags = &rflags;
+    M128A* xmm = &cr->Xmm0;
+    for (size_t i = 0; i < regs.xmm.size(); i++) {
+        regs.xmm[i] = reinterpret_cast<u8*>(&xmm[i]);
+    }
+    const GuestFaultRecovery::MemoryProbe probe{WindowsIsAccessible, WindowsIsExecutable, nullptr};
+    if (!GuestFaultRecovery::TryRecover(regs, fault_address, access_kind == 8, probe,
+                                        g_curthread->name.c_str())) {
+        return false;
+    }
+    cr->EFlags = static_cast<DWORD>(rflags);
+    return true;
+}
 
 static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
     using namespace Libraries::Kernel;
@@ -131,6 +213,10 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
     }
 
     if (handled) {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+
+    if (code == EXCEPTION_ACCESS_VIOLATION && TryRecoverGuestFault(pExp)) {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
 
@@ -314,6 +400,61 @@ static s32 NativeSiCodeToGuest(s32 sig, s32 code) {
     }
 }
 
+#if defined(__linux__) && defined(ARCH_X86_64)
+struct LinuxFaultInfo {
+    u64 fault_page;
+};
+
+static bool LinuxIsAccessible(u64 address, u64 size, bool, void* user) {
+    const auto* info = static_cast<const LinuxFaultInfo*>(user);
+    const u64 last = address + (size ? size : 1) - 1;
+    if (address < 0x10000 || last < address || last >= 0x800000000000ull) {
+        return false;
+    }
+    return (address & ~0xFFFull) != info->fault_page && (last & ~0xFFFull) != info->fault_page;
+}
+
+static bool LinuxIsExecutable(u64 address, void* user) {
+    const auto* info = static_cast<const LinuxFaultInfo*>(user);
+    return address >= 0x10000 && address < 0x800000000000ull &&
+           (address & ~0xFFFull) != info->fault_page;
+}
+
+static bool TryRecoverGuestFault(siginfo_t* info, void* raw_context) {
+    using namespace Libraries::Kernel;
+    if (!GuestFaultRecovery::IsEnabled() || info == nullptr || raw_context == nullptr ||
+        g_curthread == nullptr) {
+        return false;
+    }
+    auto* uc = reinterpret_cast<ucontext_t*>(raw_context);
+    auto& gregs = uc->uc_mcontext.gregs;
+    const u64 rip = static_cast<u64>(gregs[REG_RIP]);
+    Dl_info dl{};
+    if (dladdr(reinterpret_cast<void*>(rip), &dl) != 0 && dl.dli_fname != nullptr) {
+        return false;
+    }
+    const u64 fault_address = reinterpret_cast<u64>(info->si_addr);
+    LinuxFaultInfo fault{fault_address & ~0xFFFull};
+
+    GuestFaultRecovery::RegisterFile regs{};
+    const int order[16] = {REG_RAX, REG_RCX, REG_RDX, REG_RBX, REG_RSP, REG_RBP, REG_RSI, REG_RDI,
+                           REG_R8,  REG_R9,  REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15};
+    for (size_t i = 0; i < regs.gpr.size(); i++) {
+        regs.gpr[i] = reinterpret_cast<u64*>(&gregs[order[i]]);
+    }
+    regs.rip = reinterpret_cast<u64*>(&gregs[REG_RIP]);
+    regs.rflags = reinterpret_cast<u64*>(&gregs[REG_EFL]);
+    if (uc->uc_mcontext.fpregs != nullptr) {
+        for (size_t i = 0; i < regs.xmm.size(); i++) {
+            regs.xmm[i] = reinterpret_cast<u8*>(&uc->uc_mcontext.fpregs->_xmm[i]);
+        }
+    }
+    const GuestFaultRecovery::MemoryProbe probe{LinuxIsAccessible, LinuxIsExecutable, &fault};
+    return GuestFaultRecovery::TryRecover(regs, fault_address, Common::IsExecuteError(raw_context),
+                                          probe, g_curthread->name.c_str());
+}
+#endif
+
 void SignalHandler(int sig, siginfo_t* info, void* raw_context) {
     using namespace Libraries::Kernel;
     auto* thread = g_curthread;
@@ -339,6 +480,11 @@ void SignalHandler(int sig, siginfo_t* info, void* raw_context) {
         const bool is_write = Common::IsWriteError(raw_context);
         const bool is_exec = Common::IsExecuteError(raw_context);
         if (!signals->DispatchAccessViolation(raw_context, info->si_addr)) {
+#if defined(__linux__) && defined(ARCH_X86_64)
+            if (TryRecoverGuestFault(info, raw_context)) {
+                return;
+            }
+#endif
             if (thread && thread->DispatchSignal(NativeToOrbisSignal(sig), info_p, context_p)) {
                 return;
             }

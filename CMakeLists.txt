@@ -1026,6 +1026,8 @@ set(CORE src/core/aerolib/stubs.cpp
          src/core/platform.h
          src/core/signals.cpp
          src/core/signals.h
+         src/core/guest_fault_recovery.cpp
+         src/core/guest_fault_recovery.h
          src/core/thread.cpp
          src/core/thread.h
          src/core/tls.cpp

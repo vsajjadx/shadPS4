@@ -462,7 +462,7 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
             resident_ranges.Add(backing);
             backing_slab_used += num_blocks;
 
-            LOG_INFO(Render, "Making range start={}, end={} resident", backing.start, backing.end);
+            LOG_DEBUG(Render, "Making range start={}, end={} resident", backing.start, backing.end);
 
             const auto& bind = binds->binds.emplace_back(vk::SparseMemoryBind{
                 .resourceOffset = (backing.start << block_shift) - arena->cpu_addr,

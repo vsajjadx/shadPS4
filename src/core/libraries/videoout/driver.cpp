@@ -372,9 +372,6 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
     constexpr std::chrono::seconds flip_stall_timeout{10};
     bool stall_dumped = false;
     u32 stall_dumps = 0;
-    // Diagnostics: periodic thread dumps that do not depend on flips, to trace black-screen hangs.
-    const auto diag_start = std::chrono::steady_clock::now();
-    u32 diag_periodic_dumps = 0;
 
     const auto wait_for_request = [&] {
         std::unique_lock lk{mutex};
@@ -436,14 +433,6 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
                 stall_dumped = false;
                 FRAME_END;
             }
-        }
-
-        if (main_port.is_open && diag_periodic_dumps < 60 &&
-            std::chrono::steady_clock::now() - diag_start >
-                std::chrono::seconds(60 + 20 * diag_periodic_dumps)) {
-            Libraries::Kernel::DumpThreadsForHang(
-                fmt::format("periodic diagnostic dump #{}", diag_periodic_dumps));
-            diag_periodic_dumps++;
         }
 
         // Hang watchdog: once the game has started flipping, dump every thread's state when no
