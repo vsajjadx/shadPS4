@@ -600,6 +600,17 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     }
 
 #ifdef _WIN32
+    // Guest sleeps, waits and frame pacing rely on millisecond timing; the default Windows tick
+    // of ~15.6 ms makes them overshoot. Ask for 0.5 ms for the life of the process.
+    {
+        using NtSetTimerResolutionFn = LONG(NTAPI*)(ULONG, BOOLEAN, PULONG);
+        const auto set_timer_resolution = reinterpret_cast<NtSetTimerResolutionFn>(
+            GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtSetTimerResolution"));
+        ULONG actual_resolution = 0;
+        if (set_timer_resolution && set_timer_resolution(5000, TRUE, &actual_resolution) == 0) {
+            LOG_INFO(Config, "Timer resolution set to {:.2f} ms", actual_resolution / 10000.0);
+        }
+    }
     // Enable red-zone patching if the setting is enabled
     if (EmulatorSettings.IsRedZonePatchingEnabled()) {
         WindowsGuestRedZoneProtection::SetActiveMode(

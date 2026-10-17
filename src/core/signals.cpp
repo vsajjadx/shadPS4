@@ -2,12 +2,15 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <string>
 #include <fmt/format.h>
 #include "common/arch.h"
 #include "common/assert.h"
 #include "common/decoder.h"
+#include "common/elf_info.h"
+#include "common/path_util.h"
 #include "common/signal_context.h"
 #include "core/cpu_patches.h" // Windows static guest red-zone protection
 #include "core/guest_fault_recovery.h"
@@ -142,6 +145,63 @@ static bool IsRepeatingFault(EXCEPTION_POINTERS* pExp) {
               rip, address);
     return true;
 }
+
+static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept;
+
+#endif
+
+void WriteCrashDump(void* exception_pointers) {
+#if defined(_WIN32)
+    static std::atomic_flag written{};
+    if (written.test_and_set()) {
+        return;
+    }
+    struct DumpExceptionInfo {
+        DWORD thread_id;
+        EXCEPTION_POINTERS* pointers;
+        BOOL client_pointers;
+    };
+    using MiniDumpWriteDumpFn = BOOL(WINAPI*)(HANDLE, DWORD, HANDLE, int, void*, void*, void*);
+    const HMODULE dbghelp = LoadLibraryW(L"dbghelp.dll");
+    const auto write_dump =
+        dbghelp
+            ? reinterpret_cast<MiniDumpWriteDumpFn>(GetProcAddress(dbghelp, "MiniDumpWriteDump"))
+            : nullptr;
+    if (!write_dump) {
+        LOG_ERROR(Debug, "dbghelp.dll is not available, no crash dump written");
+        return;
+    }
+    const auto& serial = Common::ElfInfo::Instance().GameSerial();
+    const auto path = Common::FS::GetUserPath(Common::FS::PathType::LogDir) /
+                      fmt::format("{}_crash.dmp", serial.empty() ? "shadps4" : serial);
+    const HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                                    FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        LOG_ERROR(Debug, "Could not create crash dump {}", path.string());
+        return;
+    }
+    // Thread stacks, registers and the memory they point at; the whole guest address space
+    // would be gigabytes.
+    constexpr int DumpType = 0x00000001 /* MiniDumpWithDataSegs */ |
+                             0x00000040 /* MiniDumpWithIndirectlyReferencedMemory */ |
+                             0x00000020 /* MiniDumpWithUnloadedModules */ |
+                             0x00001000 /* MiniDumpWithThreadInfo */;
+    DumpExceptionInfo info{GetCurrentThreadId(),
+                           static_cast<EXCEPTION_POINTERS*>(exception_pointers), FALSE};
+    const BOOL ok = write_dump(GetCurrentProcess(), GetCurrentProcessId(), file, DumpType,
+                               exception_pointers ? &info : nullptr, nullptr, nullptr);
+    CloseHandle(file);
+    if (ok) {
+        LOG_CRITICAL(Debug, "Crash dump written to {}", path.string());
+    } else {
+        LOG_ERROR(Debug, "Writing crash dump failed: {}", GetLastError());
+    }
+#else
+    static_cast<void>(exception_pointers);
+#endif
+}
+
+#if defined(_WIN32)
 
 static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
     using namespace Libraries::Kernel;
@@ -331,6 +391,7 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
                 LOG_CRITICAL(Debug, "StackCodeRefs: {}", frames);
             }
         }
+        WriteCrashDump(pExp);
         Common::Singleton<Core::Emulator>::Instance()->Shutdown();
     }
 

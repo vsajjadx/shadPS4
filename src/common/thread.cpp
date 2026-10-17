@@ -117,10 +117,19 @@ bool AccurateSleep(const std::chrono::nanoseconds duration, std::chrono::nanosec
     LARGE_INTEGER interval{
         .QuadPart = -1 * (duration.count() / 100u),
     };
-    HANDLE timer = ::CreateWaitableTimer(NULL, TRUE, NULL);
+    // A plain waitable timer only fires on the ~15.6 ms system tick, so short guest sleeps
+    // overshoot badly. Use a high-resolution timer where available, created once per thread.
+    thread_local const HANDLE timer = [] {
+        constexpr DWORD HighResolution = 0x00000002; // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+        HANDLE handle =
+            ::CreateWaitableTimerExW(nullptr, nullptr, HighResolution, TIMER_ALL_ACCESS);
+        if (handle == nullptr) {
+            handle = ::CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_ALL_ACCESS);
+        }
+        return handle;
+    }();
     SetWaitableTimer(timer, &interval, 0, NULL, NULL, 0);
     const auto ret = WaitForSingleObjectEx(timer, INFINITE, interruptible);
-    ::CloseHandle(timer);
 
     if (remaining) {
         const auto end_sleep = std::chrono::high_resolution_clock::now();
