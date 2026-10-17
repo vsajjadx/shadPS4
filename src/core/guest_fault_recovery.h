@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <optional>
 #include "common/types.h"
 
 namespace Core::GuestFaultRecovery {
@@ -24,6 +25,11 @@ struct MemoryProbe {
 
 void SetEnabled(bool enabled);
 bool IsEnabled();
+
+// For a failed stack-protector check that called __stack_chk_fail and returned to
+// return_address, finds where the function continues when the check passes. Code is not read
+// below code_start.
+std::optional<u64> FindStackCheckPassPath(u64 return_address, u64 code_start);
 
 bool TryRecover(RegisterFile& regs, u64 fault_address, bool is_execute, const MemoryProbe& probe,
                 const char* thread_name);

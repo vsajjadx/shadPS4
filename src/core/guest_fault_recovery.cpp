@@ -470,6 +470,62 @@ bool IsEnabled() {
     return g_enabled.load(std::memory_order_relaxed);
 }
 
+std::optional<u64> FindStackCheckPassPath(u64 return_address, u64 code_start) {
+    if (!IsEnabled()) {
+        return std::nullopt;
+    }
+    if (return_address < code_start + 16) {
+        return std::nullopt;
+    }
+    const auto* code = reinterpret_cast<const u8*>(return_address);
+    u64 call_site = 0;
+    if (code[-5] == 0xE8) {
+        call_site = return_address - 5;
+    } else if (code[-6] == 0xFF && code[-5] == 0x15) {
+        call_site = return_address - 6;
+    } else {
+        return std::nullopt;
+    }
+
+    const auto branch_target = [](u64 at, ZydisMnemonic mnemonic,
+                                  u64 length = 0) -> std::optional<u64> {
+        Decoded d{};
+        if (!ZYAN_SUCCESS(Common::Decoder::Instance()->decodeInstruction(
+                d.inst, d.ops, reinterpret_cast<void*>(at))) ||
+            d.inst.mnemonic != mnemonic || (length != 0 && d.inst.length != length) ||
+            d.ops[0].type != ZYDIS_OPERAND_TYPE_IMMEDIATE || !d.ops[0].imm.is_relative) {
+            return std::nullopt;
+        }
+        return at + d.inst.length + static_cast<u64>(d.ops[0].imm.value.s);
+    };
+
+    // cmp ...; je pass; call __stack_chk_fail
+    for (const u64 len : {2ull, 6ull}) {
+        if (const auto target = branch_target(call_site - len, ZYDIS_MNEMONIC_JZ, len)) {
+            return target;
+        }
+    }
+
+    // cmp ...; jne fail; <pass path> ... fail: call __stack_chk_fail
+    constexpr u64 SearchWindow = 0x8000;
+    const u64 lowest =
+        call_site - code_start > SearchWindow ? call_site - SearchWindow : code_start;
+    for (u64 at = call_site - 2; at > lowest; at--) {
+        const u8 b0 = *reinterpret_cast<const u8*>(at);
+        const u8 b1 = *reinterpret_cast<const u8*>(at + 1);
+        if (b0 == 0x75 && at + 2 + static_cast<s8>(b1) == call_site) {
+            if (branch_target(at, ZYDIS_MNEMONIC_JNZ) == call_site) {
+                return at + 2;
+            }
+        } else if (b0 == 0x0F && b1 == 0x85) {
+            if (branch_target(at, ZYDIS_MNEMONIC_JNZ) == call_site) {
+                return at + 6;
+            }
+        }
+    }
+    return std::nullopt;
+}
+
 bool TryRecover(RegisterFile& regs, u64 fault_address, bool is_execute, const MemoryProbe& probe,
                 const char* thread_name) {
     if (!IsEnabled() || !regs.rip || !regs.gpr[ZYDIS_REGISTER_RSP - ZYDIS_REGISTER_RAX]) {

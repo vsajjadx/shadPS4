@@ -173,7 +173,7 @@ private:
         case CompSwizzle::Alpha:
             return data[3];
         default:
-            UNREACHABLE();
+            return T(0);
         }
     }
 
@@ -370,7 +370,8 @@ constexpr NumberConversion MapNumberConversion(const NumberFormat num_fmt,
         case DataFormat::Format16_16_16_16:
             return NumberConversion::Sint16ToSnormNz;
         default:
-            UNREACHABLE_MSG("data_fmt = {}", u32(data_fmt));
+            // Seen in garbage descriptors bound by games; there is nothing to convert.
+            return NumberConversion::None;
         }
     }
     default:

@@ -1,7 +1,11 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <thread>
+#ifdef _WIN32
+#include <intrin.h>
+#endif
 #include <boost/asio/io_context.hpp>
 
 #include "common/assert.h"
@@ -12,6 +16,7 @@
 #include "common/thread.h"
 #include "common/va_ctx.h"
 #include "core/file_sys/fs.h"
+#include "core/guest_fault_recovery.h"
 #include "core/libraries/error_codes.h"
 #include "core/libraries/kernel/coredump/coredump.h"
 #include "core/libraries/kernel/debug.h"
@@ -83,6 +88,26 @@ static PS4_SYSV_ABI void stack_chk_fail() {
     void* caller = __builtin_return_address(0);
     auto* linker = Common::Singleton<Core::Linker>::Instance();
     auto* mod = linker ? linker->FindByAddress(reinterpret_cast<VAddr>(caller)) : nullptr;
+#ifdef _WIN32
+    // Resume the function on the path it takes when the check passes instead of ending the
+    // process, as with other recovered guest faults.
+    if (mod) {
+        if (const auto resume = Core::GuestFaultRecovery::FindStackCheckPassPath(
+                reinterpret_cast<u64>(caller), mod->GetBaseAddress())) {
+            static std::atomic<u32> recoveries{0};
+            const u32 n = recoveries.fetch_add(1, std::memory_order_relaxed);
+            if (n < 64 || (n & (n - 1)) == 0) {
+                LOG_WARNING(Lib_Kernel,
+                            "Guest fault recovery: stack check failed in {} at offset {:#x}, "
+                            "continuing at offset {:#x}",
+                            mod->name, reinterpret_cast<VAddr>(caller) - mod->GetBaseAddress(),
+                            *resume - mod->GetBaseAddress());
+            }
+            *static_cast<void**>(_AddressOfReturnAddress()) = reinterpret_cast<void*>(*resume);
+            return;
+        }
+    }
+#endif
     if (mod) {
         LOG_CRITICAL(Lib_Kernel, "called from {:p} (module: {}, offset: {:#x})", caller, mod->name,
                      reinterpret_cast<VAddr>(caller) - mod->GetBaseAddress());
