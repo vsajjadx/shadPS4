@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <condition_variable>
 #include <functional>
 #include <mutex>
@@ -179,6 +180,8 @@ private:
         module_related_pipelines;
 
     u32 num_pending_draws_skipped{};
+    std::chrono::steady_clock::time_point pending_wait_window_start{};
+    std::chrono::microseconds pending_wait_spent{};
     // Declared last so the workers finish before the pipelines they build are destroyed.
     PipelineCompileWorkers compile_workers;
 };

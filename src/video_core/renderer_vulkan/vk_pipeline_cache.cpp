@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <ranges>
+#include <thread>
 
 #include "common/hack_features.h"
 #include "common/hash.h"
@@ -450,6 +451,26 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         }
     }
     const GraphicsPipeline* pipeline = it->second.get();
+    if (!pipeline->IsReady()) {
+        // Most pipelines build in a few milliseconds (driver cache hits). Give a pending one a
+        // short wait, within a small budget per 100 ms, so objects aren't left undrawn for frames
+        // while still never stalling the GPU thread for a full compile.
+        using namespace std::chrono;
+        constexpr auto WaitPerPipeline = microseconds(3000);
+        constexpr auto WaitBudget = microseconds(6000);
+        const auto now = steady_clock::now();
+        if (now - pending_wait_window_start > milliseconds(100)) {
+            pending_wait_window_start = now;
+            pending_wait_spent = {};
+        }
+        if (pending_wait_spent < WaitBudget) {
+            const auto deadline = now + std::min(WaitPerPipeline, WaitBudget - pending_wait_spent);
+            while (!pipeline->IsReady() && steady_clock::now() < deadline) {
+                std::this_thread::yield();
+            }
+            pending_wait_spent += duration_cast<microseconds>(steady_clock::now() - now);
+        }
+    }
     if (!pipeline->IsReady()) {
         if ((num_pending_draws_skipped++ % 256) == 0) {
             LOG_INFO(Render_Vulkan, "Skipping draws while pipelines compile ({} so far)",
