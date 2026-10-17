@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <string>
 #include <fmt/format.h>
 #include "common/arch.h"
 #include "common/assert.h"
@@ -143,6 +145,50 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
         use_static_windows_guest_red_zone_protection ? static_protection_exception : true;
     if (report_unhandled) {
         LOG_CRITICAL(Debug, "Unhandled Exception code {:#x} at {}", code, address);
+        if (pExp != nullptr && pExp->ExceptionRecord != nullptr && pExp->ContextRecord != nullptr) {
+            // Extended crash diagnostics: access type, fault address, registers, code bytes and
+            // the protection of the faulting page.
+            const auto* er = pExp->ExceptionRecord;
+            const auto* cr = pExp->ContextRecord;
+            const u64 access_kind = er->NumberParameters > 0 ? er->ExceptionInformation[0] : ~0ull;
+            const u64 fault_addr = er->NumberParameters > 1 ? er->ExceptionInformation[1] : 0;
+            LOG_CRITICAL(Debug, "Fault: access={} ({}) fault_address={:#x} rip={:#x} thread={}",
+                         access_kind,
+                         access_kind == 0   ? "read"
+                         : access_kind == 1 ? "write"
+                         : access_kind == 8 ? "execute"
+                                            : "other",
+                         fault_addr, cr->Rip, g_curthread ? g_curthread->name : "<none>");
+            LOG_CRITICAL(Debug,
+                         "Regs: rax={:#x} rbx={:#x} rcx={:#x} rdx={:#x} rsi={:#x} rdi={:#x} "
+                         "rbp={:#x} rsp={:#x}",
+                         cr->Rax, cr->Rbx, cr->Rcx, cr->Rdx, cr->Rsi, cr->Rdi, cr->Rbp, cr->Rsp);
+            LOG_CRITICAL(Debug,
+                         "Regs: r8={:#x} r9={:#x} r10={:#x} r11={:#x} r12={:#x} r13={:#x} "
+                         "r14={:#x} r15={:#x} eflags={:#x}",
+                         cr->R8, cr->R9, cr->R10, cr->R11, cr->R12, cr->R13, cr->R14, cr->R15,
+                         cr->EFlags);
+            MEMORY_BASIC_INFORMATION mbi{};
+            if (VirtualQuery(reinterpret_cast<void*>(fault_addr), &mbi, sizeof(mbi)) != 0) {
+                LOG_CRITICAL(Debug,
+                             "FaultPage: base={:#x} alloc_base={:#x} size={:#x} state={:#x} "
+                             "protect={:#x} alloc_protect={:#x} type={:#x}",
+                             reinterpret_cast<u64>(mbi.BaseAddress),
+                             reinterpret_cast<u64>(mbi.AllocationBase), mbi.RegionSize, mbi.State,
+                             mbi.Protect, mbi.AllocationProtect, mbi.Type);
+            }
+            MEMORY_BASIC_INFORMATION cbi{};
+            if (VirtualQuery(reinterpret_cast<void*>(cr->Rip), &cbi, sizeof(cbi)) != 0 &&
+                cbi.State == MEM_COMMIT) {
+                std::string bytes;
+                const u8* code_ptr = reinterpret_cast<const u8*>(cr->Rip);
+                const u64 avail = reinterpret_cast<u64>(cbi.BaseAddress) + cbi.RegionSize - cr->Rip;
+                for (u64 i = 0; i < std::min<u64>(32, avail); i++) {
+                    bytes += fmt::format("{:02x} ", code_ptr[i]);
+                }
+                LOG_CRITICAL(Debug, "CodeBytes@rip: {}", bytes);
+            }
+        }
         Common::Singleton<Core::Emulator>::Instance()->Shutdown();
     }
 
