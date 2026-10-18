@@ -41,9 +41,28 @@ The zip includes the latest official shadPS4 Qt launcher, with a few additions:
 - **Easy window size.** Pick the size from a list (720p, 1080p, 1440p, 4K and more) instead of
   typing numbers.
 - **Frame generation switch.** Turn on FSR 3.1 frame generation in **Settings → Graphics**.
+- **Compatibility list.** Shows the official list, plus the games this build runs that the
+  official one doesn't.
+- **Install PKG files.** **File → Install Packages (PKG)** installs games, updates and DLC
+  (see below).
 
 > Already using the official launcher with a `user` folder next to it? Unzip into that same
 > folder and replace the files. Your games, saves and settings stay as they are.
+
+## Installing PKG files
+
+1. Open **Tools → Crypto Key Manager** and enter two key sets: **Fake Keyset** and
+   **PKG Derived Key3 Keyset**. You only do this once.
+   *The keys are not included with this program. You need to supply them yourself.*
+2. Choose **File → Install Packages (PKG)** and select one or more `.pkg` files.
+3. If you have more than one games folder, pick where to install.
+4. Wait for the progress bar. The game then shows up in the list.
+
+- **Games** go into your games folder, in a folder named after the game ID (for example
+  `CUSA00093`).
+- **Updates** go into a `-UPDATE` folder next to the game (for example `CUSA00093-UPDATE`). The
+  emulator loads them automatically. Install the game first.
+- **DLC** goes into your DLC folder. Install the game first.
 
 ## Screenshots
 
