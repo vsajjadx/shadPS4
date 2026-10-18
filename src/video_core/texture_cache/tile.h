@@ -307,11 +307,11 @@ constexpr std::tuple<u16, u16, size_t> ImageSizeLinearAligned(u32 pitch, u32 hei
     const auto pitch_align = std::max(8u, 64u / ((bpp + 7) / 8));
     auto pitch_aligned = (pitch + pitch_align - 1) & ~(pitch_align - 1);
     const auto height_aligned = height;
-    size_t log_sz = pitch_aligned * height_aligned * num_samples;
+    size_t log_sz = u64(pitch_aligned) * height_aligned * num_samples;
     const auto slice_align = std::max(64u, 256u / ((bpp + 7) / 8));
     while (log_sz % slice_align) {
         pitch_aligned += pitch_align;
-        log_sz = pitch_aligned * height_aligned * num_samples;
+        log_sz = u64(pitch_aligned) * height_aligned * num_samples;
     }
     return {pitch_aligned, height_aligned, (log_sz * bpp + 7) / 8};
 }
@@ -322,10 +322,10 @@ constexpr std::tuple<u16, u16, size_t> ImageSizeMicroTiled(u32 pitch, u32 height
     constexpr auto height_align = micro_tile_extent.second;
     auto pitch_aligned = (pitch + pitch_align - 1) & ~(pitch_align - 1);
     const auto height_aligned = (height + height_align - 1) & ~(height_align - 1);
-    size_t log_sz = (pitch_aligned * height_aligned * bpp * num_samples + 7) / 8;
+    size_t log_sz = (u64(pitch_aligned) * height_aligned * bpp * num_samples + 7) / 8;
     while ((log_sz * thickness) % 256) {
         pitch_aligned += pitch_align;
-        log_sz = (pitch_aligned * height_aligned * bpp * num_samples + 7) / 8;
+        log_sz = (u64(pitch_aligned) * height_aligned * bpp * num_samples + 7) / 8;
     }
     return {pitch_aligned, height_aligned, log_sz};
 }
@@ -346,7 +346,9 @@ constexpr std::tuple<u16, u16, size_t> ImageSizeMacroTiled(u32 pitch, u32 height
     ASSERT(pitch_align != 0 && height_align != 0);
     const auto pitch_aligned = (pitch + pitch_align - 1) & ~(pitch_align - 1);
     const auto height_aligned = (height + height_align - 1) & ~(height_align - 1);
-    const auto log_sz = pitch_aligned * height_aligned * num_samples;
+    // In 64 bits: an 8192x8192 64 bpp mip has 2^32 bits, which wrapped to 0, so detiling it
+    // wrote past the end of its buffer and lost the device. (From shadGT FIX-025.)
+    const u64 log_sz = u64(pitch_aligned) * height_aligned * num_samples;
     return {pitch_aligned, height_aligned, (log_sz * bpp + 7) / 8};
 }
 

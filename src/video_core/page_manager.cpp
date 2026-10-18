@@ -428,7 +428,14 @@ struct SignalImpl : public PageManager::Impl {
         auto& impl = memory->GetAddressSpace();
         ASSERT_MSG(perms != Core::MemoryPermission::Write,
                    "Attempted to protect region as write-only which is not a valid permission");
-        impl.Protect(address, size, perms);
+        // Keep the execute permission of guest code. A GPU buffer over module code turned its
+        // pages non-executable, and every instruction fetch then faulted as a read of GPU-mapped
+        // memory and looped on the fault (a freeze with game threads at full CPU). An executable
+        // page stays readable on x86, so only CPU writes to code are tracked there. (From shadGT
+        // FIX-028.)
+        memory->ForEachExecRange(address, size, [&](VAddr start, u64 length, bool exec) {
+            impl.Protect(start, length, exec ? perms | Core::MemoryPermission::Execute : perms);
+        });
     }
 
     static bool GuestFaultSignalHandler(void* context, void* fault_address) {

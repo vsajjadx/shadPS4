@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <unordered_set>
+
 #include <chrono>
 #include <condition_variable>
 #include <functional>
@@ -138,6 +140,7 @@ private:
     bool RefreshGraphicsStages();
     bool RefreshComputeKey();
 
+    std::unordered_set<u64> failed_shaders;
     void DumpShader(std::span<const u32> code, u64 hash, Shader::HwStage stage, size_t perm_idx,
                     std::string_view ext);
     std::optional<std::vector<u32>> GetShaderPatch(u64 hash, Shader::HwStage stage, size_t perm_idx,

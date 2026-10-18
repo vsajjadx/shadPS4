@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/logging/log.h"
 #include "shader_recompiler/frontend/translate/translate.h"
 #include "shader_recompiler/ir/position.h"
 #include "shader_recompiler/ir/reinterpret.h"
@@ -27,6 +28,11 @@ static AmdGpu::NumberFormat NumberFormatCompressed(AmdGpu::ShaderExportFormat ex
     }
 }
 
+static bool IsCompressedExportFormat(AmdGpu::ShaderExportFormat export_format) {
+    return export_format >= AmdGpu::ShaderExportFormat::ABGR_FP16 &&
+           export_format <= AmdGpu::ShaderExportFormat::ABGR_SINT16;
+}
+
 static u32 MaskFromExportFormat(u8 mask, AmdGpu::ShaderExportFormat export_format) {
     switch (export_format) {
     case AmdGpu::ShaderExportFormat::R_32:
@@ -50,7 +56,6 @@ static u32 MaskFromExportFormat(u8 mask, AmdGpu::ShaderExportFormat export_forma
 void Translator::ExportRenderTarget(const GcnInst& inst) {
     const auto& exp = inst.control.exp;
     const IR::Attribute mrt{exp.target};
-    info.mrt_mask |= 1u << static_cast<u8>(mrt);
 
     // Dual source blending uses MRT1 for exporting src1
     u32 color_buffer_idx = static_cast<u32>(mrt) - static_cast<u32>(IR::Attribute::RenderTarget0);
@@ -59,6 +64,20 @@ void Translator::ExportRenderTarget(const GcnInst& inst) {
     }
 
     const auto color_buffer = runtime_info.hw.fs.color_buffers[color_buffer_idx];
+    if (exp.compr && exp.en != 0 && !IsCompressedExportFormat(color_buffer.export_format) &&
+        color_buffer.export_format != AmdGpu::ShaderExportFormat::Zero) {
+        // Packed 16-bit components exported to a target with a 32-bit export format: AMD's
+        // compilers only pack for the 16-bit formats and what the hardware does is unknown, so
+        // the export is dropped (the target keeps its contents) instead of aborting the
+        // emulator. (From shadGT FIX-033.)
+        LOG_ERROR(Render_Recompiler,
+                  "fs {:#x} exports packed 16-bit data to MRT{} with 32-bit export format {}; "
+                  "export dropped",
+                  info.pgm_hash, color_buffer_idx, static_cast<u32>(color_buffer.export_format));
+        return;
+    }
+    info.mrt_mask |= 1u << static_cast<u8>(mrt);
+
     if (color_buffer.export_format == AmdGpu::ShaderExportFormat::Zero || exp.en == 0) {
         // No export
         return;

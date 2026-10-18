@@ -4,6 +4,8 @@
 #include <boost/preprocessor/stringize.hpp>
 
 #include <chrono>
+#include <mutex>
+#include <unordered_set>
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/polyfill_thread.h"
@@ -70,7 +72,8 @@ static const char* ccb_task_name{"CCB_TASK"};
 static_assert(Liverpool::NumComputeRings <= MAX_NAMES);
 
 #define NAME_NUM(z, n, name) BOOST_PP_STRINGIZE(name) BOOST_PP_STRINGIZE(n),
-#define NAME_ARRAY(name, num) {BOOST_PP_REPEAT(num, NAME_NUM, name)}
+#define NAME_ARRAY(name, num)                                                                      \
+    { BOOST_PP_REPEAT(num, NAME_NUM, name) }
 
 static const char* acb_task_name[] = NAME_ARRAY(ACB_TASK, MAX_NAMES);
 
@@ -93,6 +96,30 @@ static const char* acb_task_name[] = NAME_ARRAY(ACB_TASK, MAX_NAMES);
 #define RESUME_ASC(task, id) RESUME(task, acb_task_name[id])
 
 std::array<u8, 48_KB> Liverpool::ConstantEngine::constants_heap;
+
+// DMA_DATA with a register source or destination address space (SAS/DAS = 1): its effect is
+// undocumented, so the packet is reported once per destination and skipped instead of stopping
+// the emulator. (From shadGT FIX-035.)
+static bool SkipRegisterSpaceDmaData(const PM4DmaData* dma_data, const char* queue) {
+    if (dma_data->command.das == 0 && dma_data->command.sas == 0) {
+        return false;
+    }
+    static std::mutex mutex;
+    static std::unordered_set<u64> reported;
+    std::scoped_lock lk{mutex};
+    if (reported
+            .insert(u64(dma_data->dst_addr_lo) << 8 | u64(dma_data->src_sel) << 4 |
+                    u64(dma_data->dst_sel))
+            .second) {
+        LOG_ERROR(Render_Vulkan,
+                  "{} DMA_DATA with register address space skipped: sas {} das {} src_sel {} "
+                  "dst_sel {} dst {:#x} bytes {}",
+                  queue, u32(dma_data->command.sas), u32(dma_data->command.das),
+                  u32(dma_data->src_sel), u32(dma_data->dst_sel), u32(dma_data->dst_addr_lo),
+                  dma_data->NumBytes());
+    }
+    return true;
+}
 
 static std::span<const u32> NextPacket(std::span<const u32> span, size_t offset) {
     if (offset > span.size()) {
@@ -775,7 +802,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 if (dma_data->dst_addr_lo == 0x3022C || !rasterizer) {
                     break;
                 }
-                ASSERT(dma_data->command.das == 0);
+                if (SkipRegisterSpaceDmaData(dma_data, "gfx")) {
+                    break;
+                }
                 if (dma_data->src_sel == DmaDataSrc::Data && dma_data->dst_sel == DmaDataDst::Gds) {
                     rasterizer->FillBuffer(dma_data->dst_addr_lo, dma_data->NumBytes(),
                                            dma_data->data, true);
@@ -1066,7 +1095,9 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
             if (dma_data->dst_addr_lo == 0x3022C || !rasterizer) {
                 break;
             }
-            ASSERT(dma_data->command.das == 0);
+            if (SkipRegisterSpaceDmaData(dma_data, "compute")) {
+                break;
+            }
             if (dma_data->src_sel == DmaDataSrc::Data && dma_data->dst_sel == DmaDataDst::Gds) {
                 rasterizer->FillBuffer(dma_data->dst_addr_lo, dma_data->NumBytes(), dma_data->data,
                                        true);

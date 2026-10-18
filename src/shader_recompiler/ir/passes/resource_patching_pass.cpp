@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <limits>
 #include "shader_recompiler/info.h"
 #include "shader_recompiler/ir/basic_block.h"
@@ -578,8 +579,17 @@ IR::U32 CalculateBufferAddress(IR::IREmitter& ir, const IR::Inst& inst, const In
         index = ir.IAdd(index, vgpr_index);
     }
     if (buffer.add_tid_enable) {
-        ASSERT_MSG(info.sw_stage == SwStage::Compute,
-                   "Thread ID buffer addressing is not supported outside of compute.");
+        // FIX-030: the hardware adds the lane's thread id in every stage, not only compute.
+        // GT Sport's dealership compiled a pixel shader permutation whose buffer sets
+        // ADD_TID_ENABLE, and the assertion here stopped the emulator.
+        if (info.sw_stage != SwStage::Compute) {
+            static std::atomic<u32> logged{};
+            if (logged++ < 10) {
+                LOG_WARNING(Render_Recompiler,
+                            "FIX-030: thread id buffer addressing in stage {} (shader {:#x})",
+                            u32(info.sw_stage), info.pgm_hash);
+            }
+        }
         const IR::U32 thread_id{ir.LaneId()};
         index = ir.IAdd(index, thread_id);
     }

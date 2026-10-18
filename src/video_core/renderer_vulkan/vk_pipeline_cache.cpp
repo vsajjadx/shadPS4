@@ -10,9 +10,11 @@
 #include "common/io_file.h"
 #include "common/path_util.h"
 #include "common/polyfill_thread.h"
+#include "common/recoverable.h"
 #include "common/thread.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
+#include "core/memory.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/info.h"
 #include "shader_recompiler/recompiler.h"
@@ -617,7 +619,36 @@ bool PipelineCache::RefreshGraphicsStages() {
     auto& key = graphics_key;
     fetch_shader = nullptr;
 
+    // A shader program register pointing outside guest memory (GT Sport's dealership had a pixel
+    // shader at 0x100) crashed the emulator reading the program. Skip such a draw, as the GPU
+    // would fault on it rather than take the system down. Checked again only when an address
+    // changes. (From shadGT FIX-027.)
+    {
+        static std::array<VAddr, 6> checked{};
+        for (u32 stage = 0; stage < checked.size(); ++stage) {
+            const auto* pgm = regs.ProgramForStage(stage);
+            const VAddr address = pgm ? pgm->Address<VAddr>() : 0;
+            if (!regs.stage_enable.IsStageEnabled(stage) || address == 0 ||
+                address == checked[stage]) {
+                continue;
+            }
+            auto* memory = Core::Memory::Instance();
+            if (!memory->IsValidMapping(address, 8) || !memory->IsMappedAddress(address)) {
+                static std::atomic<u32> skipped{};
+                if (const u32 n = ++skipped; n <= 20 || n % 500 == 0) {
+                    LOG_WARNING(Render_Vulkan,
+                                "Draw {} skipped: hardware stage {} program at {:#x} is not in "
+                                "guest memory",
+                                n, stage, address);
+                }
+                return false;
+            }
+            checked[stage] = address;
+        }
+    }
+
     Shader::Backend::Bindings binding{};
+    bool stage_failed = false;
     const auto bind_stage = [&](HwStage stage_in, SwStage stage_out) -> bool {
         const auto stage_in_idx = static_cast<u32>(stage_in);
         const auto stage_out_idx = static_cast<u32>(stage_out);
@@ -637,6 +668,9 @@ bool PipelineCache::RefreshGraphicsStages() {
         const auto params = AmdGpu::GetParams(*pgm);
         std::tie(infos[stage_out_idx], modules[stage_out_idx], key.stage_hashes[stage_out_idx]) =
             GetProgram(stage_in, stage_out, params, binding);
+        if (!modules[stage_out_idx]) {
+            stage_failed = true;
+        }
         return true;
     };
 
@@ -720,6 +754,9 @@ bool PipelineCache::RefreshGraphicsStages() {
         LOG_WARNING(Render_Vulkan, "unimplemented shader stage {}", (u32)regs.stage_enable.raw);
         return false;
     }
+    if (stage_failed) {
+        return false;
+    }
 
     const auto* vs_info = infos[static_cast<u32>(SwStage::Vertex)];
     if (vs_info && fetch_shader && !instance.IsVertexInputDynamicState()) {
@@ -745,7 +782,7 @@ bool PipelineCache::RefreshComputeKey() {
     const auto cs_params = AmdGpu::GetParams(cs_pgm);
     std::tie(infos[0], modules[0], compute_key.value) =
         GetProgram(HwStage::Compute, SwStage::Compute, cs_params, binding);
-    return true;
+    return modules[0] != nullptr;
 }
 
 vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::RuntimeInfo& runtime_info,
@@ -755,8 +792,23 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
              perm_idx != 0 ? "(permutation)" : "");
     DumpShader(code, info.pgm_hash, info.hw_stage, perm_idx, "bin");
 
-    const auto ir_program = Shader::TranslateProgram(code, pools, info, runtime_info, profile);
-    auto spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, ir_program, binding);
+    std::vector<u32> spv;
+    try {
+        // A shader the translator cannot handle no longer stops the emulator: a failed ASSERT or
+        // UNREACHABLE in translation is thrown, the shader is reported once and the draws or
+        // dispatches that use it are skipped. (From shadGT FIX-034.)
+        Common::RecoverableScope recoverable;
+        const auto ir_program = Shader::TranslateProgram(code, pools, info, runtime_info, profile);
+        spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, ir_program, binding);
+    } catch (const Common::RecoverableFailure& e) {
+        if (failed_shaders.insert(info.pgm_hash).second) {
+            LOG_ERROR(Render_Vulkan,
+                      "{} shader {:#x} (permutation {}, {} dwords) could not be translated: {}; "
+                      "draws that use it are skipped",
+                      info.hw_stage, info.pgm_hash, perm_idx, code.size(), e.what());
+        }
+        return {};
+    }
     DumpShader(spv, info.pgm_hash, info.hw_stage, perm_idx, "spv");
 
     vk::ShaderModule module;
@@ -794,7 +846,9 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
         auto spec = Shader::StageSpecialization(program->info, runtime_info, profile, start);
         const auto perm_hash = HashCombine(params.hash, 0);
 
-        RegisterShaderMeta(program->info, spec.fetch_shader_data, spec, perm_hash, 0);
+        if (module) {
+            RegisterShaderMeta(program->info, spec.fetch_shader_data, spec, perm_hash, 0);
+        }
         program->AddPermut(module, std::move(spec));
         if (auto& fetch = program->modules[0].spec.fetch_shader_data; !fetch.Empty()) {
             fetch_shader = &fetch;
@@ -846,7 +900,9 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
         auto new_info = Shader::Info(hw_stage, sw_stage, params);
         module = CompileModule(new_info, runtime_info, params.code, perm_idx, binding);
 
-        RegisterShaderMeta(info, spec.fetch_shader_data, spec, perm_hash, perm_idx);
+        if (module) {
+            RegisterShaderMeta(info, spec.fetch_shader_data, spec, perm_hash, perm_idx);
+        }
         program->AddPermut(module, std::move(spec));
     } else {
         info.AddBindings(binding);
