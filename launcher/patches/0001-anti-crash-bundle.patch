@@ -1,24 +1,45 @@
-From b864da4f655b9d150c713746dd2be285ec6279a4 Mon Sep 17 00:00:00 2001
+From f8b4c8fa45ac2e1b15225159edd4ed820a6a2a5b Mon Sep 17 00:00:00 2001
 From: vsajjadx <noreply@github.com>
 Date: Sun, 18 Oct 2026 14:12:10 +0330
-Subject: [PATCH] Bundle with shadPS4 Anti-Crash: fork updater, bundled
- emulator, resolution list, frame generation
+Subject: [PATCH] Bundle with shadPS4 Anti-Crash
 
+Fork updater, bundled emulator, resolution list, frame generation switch, existing user
+folders first, compatibility overrides from the fork, About links to the fork, and PKG
+installation from shadPS4 v0.7.0 with keys from the Crypto Key Manager.
 ---
- CMakeLists.txt                 |  13 +-
- src/common/path_util.cpp       |  37 +++++-
- src/core/emulator_settings.h   |   8 +-
- src/qt_gui/check_update.cpp    | 223 ++++++++++++++++++++++++++++++++-
- src/qt_gui/check_update.h      |   6 +
- src/qt_gui/gui_settings.h      |   7 ++
- src/qt_gui/main_window.cpp     |  59 ++++++++-
- src/qt_gui/main_window.h       |   2 +
- src/qt_gui/settings_dialog.cpp |  78 +++++++++++-
- src/qt_gui/settings_dialog.h   |   7 ++
- 10 files changed, 425 insertions(+), 15 deletions(-)
+ CMakeLists.txt                    |  47 ++-
+ src/common/path_util.cpp          |  37 +-
+ src/core/crypto/crypto.cpp        | 177 +++++++++
+ src/core/crypto/crypto.h          |  61 +++
+ src/core/emulator_settings.h      |   8 +-
+ src/core/file_format/pfs.h        | 123 ++++++
+ src/core/file_format/pkg.cpp      | 473 ++++++++++++++++++++++
+ src/core/file_format/pkg.h        | 172 ++++++++
+ src/core/file_format/pkg_type.cpp | 638 ++++++++++++++++++++++++++++++
+ src/core/file_format/pkg_type.h   |  10 +
+ src/qt_gui/about_dialog.cpp       |  17 +
+ src/qt_gui/check_update.cpp       | 223 ++++++++++-
+ src/qt_gui/check_update.h         |   6 +
+ src/qt_gui/compatibility_info.cpp |  49 +++
+ src/qt_gui/compatibility_info.h   |   3 +
+ src/qt_gui/gui_settings.h         |  19 +-
+ src/qt_gui/main_window.cpp        |  66 +++-
+ src/qt_gui/main_window.h          |   5 +
+ src/qt_gui/pkg_install.cpp        | 184 +++++++++
+ src/qt_gui/settings_dialog.cpp    |  78 +++-
+ src/qt_gui/settings_dialog.h      |   7 +
+ 21 files changed, 2386 insertions(+), 17 deletions(-)
+ create mode 100644 src/core/crypto/crypto.cpp
+ create mode 100644 src/core/crypto/crypto.h
+ create mode 100644 src/core/file_format/pfs.h
+ create mode 100644 src/core/file_format/pkg.cpp
+ create mode 100644 src/core/file_format/pkg.h
+ create mode 100644 src/core/file_format/pkg_type.cpp
+ create mode 100644 src/core/file_format/pkg_type.h
+ create mode 100644 src/qt_gui/pkg_install.cpp
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 641fcc6..2b41eaa 100644
+index 641fcc6..bfff8cb 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -181,7 +181,8 @@ set_source_files_properties(src/shadps4.rc PROPERTIES COMPILE_DEFINITIONS "APP_V
@@ -31,7 +52,66 @@ index 641fcc6..2b41eaa 100644
      message(STATUS "not main, disabling auto update")
      set(ENABLE_UPDATER OFF)
  endif()
-@@ -411,6 +412,16 @@ target_link_libraries(shadPS4QtLauncher PRIVATE Qt6::Widgets Qt6::Concurrent Qt6
+@@ -200,6 +201,31 @@ find_package(ZArchive 0.1.2 MODULE)
+ list(POP_BACK CMAKE_MODULE_PATH)
+ 
+ add_subdirectory(externals)
++
++# Crypto++ for PKG installation (shadPS4 v0.7.0 used the same setup).
++if (NOT TARGET cryptopp::cryptopp)
++    FetchContent_Declare(cryptopp_src
++        GIT_REPOSITORY https://github.com/weidai11/cryptopp.git
++        GIT_TAG CRYPTOPP_8_9_0
++        GIT_SHALLOW TRUE)
++    FetchContent_MakeAvailable(cryptopp_src)
++    set(CRYPTOPP_INSTALL OFF)
++    set(CRYPTOPP_BUILD_TESTING OFF)
++    set(CRYPTOPP_SOURCES ${cryptopp_src_SOURCE_DIR})
++    # Instruction set checks do not see the target's compile options.
++    set(CRYPTOPP_DISABLE_AESNI ON)
++    set(CRYPTOPP_DISABLE_AVX2 ON)
++    FetchContent_Declare(cryptopp_cmake
++        GIT_REPOSITORY https://github.com/abdes/cryptopp-cmake.git
++        GIT_TAG CRYPTOPP_8_9_0
++        GIT_SHALLOW TRUE)
++    FetchContent_MakeAvailable(cryptopp_cmake)
++    # Headers are included as <cryptopp/...>; the source folder also has a conflicting zlib.h.
++    file(COPY ${cryptopp_src_SOURCE_DIR}/ DESTINATION ${CMAKE_BINARY_DIR}/cryptopp_include/cryptopp
++         FILES_MATCHING PATTERN "*.h")
++    set_target_properties(cryptopp PROPERTIES INTERFACE_INCLUDE_DIRECTORIES
++                          "${CMAKE_BINARY_DIR}/cryptopp_include")
++endif()
+ include_directories(src)
+ 
+ find_package(Qt6 REQUIRED COMPONENTS Widgets Concurrent LinguistTools Network Multimedia)
+@@ -258,6 +284,13 @@ set(CORE src/core/file_format/elf.cpp
+          src/core/file_format/npbind.cpp
+          src/core/file_format/npbind.h
+          src/core/file_format/psf.cpp
++         src/core/file_format/pfs.h
++         src/core/file_format/pkg.cpp
++         src/core/file_format/pkg.h
++         src/core/file_format/pkg_type.cpp
++         src/core/file_format/pkg_type.h
++         src/core/crypto/crypto.cpp
++         src/core/crypto/crypto.h
+          src/core/file_format/psf.h
+          src/core/file_format/trp.cpp
+          src/core/file_format/trp.h
+@@ -293,6 +326,7 @@ if (ENABLE_UPDATER)
+ endif()
+ 
+ set(QT_GUI src/qt_gui/about_dialog.cpp
++           src/qt_gui/pkg_install.cpp
+            src/qt_gui/about_dialog.h
+            src/qt_gui/about_dialog.ui
+            src/qt_gui/background_music_player.cpp
+@@ -407,10 +441,21 @@ if (NOT APPLE)
+     target_link_libraries(shadPS4QtLauncher PRIVATE Vulkan::Headers volk_headers)
+ endif()
+ 
++target_link_libraries(shadPS4QtLauncher PRIVATE cryptopp::cryptopp)
+ target_link_libraries(shadPS4QtLauncher PRIVATE Qt6::Widgets Qt6::Concurrent Qt6::Network Qt6::Multimedia nlohmann_json::nlohmann_json OpenAL::OpenAL)
  if (ENABLE_UPDATER)
      add_definitions(-DENABLE_UPDATER)
  endif()
@@ -118,6 +198,256 @@ index 59e39b7..a5898a0 100644
          // If it doesn't exist, use the standard path for the platform instead.
          // NOTE: On Windows we currently just create the portable directory instead.
  #ifdef __APPLE__
+diff --git a/src/core/crypto/crypto.cpp b/src/core/crypto/crypto.cpp
+new file mode 100644
+index 0000000..239448b
+--- /dev/null
++++ b/src/core/crypto/crypto.cpp
+@@ -0,0 +1,177 @@
++// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include <array>
++#include <cstring>
++#include <cryptopp/hmac.h>
++
++#include "common/key_manager.h"
++#include "crypto.h"
++
++namespace {
++
++template <typename Keyset>
++CryptoPP::RSA::PrivateKey MakePrivateKey(const Keyset& keyset) {
++    const auto integer = [](const std::vector<u8>& bytes) {
++        return CryptoPP::Integer(bytes.data(), bytes.size());
++    };
++    CryptoPP::InvertibleRSAFunction params;
++    params.SetPrime1(integer(keyset.Prime1));
++    params.SetPrime2(integer(keyset.Prime2));
++    params.SetPublicExponent(integer(keyset.PublicExponent));
++    params.SetPrivateExponent(integer(keyset.PrivateExponent));
++    params.SetModPrime1PrivateExponent(integer(keyset.Exponent1));
++    params.SetModPrime2PrivateExponent(integer(keyset.Exponent2));
++    params.SetModulus(integer(keyset.Modulus));
++    params.SetMultiplicativeInverseOfPrime2ModPrime1(integer(keyset.Coefficient));
++    return CryptoPP::RSA::PrivateKey(params);
++}
++
++} // namespace
++
++bool Crypto::HasPkgKeys() {
++    const auto keys = KeyManager::GetInstance();
++    return keys && keys->IsFakeKeysetValid() && keys->isPkgDerivedKey3KeysetValid();
++}
++
++void Crypto::RSA2048Decrypt(std::span<CryptoPP::byte, 32> dec_key,
++                            std::span<const CryptoPP::byte, 256> ciphertext,
++                            bool is_dk3) { // RSAES_PKCS1v15_
++    // Create an RSA decryptor
++    const auto& keys = KeyManager::GetInstance()->GetAllKeys();
++    CryptoPP::RSA::PrivateKey privateKey =
++        is_dk3 ? MakePrivateKey(keys.PkgDerivedKey3Keyset) : MakePrivateKey(keys.FakeKeyset);
++
++    CryptoPP::RSAES_PKCS1v15_Decryptor rsaDecryptor(privateKey);
++
++    // Allocate memory for the decrypted data
++    std::array<CryptoPP::byte, 256> decrypted;
++
++    // Perform the decryption
++    CryptoPP::AutoSeededRandomPool rng;
++    CryptoPP::DecodingResult result =
++        rsaDecryptor.Decrypt(rng, ciphertext.data(), decrypted.size(), decrypted.data());
++    std::copy(decrypted.begin(), decrypted.begin() + dec_key.size(), dec_key.begin());
++}
++
++void Crypto::ivKeyHASH256(std::span<const CryptoPP::byte, 64> cipher_input,
++                          std::span<CryptoPP::byte, 32> ivkey_result) {
++    CryptoPP::SHA256 sha256;
++    std::array<CryptoPP::byte, CryptoPP::SHA256::DIGESTSIZE> hashResult;
++    auto array_sink = new CryptoPP::ArraySink(hashResult.data(), CryptoPP::SHA256::DIGESTSIZE);
++    auto filter = new CryptoPP::HashFilter(sha256, array_sink);
++    CryptoPP::ArraySource r(cipher_input.data(), cipher_input.size(), true, filter);
++    std::copy(hashResult.begin(), hashResult.begin() + ivkey_result.size(), ivkey_result.begin());
++}
++
++void Crypto::aesCbcCfb128Decrypt(std::span<const CryptoPP::byte, 32> ivkey,
++                                 std::span<const CryptoPP::byte, 256> ciphertext,
++                                 std::span<CryptoPP::byte, 256> decrypted) {
++    std::array<CryptoPP::byte, CryptoPP::AES::DEFAULT_KEYLENGTH> key;
++    std::array<CryptoPP::byte, CryptoPP::AES::DEFAULT_KEYLENGTH> iv;
++
++    std::copy(ivkey.begin() + 16, ivkey.begin() + 16 + key.size(), key.begin());
++    std::copy(ivkey.begin(), ivkey.begin() + iv.size(), iv.begin());
++
++    CryptoPP::AES::Decryption aesDecryption(key.data(), CryptoPP::AES::DEFAULT_KEYLENGTH);
++    CryptoPP::CBC_Mode_ExternalCipher::Decryption cbcDecryption(aesDecryption, iv.data());
++
++    for (size_t i = 0; i < decrypted.size(); i += CryptoPP::AES::BLOCKSIZE) {
++        cbcDecryption.ProcessData(decrypted.data() + i, ciphertext.data() + i,
++                                  CryptoPP::AES::BLOCKSIZE);
++    }
++}
++
++void Crypto::aesCbcCfb128DecryptEntry(std::span<const CryptoPP::byte, 32> ivkey,
++                                      std::span<CryptoPP::byte> ciphertext,
++                                      std::span<CryptoPP::byte> decrypted) {
++    std::array<CryptoPP::byte, CryptoPP::AES::DEFAULT_KEYLENGTH> key;
++    std::array<CryptoPP::byte, CryptoPP::AES::DEFAULT_KEYLENGTH> iv;
++
++    std::copy(ivkey.begin() + 16, ivkey.begin() + 16 + key.size(), key.begin());
++    std::copy(ivkey.begin(), ivkey.begin() + iv.size(), iv.begin());
++
++    CryptoPP::AES::Decryption aesDecryption(key.data(), CryptoPP::AES::DEFAULT_KEYLENGTH);
++    CryptoPP::CBC_Mode_ExternalCipher::Decryption cbcDecryption(aesDecryption, iv.data());
++
++    for (size_t i = 0; i < decrypted.size(); i += CryptoPP::AES::BLOCKSIZE) {
++        cbcDecryption.ProcessData(decrypted.data() + i, ciphertext.data() + i,
++                                  CryptoPP::AES::BLOCKSIZE);
++    }
++}
++
++void Crypto::decryptEFSM(std::span<CryptoPP::byte, 16> trophyKey,
++                         std::span<CryptoPP::byte, 16> NPcommID,
++                         std::span<CryptoPP::byte, 16> efsmIv, std::span<CryptoPP::byte> ciphertext,
++                         std::span<CryptoPP::byte> decrypted) {
++
++    // step 1: Encrypt NPcommID
++    CryptoPP::CBC_Mode<CryptoPP::AES>::Encryption encrypt;
++
++    std::vector<CryptoPP::byte> trophyIv(16, 0);
++    std::vector<CryptoPP::byte> trpKey(16);
++
++    encrypt.SetKeyWithIV(trophyKey.data(), trophyKey.size(), trophyIv.data());
++    encrypt.ProcessData(trpKey.data(), NPcommID.data(), 16);
++
++    // step 2: decrypt efsm.
++    CryptoPP::CBC_Mode<CryptoPP::AES>::Decryption decrypt;
++    decrypt.SetKeyWithIV(trpKey.data(), trpKey.size(), efsmIv.data());
++
++    for (size_t i = 0; i < decrypted.size(); i += CryptoPP::AES::BLOCKSIZE) {
++        decrypt.ProcessData(decrypted.data() + i, ciphertext.data() + i, CryptoPP::AES::BLOCKSIZE);
++    }
++}
++
++void Crypto::PfsGenCryptoKey(std::span<const CryptoPP::byte, 32> ekpfs,
++                             std::span<const CryptoPP::byte, 16> seed,
++                             std::span<CryptoPP::byte, 16> dataKey,
++                             std::span<CryptoPP::byte, 16> tweakKey) {
++    CryptoPP::HMAC<CryptoPP::SHA256> hmac(ekpfs.data(), ekpfs.size());
++
++    CryptoPP::SecByteBlock d(20); // Use Crypto++ SecByteBlock for better memory management
++
++    // Copy the bytes of 'index' to the 'd' array
++    uint32_t index = 1;
++    std::memcpy(d, &index, sizeof(uint32_t));
++
++    // Copy the bytes of 'seed' to the 'd' array starting from index 4
++    std::memcpy(d + sizeof(uint32_t), seed.data(), seed.size());
++
++    // Allocate memory for 'u64' using new
++    std::vector<CryptoPP::byte> data_tweak_key(hmac.DigestSize());
++
++    // Calculate the HMAC
++    hmac.CalculateDigest(data_tweak_key.data(), d, d.size());
++    std::copy(data_tweak_key.begin(), data_tweak_key.begin() + dataKey.size(), tweakKey.begin());
++    std::copy(data_tweak_key.begin() + tweakKey.size(),
++              data_tweak_key.begin() + tweakKey.size() + dataKey.size(), dataKey.begin());
++}
++
++void Crypto::decryptPFS(std::span<const CryptoPP::byte, 16> dataKey,
++                        std::span<const CryptoPP::byte, 16> tweakKey, std::span<const u8> src_image,
++                        std::span<CryptoPP::byte> dst_image, u64 sector) {
++    // Start at 0x10000 to keep the header when decrypting the whole pfs_image.
++    for (int i = 0; i < src_image.size(); i += 0x1000) {
++        const u64 current_sector = sector + (i / 0x1000);
++        CryptoPP::ECB_Mode<CryptoPP::AES>::Encryption encrypt(tweakKey.data(), tweakKey.size());
++        CryptoPP::ECB_Mode<CryptoPP::AES>::Decryption decrypt(dataKey.data(), dataKey.size());
++
++        std::array<CryptoPP::byte, 16> tweak{};
++        std::array<CryptoPP::byte, 16> encryptedTweak;
++        std::array<CryptoPP::byte, 16> xorBuffer;
++        std::memcpy(tweak.data(), &current_sector, sizeof(u64));
++
++        // Encrypt the tweak for each sector.
++        encrypt.ProcessData(encryptedTweak.data(), tweak.data(), 16);
++
++        for (int plaintextOffset = 0; plaintextOffset < 0x1000; plaintextOffset += 16) {
++            xtsXorBlock(xorBuffer.data(), src_image.data() + i + plaintextOffset,
++                        encryptedTweak.data());                          // x, c, t
++            decrypt.ProcessData(xorBuffer.data(), xorBuffer.data(), 16); // x, x
++            xtsXorBlock(dst_image.data() + i + plaintextOffset, xorBuffer.data(),
++                        encryptedTweak.data()); //(p)  c, x , t
++            xtsMult(encryptedTweak);
++        }
++    }
++}
+diff --git a/src/core/crypto/crypto.h b/src/core/crypto/crypto.h
+new file mode 100644
+index 0000000..4c3e76c
+--- /dev/null
++++ b/src/core/crypto/crypto.h
+@@ -0,0 +1,61 @@
++// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <span>
++#include <cryptopp/aes.h>
++#include <cryptopp/filters.h>
++#include <cryptopp/modes.h>
++#include <cryptopp/oaep.h>
++#include <cryptopp/osrng.h>
++#include <cryptopp/rsa.h>
++#include <cryptopp/sha.h>
++
++#include "common/types.h"
++
++class Crypto {
++public:
++    /// The PKG keys are not part of the program. They come from the Crypto Key Manager.
++    static bool HasPkgKeys();
++
++    void RSA2048Decrypt(std::span<CryptoPP::byte, 32> dk3,
++                        std::span<const CryptoPP::byte, 256> ciphertext,
++                        bool is_dk3); // RSAES_PKCS1v15_
++    void ivKeyHASH256(std::span<const CryptoPP::byte, 64> cipher_input,
++                      std::span<CryptoPP::byte, 32> ivkey_result);
++    void aesCbcCfb128Decrypt(std::span<const CryptoPP::byte, 32> ivkey,
++                             std::span<const CryptoPP::byte, 256> ciphertext,
++                             std::span<CryptoPP::byte, 256> decrypted);
++    void aesCbcCfb128DecryptEntry(std::span<const CryptoPP::byte, 32> ivkey,
++                                  std::span<CryptoPP::byte> ciphertext,
++                                  std::span<CryptoPP::byte> decrypted);
++    void decryptEFSM(std::span<CryptoPP::byte, 16> trophyKey,
++                     std::span<CryptoPP::byte, 16> NPcommID, std::span<CryptoPP::byte, 16> efsmIv,
++                     std::span<CryptoPP::byte> ciphertext, std::span<CryptoPP::byte> decrypted);
++    void PfsGenCryptoKey(std::span<const CryptoPP::byte, 32> ekpfs,
++                         std::span<const CryptoPP::byte, 16> seed,
++                         std::span<CryptoPP::byte, 16> dataKey,
++                         std::span<CryptoPP::byte, 16> tweakKey);
++    void decryptPFS(std::span<const CryptoPP::byte, 16> dataKey,
++                    std::span<const CryptoPP::byte, 16> tweakKey, std::span<const u8> src_image,
++                    std::span<CryptoPP::byte> dst_image, u64 sector);
++
++    void xtsXorBlock(CryptoPP::byte* x, const CryptoPP::byte* a, const CryptoPP::byte* b) {
++        for (int i = 0; i < 16; i++) {
++            x[i] = a[i] ^ b[i];
++        }
++    }
++
++    void xtsMult(std::span<CryptoPP::byte, 16> encryptedTweak) {
++        int feedback = 0;
++        for (int k = 0; k < encryptedTweak.size(); k++) {
++            const auto tmp = (encryptedTweak[k] >> 7) & 1;
++            encryptedTweak[k] = ((encryptedTweak[k] << 1) + feedback) & 0xFF;
++            feedback = tmp;
++        }
++        if (feedback != 0) {
++            encryptedTweak[0] ^= 0x87;
++        }
++    }
++};
 diff --git a/src/core/emulator_settings.h b/src/core/emulator_settings.h
 index d07147e..992aab3 100644
 --- a/src/core/emulator_settings.h
@@ -165,6 +495,1488 @@ index d07147e..992aab3 100644
  
      u32 GetVblankFrequency() {
          if (m_gpu.vblank_frequency.value < 30) {
+diff --git a/src/core/file_format/pfs.h b/src/core/file_format/pfs.h
+new file mode 100644
+index 0000000..a79c367
+--- /dev/null
++++ b/src/core/file_format/pfs.h
+@@ -0,0 +1,123 @@
++// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <cstddef>
++#include <string>
++
++#include "common/types.h"
++
++#define PFS_FILE 2
++#define PFS_DIR 3
++#define PFS_CURRENT_DIR 4
++#define PFS_PARENT_DIR 5
++
++enum PfsMode : unsigned short {
++    None = 0,
++    Signed = 0x1,
++    Is64Bit = 0x2,
++    Encrypted = 0x4,
++    UnknownFlagAlwaysSet = 0x8
++};
++
++struct PSFHeader_ {
++    s64 version;
++    s64 magic;
++    s64 id;
++    u8 fmode;
++    u8 clean;
++    u8 read_only;
++    u8 rsv;
++    PfsMode mode;
++    s16 unk1;
++    s32 block_size;
++    s32 n_backup;
++    s64 n_block;
++    s64 dinode_count;
++    s64 nd_block;
++    s64 dinode_block_count;
++    s64 superroot_ino;
++};
++
++struct PFSCHdr {
++    s32 magic;
++    s32 unk4;
++    s32 unk8;
++    s32 block_sz;
++    s64 block_sz2;
++    s64 block_offsets;
++    u64 data_start;
++    s64 data_length;
++};
++
++enum InodeMode : u16 {
++    o_read = 1,
++    o_write = 2,
++    o_execute = 4,
++    g_read = 8,
++    g_write = 16,
++    g_execute = 32,
++    u_read = 64,
++    u_write = 128,
++    u_execute = 256,
++    dir = 16384,
++    file = 32768,
++};
++
++enum InodeFlags : u32 {
++    compressed = 0x1,
++    unk1 = 0x2,
++    unk2 = 0x4,
++    unk3 = 0x8,
++    readonly = 0x10,
++    unk4 = 0x20,
++    unk5 = 0x40,
++    unk6 = 0x80,
++    unk7 = 0x100,
++    unk8 = 0x200,
++    unk9 = 0x400,
++    unk10 = 0x800,
++    unk11 = 0x1000,
++    unk12 = 0x2000,
++    unk13 = 0x4000,
++    unk14 = 0x8000,
++    unk15 = 0x10000,
++    internal = 0x20000
++};
++
++struct Inode {
++    u16 Mode;
++    u16 Nlink;
++    u32 Flags;
++    s64 Size;
++    s64 SizeCompressed;
++    s64 Time1_sec;
++    s64 Time2_sec;
++    s64 Time3_sec;
++    s64 Time4_sec;
++    u32 Time1_nsec;
++    u32 Time2_nsec;
++    u32 Time3_nsec;
++    u32 Time4_nsec;
++    u32 Uid;
++    u32 Gid;
++    u64 Unk1;
++    u64 Unk2;
++    u32 Blocks;
++    u32 loc;
++};
++
++struct pfs_fs_table {
++    std::string name;
++    u32 inode;
++    u32 type;
++};
++
++struct Dirent {
++    s32 ino;
++    s32 type;
++    s32 namelen;
++    s32 entsize;
++    char name[512];
++};
+diff --git a/src/core/file_format/pkg.cpp b/src/core/file_format/pkg.cpp
+new file mode 100644
+index 0000000..6fe0618
+--- /dev/null
++++ b/src/core/file_format/pkg.cpp
+@@ -0,0 +1,473 @@
++// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include <algorithm>
++#include <cstring>
++#include <QByteArray>
++#include "common/io_file.h"
++#include "common/logging/formatter.h"
++#include "core/file_format/pkg.h"
++#include "core/file_format/pkg_type.h"
++
++static void DecompressPFSC(std::span<char> compressed_data, std::span<char> decompressed_data) {
++    // PFSC blocks are zlib streams. qUncompress reads zlib data behind a big-endian size.
++    QByteArray input;
++    input.reserve(static_cast<qsizetype>(compressed_data.size() + 4));
++    const u32 size = static_cast<u32>(decompressed_data.size());
++    input.append(static_cast<char>((size >> 24) & 0xFF));
++    input.append(static_cast<char>((size >> 16) & 0xFF));
++    input.append(static_cast<char>((size >> 8) & 0xFF));
++    input.append(static_cast<char>(size & 0xFF));
++    input.append(compressed_data.data(), static_cast<qsizetype>(compressed_data.size()));
++    const QByteArray output = qUncompress(input);
++    std::memcpy(decompressed_data.data(), output.constData(),
++                std::min<size_t>(decompressed_data.size(), static_cast<size_t>(output.size())));
++}
++
++u32 GetPFSCOffset(std::span<const u8> pfs_image) {
++    static constexpr u32 PfscMagic = 0x43534650;
++    u32 value;
++    for (u32 i = 0x20000; i < pfs_image.size(); i += 0x10000) {
++        std::memcpy(&value, &pfs_image[i], sizeof(u32));
++        if (value == PfscMagic)
++            return i;
++    }
++    return -1;
++}
++
++PKG::PKG() = default;
++
++PKG::~PKG() = default;
++
++bool PKG::Open(const std::filesystem::path& filepath, std::string& failreason) {
++    Common::FS::IOFile file(filepath, Common::FS::FileAccessMode::Read);
++    if (!file.IsOpen()) {
++        return false;
++    }
++    pkgSize = file.GetSize();
++
++    file.Read(pkgheader);
++    if (pkgheader.magic != 0x7F434E54)
++        return false;
++
++    for (const auto& flag : flagNames) {
++        if (isFlagSet(pkgheader.pkg_content_flags, flag.first)) {
++            if (!pkgFlags.empty())
++                pkgFlags += (", ");
++            pkgFlags += (flag.second);
++        }
++    }
++
++    // Find title id it is part of pkg_content_id starting at offset 0x40
++    file.Seek(0x47); // skip first 7 characters of content_id
++    file.Read(pkgTitleID);
++
++    u32 offset = pkgheader.pkg_table_entry_offset;
++    u32 n_files = pkgheader.pkg_table_entry_count;
++
++    if (!file.Seek(offset)) {
++        failreason = "Failed to seek to PKG table entry offset";
++        return false;
++    }
++
++    for (int i = 0; i < n_files; i++) {
++        PKGEntry entry{};
++        file.Read(entry.id);
++        file.Read(entry.filename_offset);
++        file.Read(entry.flags1);
++        file.Read(entry.flags2);
++        file.Read(entry.offset);
++        file.Read(entry.size);
++        file.Seek(8, Common::FS::SeekOrigin::CurrentPosition);
++
++        // Try to figure out the name
++        const auto name = GetEntryNameByType(entry.id);
++        if (name == "param.sfo") {
++            sfo.clear();
++            if (!file.Seek(entry.offset)) {
++                failreason = "Failed to seek to param.sfo offset";
++                return false;
++            }
++            sfo.resize(entry.size);
++            file.ReadRaw<u8>(sfo.data(), entry.size);
++        }
++    }
++    file.Close();
++
++    return true;
++}
++
++bool PKG::Extract(const std::filesystem::path& filepath, const std::filesystem::path& extract,
++                  std::string& failreason) {
++    if (!Crypto::HasPkgKeys()) {
++        failreason = "The PKG keys are missing. Enter the Fake and PKG Derived Key3 keysets in "
++                     "Tools > Crypto Key Manager first.";
++        return false;
++    }
++    extract_path = extract;
++    pkgpath = filepath;
++    Common::FS::IOFile file(filepath, Common::FS::FileAccessMode::Read);
++    if (!file.IsOpen()) {
++        return false;
++    }
++    pkgSize = file.GetSize();
++    file.ReadRaw<u8>(&pkgheader, sizeof(PKGHeader));
++
++    if (pkgheader.magic != 0x7F434E54)
++        return false;
++
++    if (pkgheader.pkg_size > pkgSize) {
++        failreason = "PKG file size is different";
++        return false;
++    }
++    if ((pkgheader.pkg_content_size + pkgheader.pkg_content_offset) > pkgheader.pkg_size) {
++        failreason = "Content size is bigger than pkg size";
++        return false;
++    }
++
++    u32 offset = pkgheader.pkg_table_entry_offset;
++    u32 n_files = pkgheader.pkg_table_entry_count;
++
++    std::array<u8, 64> concatenated_ivkey_dk3;
++    std::array<u8, 32> seed_digest;
++    std::array<std::array<u8, 32>, 7> digest1;
++    std::array<std::array<u8, 256>, 7> key1;
++    std::array<u8, 256> imgkeydata;
++
++    if (!file.Seek(offset)) {
++        failreason = "Failed to seek to PKG table entry offset";
++        return false;
++    }
++
++    for (int i = 0; i < n_files; i++) {
++        PKGEntry entry{};
++        file.Read(entry.id);
++        file.Read(entry.filename_offset);
++        file.Read(entry.flags1);
++        file.Read(entry.flags2);
++        file.Read(entry.offset);
++        file.Read(entry.size);
++        file.Seek(8, Common::FS::SeekOrigin::CurrentPosition);
++
++        auto currentPos = file.Tell();
++
++        // Try to figure out the name
++        const auto name = GetEntryNameByType(entry.id);
++        const auto filepath = extract_path / "sce_sys" / name;
++        std::filesystem::create_directories(filepath.parent_path());
++
++        if (name.empty()) {
++            // Just print with id
++            Common::FS::IOFile out(extract_path / "sce_sys" / std::to_string(entry.id),
++                                   Common::FS::FileAccessMode::Write);
++            if (!file.Seek(entry.offset)) {
++                failreason = "Failed to seek to PKG entry offset";
++                return false;
++            }
++
++            std::vector<u8> data;
++            data.resize(entry.size);
++            file.ReadRaw<u8>(data.data(), entry.size);
++            out.WriteRaw<u8>(data.data(), entry.size);
++            out.Close();
++
++            file.Seek(currentPos);
++            continue;
++        }
++
++        if (entry.id == 0x1) {         // DIGESTS, seek;
++                                       // file.Seek(entry.offset, fsSeekSet);
++        } else if (entry.id == 0x10) { // ENTRY_KEYS, seek;
++            file.Seek(entry.offset);
++            file.Read(seed_digest);
++
++            for (int i = 0; i < 7; i++) {
++                file.Read(digest1[i]);
++            }
++
++            for (int i = 0; i < 7; i++) {
++                file.Read(key1[i]);
++            }
++
++            PKG::crypto.RSA2048Decrypt(dk3_, key1[3], true); // decrypt DK3
++        } else if (entry.id == 0x20) {                       // IMAGE_KEY, seek; IV_KEY
++            file.Seek(entry.offset);
++            file.Read(imgkeydata);
++
++            // The Concatenated iv + dk3 imagekey for HASH256
++            std::memcpy(concatenated_ivkey_dk3.data(), &entry, sizeof(entry));
++            std::memcpy(concatenated_ivkey_dk3.data() + sizeof(entry), dk3_.data(), sizeof(dk3_));
++
++            PKG::crypto.ivKeyHASH256(concatenated_ivkey_dk3, ivKey); // ivkey_
++            // imgkey_ to use for last step to get ekpfs
++            PKG::crypto.aesCbcCfb128Decrypt(ivKey, imgkeydata, imgKey);
++            // ekpfs key to get data and tweak keys.
++            PKG::crypto.RSA2048Decrypt(ekpfsKey, imgKey, false);
++        } else if (entry.id == 0x80) {
++            // GENERAL_DIGESTS, seek;
++            // file.Seek(entry.offset, fsSeekSet);
++        }
++
++        Common::FS::IOFile out(extract_path / "sce_sys" / name, Common::FS::FileAccessMode::Write);
++        if (!file.Seek(entry.offset)) {
++            failreason = "Failed to seek to PKG entry offset";
++            return false;
++        }
++
++        std::vector<u8> data;
++        data.resize(entry.size);
++        file.ReadRaw<u8>(data.data(), entry.size);
++        out.WriteRaw<u8>(data.data(), entry.size);
++        out.Close();
++
++        // Decrypt Np stuff and overwrite.
++        if (entry.id == 0x400 || entry.id == 0x401 || entry.id == 0x402 ||
++            entry.id == 0x403) { // somehow 0x401 is not decrypting
++            decNp.resize(entry.size);
++            if (!file.Seek(entry.offset)) {
++                failreason = "Failed to seek to PKG entry offset";
++                return false;
++            }
++
++            std::vector<u8> data;
++            data.resize(entry.size);
++            file.ReadRaw<u8>(data.data(), entry.size);
++
++            std::span<u8> cipherNp(data.data(), entry.size);
++            std::array<u8, 64> concatenated_ivkey_dk3_;
++            std::memcpy(concatenated_ivkey_dk3_.data(), &entry, sizeof(entry));
++            std::memcpy(concatenated_ivkey_dk3_.data() + sizeof(entry), dk3_.data(), sizeof(dk3_));
++            PKG::crypto.ivKeyHASH256(concatenated_ivkey_dk3_, ivKey);
++            PKG::crypto.aesCbcCfb128DecryptEntry(ivKey, cipherNp, decNp);
++
++            Common::FS::IOFile out(extract_path / "sce_sys" / name,
++                                   Common::FS::FileAccessMode::Write);
++            out.Write(decNp);
++            out.Close();
++        }
++
++        file.Seek(currentPos);
++    }
++
++    // Read the seed
++    std::array<u8, 16> seed;
++    if (!file.Seek(pkgheader.pfs_image_offset + 0x370)) {
++        failreason = "Failed to seek to PFS image offset";
++        return false;
++    }
++    file.Read(seed);
++
++    // Get data and tweak keys.
++    PKG::crypto.PfsGenCryptoKey(ekpfsKey, seed, dataKey, tweakKey);
++    const u32 length = pkgheader.pfs_cache_size * 0x2; // Seems to be ok.
++
++    int num_blocks = 0;
++    std::vector<u8> pfsc(length);
++    if (length != 0) {
++        // Read encrypted pfs_image
++        std::vector<u8> pfs_encrypted(length);
++        file.Seek(pkgheader.pfs_image_offset);
++        file.Read(pfs_encrypted);
++        file.Close();
++        // Decrypt the pfs_image.
++        std::vector<u8> pfs_decrypted(length);
++        PKG::crypto.decryptPFS(dataKey, tweakKey, pfs_encrypted, pfs_decrypted, 0);
++
++        // Retrieve PFSC from decrypted pfs_image.
++        pfsc_offset = GetPFSCOffset(pfs_decrypted);
++        std::memcpy(pfsc.data(), pfs_decrypted.data() + pfsc_offset, length - pfsc_offset);
++
++        PFSCHdr pfsChdr;
++        std::memcpy(&pfsChdr, pfsc.data(), sizeof(pfsChdr));
++
++        num_blocks = (int)(pfsChdr.data_length / pfsChdr.block_sz2);
++        sectorMap.resize(num_blocks + 1); // 8 bytes, need extra 1 to get the last offset.
++
++        for (int i = 0; i < num_blocks + 1; i++) {
++            std::memcpy(&sectorMap[i], pfsc.data() + pfsChdr.block_offsets + i * 8, 8);
++        }
++    }
++
++    u32 ent_size = 0;
++    u32 ndinode = 0;
++    int ndinode_counter = 0;
++    bool dinode_reached = false;
++    bool uroot_reached = false;
++    std::vector<char> compressedData;
++    std::vector<char> decompressedData(0x10000);
++
++    // Get iNdoes and Dirents.
++    for (int i = 0; i < num_blocks; i++) {
++        const u64 sectorOffset = sectorMap[i];
++        const u64 sectorSize = sectorMap[i + 1] - sectorOffset;
++
++        compressedData.resize(sectorSize);
++        std::memcpy(compressedData.data(), pfsc.data() + sectorOffset, sectorSize);
++
++        if (sectorSize == 0x10000) // Uncompressed data
++            std::memcpy(decompressedData.data(), compressedData.data(), 0x10000);
++        else if (sectorSize < 0x10000) // Compressed data
++            DecompressPFSC(compressedData, decompressedData);
++
++        if (i == 0) {
++            std::memcpy(&ndinode, decompressedData.data() + 0x30, 4); // number of folders and files
++        }
++
++        int occupied_blocks =
++            (ndinode * 0xA8) / 0x10000; // how many blocks(0x10000) are taken by iNodes.
++        if (((ndinode * 0xA8) % 0x10000) != 0)
++            occupied_blocks += 1;
++
++        if (i >= 1 && i <= occupied_blocks) { // Get all iNodes, gives type, file size and location.
++            for (int p = 0; p < 0x10000; p += 0xA8) {
++                Inode node;
++                std::memcpy(&node, &decompressedData[p], sizeof(node));
++                if (node.Mode == 0) {
++                    break;
++                }
++                iNodeBuf.push_back(node);
++            }
++        }
++
++        // let's deal with the root/uroot entries here.
++        // Sometimes it's more than 2 entries (Tomb Raider Remastered)
++        const std::string_view flat_path_table(&decompressedData[0x10], 15);
++        if (flat_path_table == "flat_path_table") {
++            uroot_reached = true;
++        }
++
++        if (uroot_reached) {
++            for (int i = 0; i < 0x10000; i += ent_size) {
++                Dirent dirent;
++                std::memcpy(&dirent, &decompressedData[i], sizeof(dirent));
++                ent_size = dirent.entsize;
++                if (dirent.ino != 0) {
++                    ndinode_counter++;
++                } else {
++                    // Set the the folder according to the current inode.
++                    // Can be 2 or more (rarely)
++                    auto parent_path = extract_path.parent_path();
++                    auto title_id = GetTitleID();
++
++                    if (parent_path.filename() != title_id &&
++                        !fmt::UTF(extract_path.u8string()).data.ends_with("-UPDATE")) {
++                        extractPaths[ndinode_counter] = parent_path / title_id;
++                    } else {
++                        // DLCs path has different structure
++                        extractPaths[ndinode_counter] = extract_path;
++                    }
++                    uroot_reached = false;
++                    break;
++                }
++            }
++        }
++
++        const char dot = decompressedData[0x10];
++        const std::string_view dotdot(&decompressedData[0x28], 2);
++        if (dot == '.' && dotdot == "..") {
++            dinode_reached = true;
++        }
++
++        // Get folder and file names.
++        bool end_reached = false;
++        if (dinode_reached) {
++            for (int j = 0; j < 0x10000; j += ent_size) { // Skip the first parent and child.
++                Dirent dirent;
++                std::memcpy(&dirent, &decompressedData[j], sizeof(dirent));
++
++                // Stop here and continue the main loop
++                if (dirent.ino == 0) {
++                    break;
++                }
++
++                ent_size = dirent.entsize;
++                auto& table = fsTable.emplace_back();
++                table.name = std::string(dirent.name, dirent.namelen);
++                table.inode = dirent.ino;
++                table.type = dirent.type;
++
++                if (table.type == PFS_CURRENT_DIR) {
++                    current_dir = extractPaths[table.inode];
++                }
++                extractPaths[table.inode] = current_dir / std::filesystem::path(table.name);
++
++                if (table.type == PFS_FILE || table.type == PFS_DIR) {
++                    if (table.type == PFS_DIR) { // Create dirs.
++                        std::filesystem::create_directory(extractPaths[table.inode]);
++                    }
++                    ndinode_counter++;
++                    if ((ndinode_counter + 1) == ndinode) // 1 for the image itself (root).
++                        end_reached = true;
++                }
++            }
++            if (end_reached) {
++                break;
++            }
++        }
++    }
++    return true;
++}
++
++void PKG::ExtractFiles(const int index) {
++    int inode_number = fsTable[index].inode;
++    int inode_type = fsTable[index].type;
++    std::string inode_name = fsTable[index].name;
++
++    if (inode_type == PFS_FILE) {
++        int sector_loc = iNodeBuf[inode_number].loc;
++        int nblocks = iNodeBuf[inode_number].Blocks;
++        int bsize = iNodeBuf[inode_number].Size;
++
++        Common::FS::IOFile inflated;
++        inflated.Open(extractPaths[inode_number], Common::FS::FileAccessMode::Write);
++
++        Common::FS::IOFile pkgFile; // Open the file for each iteration to avoid conflict.
++        pkgFile.Open(pkgpath, Common::FS::FileAccessMode::Read);
++
++        int size_decompressed = 0;
++        std::vector<char> compressedData;
++        std::vector<char> decompressedData(0x10000);
++
++        u64 pfsc_buf_size = 0x11000; // extra 0x1000
++        std::vector<u8> pfsc(pfsc_buf_size);
++        std::vector<u8> pfs_decrypted(pfsc_buf_size);
++
++        for (int j = 0; j < nblocks; j++) {
++            u64 sectorOffset =
++                sectorMap[sector_loc + j]; // offset into PFSC_image and not pfs_image.
++            u64 sectorSize = sectorMap[sector_loc + j + 1] -
++                             sectorOffset; // indicates if data is compressed or not.
++            u64 fileOffset = (pkgheader.pfs_image_offset + pfsc_offset + sectorOffset);
++            u64 currentSector1 =
++                (pfsc_offset + sectorOffset) / 0x1000; // block size is 0x1000 for xts decryption.
++
++            int sectorOffsetMask = (sectorOffset + pfsc_offset) & 0xFFFFF000;
++            int previousData = (sectorOffset + pfsc_offset) - sectorOffsetMask;
++
++            pkgFile.Seek(fileOffset - previousData);
++            pkgFile.Read(pfsc);
++
++            PKG::crypto.decryptPFS(dataKey, tweakKey, pfsc, pfs_decrypted, currentSector1);
++
++            compressedData.resize(sectorSize);
++            std::memcpy(compressedData.data(), pfs_decrypted.data() + previousData, sectorSize);
++
++            if (sectorSize == 0x10000) // Uncompressed data
++                std::memcpy(decompressedData.data(), compressedData.data(), 0x10000);
++            else if (sectorSize < 0x10000) // Compressed data
++                DecompressPFSC(compressedData, decompressedData);
++
++            size_decompressed += 0x10000;
++
++            if (j < nblocks - 1) {
++                inflated.WriteRaw<u8>(decompressedData.data(), decompressedData.size());
++            } else {
++                // This is to remove the zeros at the end of the file.
++                const u32 write_size = decompressedData.size() - (size_decompressed - bsize);
++                inflated.WriteRaw<u8>(decompressedData.data(), write_size);
++            }
++        }
++        pkgFile.Close();
++        inflated.Close();
++    }
++}
+diff --git a/src/core/file_format/pkg.h b/src/core/file_format/pkg.h
+new file mode 100644
+index 0000000..8faffe3
+--- /dev/null
++++ b/src/core/file_format/pkg.h
+@@ -0,0 +1,172 @@
++// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <array>
++#include <filesystem>
++#include <string>
++#include <unordered_map>
++#include <vector>
++#include "common/endian.h"
++#include "core/crypto/crypto.h"
++#include "pfs.h"
++
++struct PKGHeader {
++    u32_be magic; // Magic
++    u32_be pkg_type;
++    u32_be pkg_0x8; // unknown field
++    u32_be pkg_file_count;
++    u32_be pkg_table_entry_count;
++    u16_be pkg_sc_entry_count;
++    u16_be pkg_table_entry_count_2; // same as pkg_entry_count
++    u32_be pkg_table_entry_offset;  // file table offset
++    u32_be pkg_sc_entry_data_size;
++    u64_be pkg_body_offset; // offset of PKG entries
++    u64_be pkg_body_size;   // length of all PKG entries
++    u64_be pkg_content_offset;
++    u64_be pkg_content_size;
++    u8 pkg_content_id[0x24];  // packages' content ID as a 36-byte string
++    u8 pkg_padding[0xC];      // padding
++    u32_be pkg_drm_type;      // DRM type
++    u32_be pkg_content_type;  // Content type
++    u32_be pkg_content_flags; // Content flags
++    u32_be pkg_promote_size;
++    u32_be pkg_version_date;
++    u32_be pkg_version_hash;
++    u32_be pkg_0x088;
++    u32_be pkg_0x08C;
++    u32_be pkg_0x090;
++    u32_be pkg_0x094;
++    u32_be pkg_iro_tag;
++    u32_be pkg_drm_type_version;
++
++    u8 pkg_zeroes_1[0x60];
++
++    /* Digest table */
++    u8 digest_entries1[0x20];     // sha256 digest for main entry 1
++    u8 digest_entries2[0x20];     // sha256 digest for main entry 2
++    u8 digest_table_digest[0x20]; // sha256 digest for digest table
++    u8 digest_body_digest[0x20];  // sha256 digest for main table
++
++    u8 pkg_zeroes_2[0x280];
++
++    u32_be pkg_0x400;
++
++    u32_be pfs_image_count;  // count of PFS images
++    u64_be pfs_image_flags;  // PFS flags
++    u64_be pfs_image_offset; // offset to start of external PFS image
++    u64_be pfs_image_size;   // size of external PFS image
++    u64_be mount_image_offset;
++    u64_be mount_image_size;
++    u64_be pkg_size;
++    u32_be pfs_signed_size;
++    u32_be pfs_cache_size;
++    u8 pfs_image_digest[0x20];
++    u8 pfs_signed_digest[0x20];
++    u64_be pfs_split_size_nth_0;
++    u64_be pfs_split_size_nth_1;
++
++    u8 pkg_zeroes_3[0xB50];
++
++    u8 pkg_digest[0x20];
++};
++
++enum class PKGContentFlag {
++    FIRST_PATCH = 0x100000,
++    PATCHGO = 0x200000,
++    REMASTER = 0x400000,
++    PS_CLOUD = 0x800000,
++    GD_AC = 0x2000000,
++    NON_GAME = 0x4000000,
++    UNKNOWN_0x8000000 = 0x8000000,
++    SUBSEQUENT_PATCH = 0x40000000,
++    DELTA_PATCH = 0x41000000,
++    CUMULATIVE_PATCH = 0x60000000
++};
++
++struct PKGEntry {
++    u32_be id;              // File ID, useful for files without a filename entry
++    u32_be filename_offset; // Offset into the filenames table (ID 0x200) where this file's name is
++                            // located
++    u32_be flags1;          // Flags including encrypted flag, etc
++    u32_be flags2;          // Flags including encryption key index, etc
++    u32_be offset;          // Offset into PKG to find the file
++    u32_be size;            // Size of the file
++    u64_be padding;         // blank padding
++};
++static_assert(sizeof(PKGEntry) == 32);
++
++class PKG {
++public:
++    PKG();
++    ~PKG();
++
++    bool Open(const std::filesystem::path& filepath, std::string& failreason);
++    void ExtractFiles(const int index);
++    bool Extract(const std::filesystem::path& filepath, const std::filesystem::path& extract,
++                 std::string& failreason);
++
++    std::vector<u8> sfo;
++
++    u32 GetNumberOfFiles() {
++        return fsTable.size();
++    }
++
++    u64 GetPkgSize() {
++        return pkgSize;
++    }
++
++    std::string GetPkgFlags() {
++        return pkgFlags;
++    }
++
++    std::string_view GetTitleID() {
++        return std::string_view(pkgTitleID, 9);
++    }
++
++    PKGHeader GetPkgHeader() {
++        return pkgheader;
++    }
++
++    static bool isFlagSet(u32_be variable, PKGContentFlag flag) {
++        return (variable) & static_cast<u32>(flag);
++    }
++
++    static constexpr std::array<std::pair<PKGContentFlag, std::string_view>, 10> flagNames = {
++        {{PKGContentFlag::FIRST_PATCH, "FIRST_PATCH"},
++         {PKGContentFlag::PATCHGO, "PATCHGO"},
++         {PKGContentFlag::REMASTER, "REMASTER"},
++         {PKGContentFlag::PS_CLOUD, "PS_CLOUD"},
++         {PKGContentFlag::GD_AC, "GD_AC"},
++         {PKGContentFlag::NON_GAME, "NON_GAME"},
++         {PKGContentFlag::UNKNOWN_0x8000000, "UNKNOWN_0x8000000"},
++         {PKGContentFlag::SUBSEQUENT_PATCH, "SUBSEQUENT_PATCH"},
++         {PKGContentFlag::DELTA_PATCH, "DELTA_PATCH"},
++         {PKGContentFlag::CUMULATIVE_PATCH, "CUMULATIVE_PATCH"}}};
++
++private:
++    Crypto crypto;
++    u64 pkgSize = 0;
++    char pkgTitleID[9];
++    PKGHeader pkgheader;
++    std::string pkgFlags;
++
++    std::unordered_map<int, std::filesystem::path> extractPaths;
++    std::vector<pfs_fs_table> fsTable;
++    std::vector<Inode> iNodeBuf;
++    std::vector<u64> sectorMap;
++    u64 pfsc_offset;
++
++    std::array<u8, 32> dk3_;
++    std::array<u8, 32> ivKey;
++    std::array<u8, 256> imgKey;
++    std::array<u8, 32> ekpfsKey;
++    std::array<u8, 16> dataKey;
++    std::array<u8, 16> tweakKey;
++    std::vector<u8> decNp;
++
++    std::filesystem::path pkgpath;
++    std::filesystem::path current_dir;
++    std::filesystem::path extract_path;
++};
+diff --git a/src/core/file_format/pkg_type.cpp b/src/core/file_format/pkg_type.cpp
+new file mode 100644
+index 0000000..464f0b9
+--- /dev/null
++++ b/src/core/file_format/pkg_type.cpp
+@@ -0,0 +1,638 @@
++// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include <algorithm>
++#include <array>
++#include "pkg_type.h"
++
++struct PkgEntryValue {
++    u32 type;
++    std::string_view name;
++
++    operator u32() const noexcept {
++        return type;
++    }
++};
++
++constexpr static std::array<PkgEntryValue, 611> PkgEntries = {{
++    {0x0001, "digests"},
++    {0x0010, "entry_keys"},
++    {0x0020, "image_key"},
++    {0x0080, "general_digests"},
++    {0x0100, "metas"},
++    {0x0200, "entry_names"},
++    {0x0400, "license.dat"},
++    {0x0401, "license.info"},
++    {0x0402, "nptitle.dat"},
++    {0x0403, "npbind.dat"},
++    {0x0404, "selfinfo.dat"},
++    {0x0406, "imageinfo.dat"},
++    {0x0407, "target-deltainfo.dat"},
++    {0x0408, "origin-deltainfo.dat"},
++    {0x0409, "psreserved.dat"},
++    {0x1000, "param.sfo"},
++    {0x1001, "playgo-chunk.dat"},
++    {0x1002, "playgo-chunk.sha"},
++    {0x1003, "playgo-manifest.xml"},
++    {0x1004, "pronunciation.xml"},
++    {0x1005, "pronunciation.sig"},
++    {0x1006, "pic1.png"},
++    {0x1007, "pubtoolinfo.dat"},
++    {0x1008, "app/playgo-chunk.dat"},
++    {0x1009, "app/playgo-chunk.sha"},
++    {0x100A, "app/playgo-manifest.xml"},
++    {0x100B, "shareparam.json"},
++    {0x100C, "shareoverlayimage.png"},
++    {0x100D, "save_data.png"},
++    {0x100E, "shareprivacyguardimage.png"},
++    {0x1200, "icon0.png"},
++    {0x1201, "icon0_00.png"},
++    {0x1202, "icon0_01.png"},
++    {0x1203, "icon0_02.png"},
++    {0x1204, "icon0_03.png"},
++    {0x1205, "icon0_04.png"},
++    {0x1206, "icon0_05.png"},
++    {0x1207, "icon0_06.png"},
++    {0x1208, "icon0_07.png"},
++    {0x1209, "icon0_08.png"},
++    {0x120A, "icon0_09.png"},
++    {0x120B, "icon0_10.png"},
++    {0x120C, "icon0_11.png"},
++    {0x120D, "icon0_12.png"},
++    {0x120E, "icon0_13.png"},
++    {0x120F, "icon0_14.png"},
++    {0x1210, "icon0_15.png"},
++    {0x1211, "icon0_16.png"},
++    {0x1212, "icon0_17.png"},
++    {0x1213, "icon0_18.png"},
++    {0x1214, "icon0_19.png"},
++    {0x1215, "icon0_20.png"},
++    {0x1216, "icon0_21.png"},
++    {0x1217, "icon0_22.png"},
++    {0x1218, "icon0_23.png"},
++    {0x1219, "icon0_24.png"},
++    {0x121A, "icon0_25.png"},
++    {0x121B, "icon0_26.png"},
++    {0x121C, "icon0_27.png"},
++    {0x121D, "icon0_28.png"},
++    {0x121E, "icon0_29.png"},
++    {0x121F, "icon0_30.png"},
++    {0x1220, "pic0.png"},
++    {0x1240, "snd0.at9"},
++    {0x1241, "pic1_00.png"},
++    {0x1242, "pic1_01.png"},
++    {0x1243, "pic1_02.png"},
++    {0x1244, "pic1_03.png"},
++    {0x1245, "pic1_04.png"},
++    {0x1246, "pic1_05.png"},
++    {0x1247, "pic1_06.png"},
++    {0x1248, "pic1_07.png"},
++    {0x1249, "pic1_08.png"},
++    {0x124A, "pic1_09.png"},
++    {0x124B, "pic1_10.png"},
++    {0x124C, "pic1_11.png"},
++    {0x124D, "pic1_12.png"},
++    {0x124E, "pic1_13.png"},
++    {0x124F, "pic1_14.png"},
++    {0x1250, "pic1_15.png"},
++    {0x1251, "pic1_16.png"},
++    {0x1252, "pic1_17.png"},
++    {0x1253, "pic1_18.png"},
++    {0x1254, "pic1_19.png"},
++    {0x1255, "pic1_20.png"},
++    {0x1256, "pic1_21.png"},
++    {0x1257, "pic1_22.png"},
++    {0x1258, "pic1_23.png"},
++    {0x1259, "pic1_24.png"},
++    {0x125A, "pic1_25.png"},
++    {0x125B, "pic1_26.png"},
++    {0x125C, "pic1_27.png"},
++    {0x125D, "pic1_28.png"},
++    {0x125E, "pic1_29.png"},
++    {0x125F, "pic1_30.png"},
++    {0x1260, "changeinfo/changeinfo.xml"},
++    {0x1261, "changeinfo/changeinfo_00.xml"},
++    {0x1262, "changeinfo/changeinfo_01.xml"},
++    {0x1263, "changeinfo/changeinfo_02.xml"},
++    {0x1264, "changeinfo/changeinfo_03.xml"},
++    {0x1265, "changeinfo/changeinfo_04.xml"},
++    {0x1266, "changeinfo/changeinfo_05.xml"},
++    {0x1267, "changeinfo/changeinfo_06.xml"},
++    {0x1268, "changeinfo/changeinfo_07.xml"},
++    {0x1269, "changeinfo/changeinfo_08.xml"},
++    {0x126A, "changeinfo/changeinfo_09.xml"},
++    {0x126B, "changeinfo/changeinfo_10.xml"},
++    {0x126C, "changeinfo/changeinfo_11.xml"},
++    {0x126D, "changeinfo/changeinfo_12.xml"},
++    {0x126E, "changeinfo/changeinfo_13.xml"},
++    {0x126F, "changeinfo/changeinfo_14.xml"},
++    {0x1270, "changeinfo/changeinfo_15.xml"},
++    {0x1271, "changeinfo/changeinfo_16.xml"},
++    {0x1272, "changeinfo/changeinfo_17.xml"},
++    {0x1273, "changeinfo/changeinfo_18.xml"},
++    {0x1274, "changeinfo/changeinfo_19.xml"},
++    {0x1275, "changeinfo/changeinfo_20.xml"},
++    {0x1276, "changeinfo/changeinfo_21.xml"},
++    {0x1277, "changeinfo/changeinfo_22.xml"},
++    {0x1278, "changeinfo/changeinfo_23.xml"},
++    {0x1279, "changeinfo/changeinfo_24.xml"},
++    {0x127A, "changeinfo/changeinfo_25.xml"},
++    {0x127B, "changeinfo/changeinfo_26.xml"},
++    {0x127C, "changeinfo/changeinfo_27.xml"},
++    {0x127D, "changeinfo/changeinfo_28.xml"},
++    {0x127E, "changeinfo/changeinfo_29.xml"},
++    {0x127F, "changeinfo/changeinfo_30.xml"},
++    {0x1280, "icon0.dds"},
++    {0x1281, "icon0_00.dds"},
++    {0x1282, "icon0_01.dds"},
++    {0x1283, "icon0_02.dds"},
++    {0x1284, "icon0_03.dds"},
++    {0x1285, "icon0_04.dds"},
++    {0x1286, "icon0_05.dds"},
++    {0x1287, "icon0_06.dds"},
++    {0x1288, "icon0_07.dds"},
++    {0x1289, "icon0_08.dds"},
++    {0x128A, "icon0_09.dds"},
++    {0x128B, "icon0_10.dds"},
++    {0x128C, "icon0_11.dds"},
++    {0x128D, "icon0_12.dds"},
++    {0x128E, "icon0_13.dds"},
++    {0x128F, "icon0_14.dds"},
++    {0x1290, "icon0_15.dds"},
++    {0x1291, "icon0_16.dds"},
++    {0x1292, "icon0_17.dds"},
++    {0x1293, "icon0_18.dds"},
++    {0x1294, "icon0_19.dds"},
++    {0x1295, "icon0_20.dds"},
++    {0x1296, "icon0_21.dds"},
++    {0x1297, "icon0_22.dds"},
++    {0x1298, "icon0_23.dds"},
++    {0x1299, "icon0_24.dds"},
++    {0x129A, "icon0_25.dds"},
++    {0x129B, "icon0_26.dds"},
++    {0x129C, "icon0_27.dds"},
++    {0x129D, "icon0_28.dds"},
++    {0x129E, "icon0_29.dds"},
++    {0x129F, "icon0_30.dds"},
++    {0x12A0, "pic0.dds"},
++    {0x12C0, "pic1.dds"},
++    {0x12C1, "pic1_00.dds"},
++    {0x12C2, "pic1_01.dds"},
++    {0x12C3, "pic1_02.dds"},
++    {0x12C4, "pic1_03.dds"},
++    {0x12C5, "pic1_04.dds"},
++    {0x12C6, "pic1_05.dds"},
++    {0x12C7, "pic1_06.dds"},
++    {0x12C8, "pic1_07.dds"},
++    {0x12C9, "pic1_08.dds"},
++    {0x12CA, "pic1_09.dds"},
++    {0x12CB, "pic1_10.dds"},
++    {0x12CC, "pic1_11.dds"},
++    {0x12CD, "pic1_12.dds"},
++    {0x12CE, "pic1_13.dds"},
++    {0x12CF, "pic1_14.dds"},
++    {0x12D0, "pic1_15.dds"},
++    {0x12D1, "pic1_16.dds"},
++    {0x12D2, "pic1_17.dds"},
++    {0x12D3, "pic1_18.dds"},
++    {0x12D4, "pic1_19.dds"},
++    {0x12D5, "pic1_20.dds"},
++    {0x12D6, "pic1_21.dds"},
++    {0x12D7, "pic1_22.dds"},
++    {0x12D8, "pic1_23.dds"},
++    {0x12D9, "pic1_24.dds"},
++    {0x12DA, "pic1_25.dds"},
++    {0x12DB, "pic1_26.dds"},
++    {0x12DC, "pic1_27.dds"},
++    {0x12DD, "pic1_28.dds"},
++    {0x12DE, "pic1_29.dds"},
++    {0x12DF, "pic1_30.dds"},
++    {0x1400, "trophy/trophy00.trp"},
++    {0x1401, "trophy/trophy01.trp"},
++    {0x1402, "trophy/trophy02.trp"},
++    {0x1403, "trophy/trophy03.trp"},
++    {0x1404, "trophy/trophy04.trp"},
++    {0x1405, "trophy/trophy05.trp"},
++    {0x1406, "trophy/trophy06.trp"},
++    {0x1407, "trophy/trophy07.trp"},
++    {0x1408, "trophy/trophy08.trp"},
++    {0x1409, "trophy/trophy09.trp"},
++    {0x140A, "trophy/trophy10.trp"},
++    {0x140B, "trophy/trophy11.trp"},
++    {0x140C, "trophy/trophy12.trp"},
++    {0x140D, "trophy/trophy13.trp"},
++    {0x140E, "trophy/trophy14.trp"},
++    {0x140F, "trophy/trophy15.trp"},
++    {0x1410, "trophy/trophy16.trp"},
++    {0x1411, "trophy/trophy17.trp"},
++    {0x1412, "trophy/trophy18.trp"},
++    {0x1413, "trophy/trophy19.trp"},
++    {0x1414, "trophy/trophy20.trp"},
++    {0x1415, "trophy/trophy21.trp"},
++    {0x1416, "trophy/trophy22.trp"},
++    {0x1417, "trophy/trophy23.trp"},
++    {0x1418, "trophy/trophy24.trp"},
++    {0x1419, "trophy/trophy25.trp"},
++    {0x141A, "trophy/trophy26.trp"},
++    {0x141B, "trophy/trophy27.trp"},
++    {0x141C, "trophy/trophy28.trp"},
++    {0x141D, "trophy/trophy29.trp"},
++    {0x141E, "trophy/trophy30.trp"},
++    {0x141F, "trophy/trophy31.trp"},
++    {0x1420, "trophy/trophy32.trp"},
++    {0x1421, "trophy/trophy33.trp"},
++    {0x1422, "trophy/trophy34.trp"},
++    {0x1423, "trophy/trophy35.trp"},
++    {0x1424, "trophy/trophy36.trp"},
++    {0x1425, "trophy/trophy37.trp"},
++    {0x1426, "trophy/trophy38.trp"},
++    {0x1427, "trophy/trophy39.trp"},
++    {0x1428, "trophy/trophy40.trp"},
++    {0x1429, "trophy/trophy41.trp"},
++    {0x142A, "trophy/trophy42.trp"},
++    {0x142B, "trophy/trophy43.trp"},
++    {0x142C, "trophy/trophy44.trp"},
++    {0x142D, "trophy/trophy45.trp"},
++    {0x142E, "trophy/trophy46.trp"},
++    {0x142F, "trophy/trophy47.trp"},
++    {0x1430, "trophy/trophy48.trp"},
++    {0x1431, "trophy/trophy49.trp"},
++    {0x1432, "trophy/trophy50.trp"},
++    {0x1433, "trophy/trophy51.trp"},
++    {0x1434, "trophy/trophy52.trp"},
++    {0x1435, "trophy/trophy53.trp"},
++    {0x1436, "trophy/trophy54.trp"},
++    {0x1437, "trophy/trophy55.trp"},
++    {0x1438, "trophy/trophy56.trp"},
++    {0x1439, "trophy/trophy57.trp"},
++    {0x143A, "trophy/trophy58.trp"},
++    {0x143B, "trophy/trophy59.trp"},
++    {0x143C, "trophy/trophy60.trp"},
++    {0x143D, "trophy/trophy61.trp"},
++    {0x143E, "trophy/trophy62.trp"},
++    {0x143F, "trophy/trophy63.trp"},
++    {0x1440, "trophy/trophy64.trp"},
++    {0x1441, "trophy/trophy65.trp"},
++    {0x1442, "trophy/trophy66.trp"},
++    {0x1443, "trophy/trophy67.trp"},
++    {0x1444, "trophy/trophy68.trp"},
++    {0x1445, "trophy/trophy69.trp"},
++    {0x1446, "trophy/trophy70.trp"},
++    {0x1447, "trophy/trophy71.trp"},
++    {0x1448, "trophy/trophy72.trp"},
++    {0x1449, "trophy/trophy73.trp"},
++    {0x144A, "trophy/trophy74.trp"},
++    {0x144B, "trophy/trophy75.trp"},
++    {0x144C, "trophy/trophy76.trp"},
++    {0x144D, "trophy/trophy77.trp"},
++    {0x144E, "trophy/trophy78.trp"},
++    {0x144F, "trophy/trophy79.trp"},
++    {0x1450, "trophy/trophy80.trp"},
++    {0x1451, "trophy/trophy81.trp"},
++    {0x1452, "trophy/trophy82.trp"},
++    {0x1453, "trophy/trophy83.trp"},
++    {0x1454, "trophy/trophy84.trp"},
++    {0x1455, "trophy/trophy85.trp"},
++    {0x1456, "trophy/trophy86.trp"},
++    {0x1457, "trophy/trophy87.trp"},
++    {0x1458, "trophy/trophy88.trp"},
++    {0x1459, "trophy/trophy89.trp"},
++    {0x145A, "trophy/trophy90.trp"},
++    {0x145B, "trophy/trophy91.trp"},
++    {0x145C, "trophy/trophy92.trp"},
++    {0x145D, "trophy/trophy93.trp"},
++    {0x145E, "trophy/trophy94.trp"},
++    {0x145F, "trophy/trophy95.trp"},
++    {0x1460, "trophy/trophy96.trp"},
++    {0x1461, "trophy/trophy97.trp"},
++    {0x1462, "trophy/trophy98.trp"},
++    {0x1463, "trophy/trophy99.trp"},
++    {0x1600, "keymap_rp/001.png"},
++    {0x1601, "keymap_rp/002.png"},
++    {0x1602, "keymap_rp/003.png"},
++    {0x1603, "keymap_rp/004.png"},
++    {0x1604, "keymap_rp/005.png"},
++    {0x1605, "keymap_rp/006.png"},
++    {0x1606, "keymap_rp/007.png"},
++    {0x1607, "keymap_rp/008.png"},
++    {0x1608, "keymap_rp/009.png"},
++    {0x1609, "keymap_rp/010.png"},
++    {0x1610, "keymap_rp/00/001.png"},
++    {0x1611, "keymap_rp/00/002.png"},
++    {0x1612, "keymap_rp/00/003.png"},
++    {0x1613, "keymap_rp/00/004.png"},
++    {0x1614, "keymap_rp/00/005.png"},
++    {0x1615, "keymap_rp/00/006.png"},
++    {0x1616, "keymap_rp/00/007.png"},
++    {0x1617, "keymap_rp/00/008.png"},
++    {0x1618, "keymap_rp/00/009.png"},
++    {0x1619, "keymap_rp/00/010.png"},
++    {0x1620, "keymap_rp/01/001.png"},
++    {0x1621, "keymap_rp/01/002.png"},
++    {0x1622, "keymap_rp/01/003.png"},
++    {0x1623, "keymap_rp/01/004.png"},
++    {0x1624, "keymap_rp/01/005.png"},
++    {0x1625, "keymap_rp/01/006.png"},
++    {0x1626, "keymap_rp/01/007.png"},
++    {0x1627, "keymap_rp/01/008.png"},
++    {0x1628, "keymap_rp/01/009.png"},
++    {0x1629, "keymap_rp/01/010.png"},
++    {0x1630, "keymap_rp/02/001.png"},
++    {0x1631, "keymap_rp/02/002.png"},
++    {0x1632, "keymap_rp/02/003.png"},
++    {0x1633, "keymap_rp/02/004.png"},
++    {0x1634, "keymap_rp/02/005.png"},
++    {0x1635, "keymap_rp/02/006.png"},
++    {0x1636, "keymap_rp/02/007.png"},
++    {0x1637, "keymap_rp/02/008.png"},
++    {0x1638, "keymap_rp/02/009.png"},
++    {0x1639, "keymap_rp/02/010.png"},
++    {0x1640, "keymap_rp/03/001.png"},
++    {0x1641, "keymap_rp/03/002.png"},
++    {0x1642, "keymap_rp/03/003.png"},
++    {0x1643, "keymap_rp/03/004.png"},
++    {0x1644, "keymap_rp/03/005.png"},
++    {0x1645, "keymap_rp/03/006.png"},
++    {0x1646, "keymap_rp/03/007.png"},
++    {0x1647, "keymap_rp/03/008.png"},
++    {0x1648, "keymap_rp/03/0010.png"},
++    {0x1650, "keymap_rp/04/001.png"},
++    {0x1651, "keymap_rp/04/002.png"},
++    {0x1652, "keymap_rp/04/003.png"},
++    {0x1653, "keymap_rp/04/004.png"},
++    {0x1654, "keymap_rp/04/005.png"},
++    {0x1655, "keymap_rp/04/006.png"},
++    {0x1656, "keymap_rp/04/007.png"},
++    {0x1657, "keymap_rp/04/008.png"},
++    {0x1658, "keymap_rp/04/009.png"},
++    {0x1659, "keymap_rp/04/010.png"},
++    {0x1660, "keymap_rp/05/001.png"},
++    {0x1661, "keymap_rp/05/002.png"},
++    {0x1662, "keymap_rp/05/003.png"},
++    {0x1663, "keymap_rp/05/004.png"},
++    {0x1664, "keymap_rp/05/005.png"},
++    {0x1665, "keymap_rp/05/006.png"},
++    {0x1666, "keymap_rp/05/007.png"},
++    {0x1667, "keymap_rp/05/008.png"},
++    {0x1668, "keymap_rp/05/009.png"},
++    {0x1669, "keymap_rp/05/010.png"},
++    {0x1670, "keymap_rp/06/001.png"},
++    {0x1671, "keymap_rp/06/002.png"},
++    {0x1672, "keymap_rp/06/003.png"},
++    {0x1673, "keymap_rp/06/004.png"},
++    {0x1674, "keymap_rp/06/005.png"},
++    {0x1675, "keymap_rp/06/006.png"},
++    {0x1676, "keymap_rp/06/007.png"},
++    {0x1677, "keymap_rp/06/008.png"},
++    {0x1678, "keymap_rp/06/009.png"},
++    {0x1679, "keymap_rp/06/010.png"},
++    {0x1680, "keymap_rp/07/001.png"},
++    {0x1681, "keymap_rp/07/002.png"},
++    {0x1682, "keymap_rp/07/003.png"},
++    {0x1683, "keymap_rp/07/004.png"},
++    {0x1684, "keymap_rp/07/005.png"},
++    {0x1685, "keymap_rp/07/006.png"},
++    {0x1686, "keymap_rp/07/007.png"},
++    {0x1687, "keymap_rp/07/008.png"},
++    {0x1688, "keymap_rp/07/009.png"},
++    {0x1689, "keymap_rp/07/010.png"},
++    {0x1690, "keymap_rp/08/001.png"},
++    {0x1691, "keymap_rp/08/002.png"},
++    {0x1692, "keymap_rp/08/003.png"},
++    {0x1693, "keymap_rp/08/004.png"},
++    {0x1694, "keymap_rp/08/005.png"},
++    {0x1695, "keymap_rp/08/006.png"},
++    {0x1696, "keymap_rp/08/007.png"},
++    {0x1697, "keymap_rp/08/008.png"},
++    {0x1698, "keymap_rp/08/009.png"},
++    {0x1699, "keymap_rp/08/010.png"},
++    {0x16A0, "keymap_rp/09/001.png"},
++    {0x16A1, "keymap_rp/09/002.png"},
++    {0x16A2, "keymap_rp/09/003.png"},
++    {0x16A3, "keymap_rp/09/004.png"},
++    {0x16A4, "keymap_rp/09/005.png"},
++    {0x16A5, "keymap_rp/09/006.png"},
++    {0x16A6, "keymap_rp/09/007.png"},
++    {0x16A7, "keymap_rp/09/008.png"},
++    {0x16A8, "keymap_rp/09/009.png"},
++    {0x16A9, "keymap_rp/09/010.png"},
++    {0x16B0, "keymap_rp/10/001.png"},
++    {0x16B1, "keymap_rp/10/002.png"},
++    {0x16B2, "keymap_rp/10/003.png"},
++    {0x16B3, "keymap_rp/10/004.png"},
++    {0x16B4, "keymap_rp/10/005.png"},
++    {0x16B5, "keymap_rp/10/006.png"},
++    {0x16B6, "keymap_rp/10/007.png"},
++    {0x16B7, "keymap_rp/10/008.png"},
++    {0x16B8, "keymap_rp/10/009.png"},
++    {0x16B9, "keymap_rp/10/010.png"},
++    {0x16C0, "keymap_rp/11/001.png"},
++    {0x16C1, "keymap_rp/11/002.png"},
++    {0x16C2, "keymap_rp/11/003.png"},
++    {0x16C3, "keymap_rp/11/004.png"},
++    {0x16C4, "keymap_rp/11/005.png"},
++    {0x16C5, "keymap_rp/11/006.png"},
++    {0x16C6, "keymap_rp/11/007.png"},
++    {0x16C7, "keymap_rp/11/008.png"},
++    {0x16C8, "keymap_rp/11/009.png"},
++    {0x16C9, "keymap_rp/11/010.png"},
++    {0x16D0, "keymap_rp/12/001.png"},
++    {0x16D1, "keymap_rp/12/002.png"},
++    {0x16D2, "keymap_rp/12/003.png"},
++    {0x16D3, "keymap_rp/12/004.png"},
++    {0x16D4, "keymap_rp/12/005.png"},
++    {0x16D5, "keymap_rp/12/006.png"},
++    {0x16D6, "keymap_rp/12/007.png"},
++    {0x16D7, "keymap_rp/12/008.png"},
++    {0x16D8, "keymap_rp/12/009.png"},
++    {0x16D9, "keymap_rp/12/010.png"},
++    {0x16E0, "keymap_rp/13/001.png"},
++    {0x16E1, "keymap_rp/13/002.png"},
++    {0x16E2, "keymap_rp/13/003.png"},
++    {0x16E3, "keymap_rp/13/004.png"},
++    {0x16E4, "keymap_rp/13/005.png"},
++    {0x16E5, "keymap_rp/13/006.png"},
++    {0x16E6, "keymap_rp/13/007.png"},
++    {0x16E7, "keymap_rp/13/008.png"},
++    {0x16E8, "keymap_rp/13/009.png"},
++    {0x16E9, "keymap_rp/13/010.png"},
++    {0x16F0, "keymap_rp/14/001.png"},
++    {0x16F1, "keymap_rp/14/002.png"},
++    {0x16F2, "keymap_rp/14/003.png"},
++    {0x16F3, "keymap_rp/14/004.png"},
++    {0x16F4, "keymap_rp/14/005.png"},
++    {0x16F5, "keymap_rp/14/006.png"},
++    {0x16F6, "keymap_rp/14/007.png"},
++    {0x16F7, "keymap_rp/14/008.png"},
++    {0x16F8, "keymap_rp/14/009.png"},
++    {0x16F9, "keymap_rp/14/010.png"},
++    {0x1700, "keymap_rp/15/001.png"},
++    {0x1701, "keymap_rp/15/002.png"},
++    {0x1702, "keymap_rp/15/003.png"},
++    {0x1703, "keymap_rp/15/004.png"},
++    {0x1704, "keymap_rp/15/005.png"},
++    {0x1705, "keymap_rp/15/006.png"},
++    {0x1706, "keymap_rp/15/007.png"},
++    {0x1707, "keymap_rp/15/008.png"},
++    {0x1708, "keymap_rp/15/009.png"},
++    {0x1709, "keymap_rp/15/010.png"},
++    {0x1710, "keymap_rp/16/001.png"},
++    {0x1711, "keymap_rp/16/002.png"},
++    {0x1712, "keymap_rp/16/003.png"},
++    {0x1713, "keymap_rp/16/004.png"},
++    {0x1714, "keymap_rp/16/005.png"},
++    {0x1715, "keymap_rp/16/006.png"},
++    {0x1716, "keymap_rp/16/007.png"},
++    {0x1717, "keymap_rp/16/008.png"},
++    {0x1718, "keymap_rp/16/009.png"},
++    {0x1719, "keymap_rp/16/010.png"},
++    {0x1720, "keymap_rp/17/001.png"},
++    {0x1721, "keymap_rp/17/002.png"},
++    {0x1722, "keymap_rp/17/003.png"},
++    {0x1723, "keymap_rp/17/004.png"},
++    {0x1724, "keymap_rp/17/005.png"},
++    {0x1725, "keymap_rp/17/006.png"},
++    {0x1726, "keymap_rp/17/007.png"},
++    {0x1727, "keymap_rp/17/008.png"},
++    {0x1728, "keymap_rp/17/009.png"},
++    {0x1729, "keymap_rp/17/010.png"},
++    {0x1730, "keymap_rp/18/001.png"},
++    {0x1731, "keymap_rp/18/002.png"},
++    {0x1732, "keymap_rp/18/003.png"},
++    {0x1733, "keymap_rp/18/004.png"},
++    {0x1734, "keymap_rp/18/005.png"},
++    {0x1735, "keymap_rp/18/006.png"},
++    {0x1736, "keymap_rp/18/007.png"},
++    {0x1737, "keymap_rp/18/008.png"},
++    {0x1738, "keymap_rp/18/009.png"},
++    {0x1739, "keymap_rp/18/010.png"},
++    {0x1740, "keymap_rp/19/001.png"},
++    {0x1741, "keymap_rp/19/002.png"},
++    {0x1742, "keymap_rp/19/003.png"},
++    {0x1743, "keymap_rp/19/004.png"},
++    {0x1744, "keymap_rp/19/005.png"},
++    {0x1745, "keymap_rp/19/006.png"},
++    {0x1746, "keymap_rp/19/007.png"},
++    {0x1747, "keymap_rp/19/008.png"},
++    {0x1748, "keymap_rp/19/009.png"},
++    {0x1749, "keymap_rp/19/010.png"},
++    {0x1750, "keymap_rp/20/001.png"},
++    {0x1751, "keymap_rp/20/002.png"},
++    {0x1752, "keymap_rp/20/003.png"},
++    {0x1753, "keymap_rp/20/004.png"},
++    {0x1754, "keymap_rp/20/005.png"},
++    {0x1755, "keymap_rp/20/006.png"},
++    {0x1756, "keymap_rp/20/007.png"},
++    {0x1757, "keymap_rp/20/008.png"},
++    {0x1758, "keymap_rp/20/009.png"},
++    {0x1759, "keymap_rp/20/010.png"},
++    {0x1760, "keymap_rp/21/001.png"},
++    {0x1761, "keymap_rp/21/002.png"},
++    {0x1762, "keymap_rp/21/003.png"},
++    {0x1763, "keymap_rp/21/004.png"},
++    {0x1764, "keymap_rp/21/005.png"},
++    {0x1765, "keymap_rp/21/006.png"},
++    {0x1766, "keymap_rp/21/007.png"},
++    {0x1767, "keymap_rp/21/008.png"},
++    {0x1768, "keymap_rp/21/009.png"},
++    {0x1769, "keymap_rp/21/010.png"},
++    {0x1770, "keymap_rp/22/001.png"},
++    {0x1771, "keymap_rp/22/002.png"},
++    {0x1772, "keymap_rp/22/003.png"},
++    {0x1773, "keymap_rp/22/004.png"},
++    {0x1774, "keymap_rp/22/005.png"},
++    {0x1775, "keymap_rp/22/006.png"},
++    {0x1776, "keymap_rp/22/007.png"},
++    {0x1777, "keymap_rp/22/008.png"},
++    {0x1778, "keymap_rp/22/009.png"},
++    {0x1779, "keymap_rp/22/010.png"},
++    {0x1780, "keymap_rp/23/001.png"},
++    {0x1781, "keymap_rp/23/002.png"},
++    {0x1782, "keymap_rp/23/003.png"},
++    {0x1783, "keymap_rp/23/004.png"},
++    {0x1784, "keymap_rp/23/005.png"},
++    {0x1785, "keymap_rp/23/006.png"},
++    {0x1786, "keymap_rp/23/007.png"},
++    {0x1787, "keymap_rp/23/008.png"},
++    {0x1788, "keymap_rp/23/009.png"},
++    {0x1789, "keymap_rp/23/010.png"},
++    {0x1790, "keymap_rp/24/001.png"},
++    {0x1791, "keymap_rp/24/002.png"},
++    {0x1792, "keymap_rp/24/003.png"},
++    {0x1793, "keymap_rp/24/004.png"},
++    {0x1794, "keymap_rp/24/005.png"},
++    {0x1795, "keymap_rp/24/006.png"},
++    {0x1796, "keymap_rp/24/007.png"},
++    {0x1797, "keymap_rp/24/008.png"},
++    {0x1798, "keymap_rp/24/009.png"},
++    {0x1799, "keymap_rp/24/010.png"},
++    {0x17A0, "keymap_rp/25/001.png"},
++    {0x17A1, "keymap_rp/25/002.png"},
++    {0x17A2, "keymap_rp/25/003.png"},
++    {0x17A3, "keymap_rp/25/004.png"},
++    {0x17A4, "keymap_rp/25/005.png"},
++    {0x17A5, "keymap_rp/25/006.png"},
++    {0x17A6, "keymap_rp/25/007.png"},
++    {0x17A7, "keymap_rp/25/008.png"},
++    {0x17A8, "keymap_rp/25/009.png"},
++    {0x17A9, "keymap_rp/25/010.png"},
++    {0x17B0, "keymap_rp/26/001.png"},
++    {0x17B1, "keymap_rp/26/002.png"},
++    {0x17B2, "keymap_rp/26/003.png"},
++    {0x17B3, "keymap_rp/26/004.png"},
++    {0x17B4, "keymap_rp/26/005.png"},
++    {0x17B5, "keymap_rp/26/006.png"},
++    {0x17B6, "keymap_rp/26/007.png"},
++    {0x17B7, "keymap_rp/26/008.png"},
++    {0x17B8, "keymap_rp/26/009.png"},
++    {0x17B9, "keymap_rp/26/010.png"},
++    {0x17C0, "keymap_rp/27/001.png"},
++    {0x17C1, "keymap_rp/27/002.png"},
++    {0x17C2, "keymap_rp/27/003.png"},
++    {0x17C3, "keymap_rp/27/004.png"},
++    {0x17C4, "keymap_rp/27/005.png"},
++    {0x17C5, "keymap_rp/27/006.png"},
++    {0x17C6, "keymap_rp/27/007.png"},
++    {0x17C7, "keymap_rp/27/008.png"},
++    {0x17C8, "keymap_rp/27/009.png"},
++    {0x17C9, "keymap_rp/27/010.png"},
++    {0x17D0, "keymap_rp/28/001.png"},
++    {0x17D1, "keymap_rp/28/002.png"},
++    {0x17D2, "keymap_rp/28/003.png"},
++    {0x17D3, "keymap_rp/28/004.png"},
++    {0x17D4, "keymap_rp/28/005.png"},
++    {0x17D5, "keymap_rp/28/006.png"},
++    {0x17D6, "keymap_rp/28/007.png"},
++    {0x17D7, "keymap_rp/28/008.png"},
++    {0x17D8, "keymap_rp/28/009.png"},
++    {0x17D9, "keymap_rp/28/010.png"},
++    {0x17E0, "keymap_rp/29/001.png"},
++    {0x17E1, "keymap_rp/29/002.png"},
++    {0x17E2, "keymap_rp/29/003.png"},
++    {0x17E3, "keymap_rp/29/004.png"},
++    {0x17E4, "keymap_rp/29/005.png"},
++    {0x17E5, "keymap_rp/29/006.png"},
++    {0x17E6, "keymap_rp/29/007.png"},
++    {0x17E7, "keymap_rp/29/008.png"},
++    {0x17E8, "keymap_rp/29/009.png"},
++    {0x17E9, "keymap_rp/29/010.png"},
++    {0x17F0, "keymap_rp/30/001.png"},
++    {0x17F1, "keymap_rp/30/002.png"},
++    {0x17F2, "keymap_rp/30/003.png"},
++    {0x17F3, "keymap_rp/30/004.png"},
++    {0x17F4, "keymap_rp/30/005.png"},
++    {0x17F5, "keymap_rp/30/006.png"},
++    {0x17F6, "keymap_rp/30/007.png"},
++    {0x17F7, "keymap_rp/30/008.png"},
++    {0x17F8, "keymap_rp/30/009.png"},
++    {0x17F9, "keymap_rp/30/010.png"},
++}};
++
++std::string_view GetEntryNameByType(u32 type) {
++    const auto key = PkgEntryValue{type};
++    const auto it = std::ranges::lower_bound(PkgEntries, key);
++    if (it != PkgEntries.end() && it->type == type) {
++        return it->name;
++    }
++    return "";
++}
+diff --git a/src/core/file_format/pkg_type.h b/src/core/file_format/pkg_type.h
+new file mode 100644
+index 0000000..6b010e3
+--- /dev/null
++++ b/src/core/file_format/pkg_type.h
+@@ -0,0 +1,10 @@
++// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <string_view>
++#include "common/types.h"
++
++/// Retrieves the PKG entry name from its type identifier.
++std::string_view GetEntryNameByType(u32 type);
+diff --git a/src/qt_gui/about_dialog.cpp b/src/qt_gui/about_dialog.cpp
+index eb1cf95..fcc16d1 100644
+--- a/src/qt_gui/about_dialog.cpp
++++ b/src/qt_gui/about_dialog.cpp
+@@ -28,6 +28,18 @@ AboutDialog::AboutDialog(std::shared_ptr<gui_settings> gui_settings, QWidget* pa
+     ui->image_3->installEventFilter(this);
+     ui->image_4->installEventFilter(this);
+     ui->image_5->installEventFilter(this);
++
++#ifdef FORK_BUNDLE_REPO
++    // The fork's package links only to its own GitHub page.
++    setWindowTitle(tr("About shadPS4 Anti-Crash"));
++    ui->shad_title->setText("shadPS4 Anti-Crash");
++    ui->shad_title->adjustSize();
++    ui->image_1->setToolTip(QStringLiteral("https://github.com/%1").arg(FORK_BUNDLE_REPO));
++    ui->image_2->setVisible(false);
++    ui->image_3->setVisible(false);
++    ui->image_4->setVisible(false);
++    ui->image_5->setVisible(false);
++#endif
+ }
+ 
+ AboutDialog::~AboutDialog() {
+@@ -153,7 +165,12 @@ bool AboutDialog::eventFilter(QObject* obj, QEvent* event) {
+         }
+     } else if (event->type() == QEvent::MouseButtonPress) {
+         if (obj == ui->image_1) {
++#ifdef FORK_BUNDLE_REPO
++            QDesktopServices::openUrl(
++                QUrl(QStringLiteral("https://github.com/%1").arg(FORK_BUNDLE_REPO)));
++#else
+             QDesktopServices::openUrl(QUrl("https://github.com/shadps4-emu/shadPS4"));
++#endif
+         } else if (obj == ui->image_2) {
+             QDesktopServices::openUrl(QUrl("https://discord.gg/bFJxfftGW6"));
+         } else if (obj == ui->image_3) {
 diff --git a/src/qt_gui/check_update.cpp b/src/qt_gui/check_update.cpp
 index 1f43aba..e5844d6 100644
 --- a/src/qt_gui/check_update.cpp
@@ -455,11 +2267,103 @@ index 139059c..0723801 100644
  
      QNetworkAccessManager* networkManager;
      std::shared_ptr<gui_settings> m_gui_settings;
+diff --git a/src/qt_gui/compatibility_info.cpp b/src/qt_gui/compatibility_info.cpp
+index 09f1173..e27150e 100644
+--- a/src/qt_gui/compatibility_info.cpp
++++ b/src/qt_gui/compatibility_info.cpp
+@@ -68,6 +68,9 @@ void CompatibilityInfoClass::UpdateCompatibilityDatabase(QWidget* parent, bool f
+ 
+     // Writes the received data to the file.
+     QByteArray json_data = reply->readAll();
++#ifdef FORK_BUNDLE_REPO
++    json_data = ApplyForkOverrides(json_data);
++#endif
+     compatibility_file.write(json_data);
+     compatibility_file.close();
+     reply->deleteLater();
+@@ -214,3 +217,49 @@ const QString CompatibilityInfoClass::GetCompatStatusString(const CompatibilityS
+         return tr("Unknown");
+     }
+ }
++
++#ifdef FORK_BUNDLE_REPO
++// Games that the fork runs better than the official build are listed in its repository. Their
++// Windows status replaces the official one; the rest of the official list stays as it is.
++QByteArray CompatibilityInfoClass::ApplyForkOverrides(const QByteArray& official) {
++    QNetworkRequest request(QUrl(
++        QStringLiteral("https://raw.githubusercontent.com/%1/main/compatibility/overrides.json")
++            .arg(FORK_BUNDLE_REPO)));
++    QNetworkReply* reply = m_network_manager->get(request);
++    QEventLoop loop;
++    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
++    loop.exec();
++    reply->deleteLater();
++    if (reply->error() != QNetworkReply::NoError) {
++        return official;
++    }
++
++    QJsonDocument official_doc = QJsonDocument::fromJson(official);
++    const QJsonObject overrides = QJsonDocument::fromJson(reply->readAll()).object();
++    if (!official_doc.isObject() || overrides.isEmpty()) {
++        return official;
++    }
++
++    QJsonObject database = official_doc.object();
++    const QString repo_url = QStringLiteral("https://github.com/%1").arg(FORK_BUNDLE_REPO);
++    for (auto it = overrides.begin(); it != overrides.end(); ++it) {
++        const QJsonObject entry = it.value().toObject();
++        const QString status = entry["status"].toString();
++        if (!LabelToCompatStatus.contains(status)) {
++            continue;
++        }
++        QJsonObject game = database[it.key()].toObject();
++        game["os-windows"] = QJsonObject{
++            {"name", entry["name"]},
++            {"serial", it.key()},
++            {"status", status},
++            {"version", entry["version"].toString("Anti-Crash")},
++            {"last_tested", entry["last_tested"]},
++            {"url", entry["url"].toString(repo_url)},
++            {"issue_number", ""},
++        };
++        database[it.key()] = game;
++    }
++    return QJsonDocument(database).toJson(QJsonDocument::Compact);
++}
++#endif
+diff --git a/src/qt_gui/compatibility_info.h b/src/qt_gui/compatibility_info.h
+index 09a9e4d..ecfbd0a 100644
+--- a/src/qt_gui/compatibility_info.h
++++ b/src/qt_gui/compatibility_info.h
+@@ -76,6 +76,9 @@ public:
+     ~CompatibilityInfoClass();
+     void UpdateCompatibilityDatabase(QWidget* parent = nullptr, bool forced = false);
+     bool LoadCompatibilityFile();
++#ifdef FORK_BUNDLE_REPO
++    QByteArray ApplyForkOverrides(const QByteArray& official);
++#endif
+     CompatibilityEntry GetCompatibilityInfo(const std::string& serial);
+     const QString GetCompatStatusString(const CompatibilityStatus status);
+     void ExtractCompatibilityInfo(QByteArray response);
 diff --git a/src/qt_gui/gui_settings.h b/src/qt_gui/gui_settings.h
-index 66e2905..ecb8e70 100644
+index 66e2905..26a57fd 100644
 --- a/src/qt_gui/gui_settings.h
 +++ b/src/qt_gui/gui_settings.h
-@@ -17,7 +17,12 @@ const QString favorites = "favorites";
+@@ -6,6 +6,13 @@
+ #include <QWindow>
+ #include "settings.h"
+ 
++// Builds bundled with the fork show the compatibility list, which carries the fork's results.
++#ifdef FORK_BUNDLE_REV
++#define FORK_DEFAULT_ON true
++#else
++#define FORK_DEFAULT_ON false
++#endif
++
+ namespace gui {
+ // categories
+ const QString general_settings = "general_settings";
+@@ -17,7 +24,12 @@ const QString favorites = "favorites";
  const QString version_manager = "version_manager";
  
  // general
@@ -472,7 +2376,26 @@ index 66e2905..ecb8e70 100644
  const gui_value gen_showChangeLog = gui_value(general_settings, "showChangeLog", false);
  const gui_value gen_recentFiles =
      gui_value(main_window, "recentFiles", QVariant::fromValue(QList<QString>()));
-@@ -73,6 +78,8 @@ const gui_value vm_versionPath = gui_value(version_manager, "versionPath", "");
+@@ -27,7 +39,7 @@ const gui_value gen_elfDirs =
+ const gui_value gen_theme = gui_value(general_settings, "theme", 0);
+ const gui_value gen_shadPath = gui_value(general_settings, "shadPath", "");
+ const gui_value gen_checkCompatibilityAtStartup =
+-    gui_value(general_settings, "checkCompatibilityAtStartup", false);
++    gui_value(general_settings, "checkCompatibilityAtStartup", FORK_DEFAULT_ON);
+ const gui_value gen_homeTab = gui_value(general_settings, "homeTab", "General");
+ 
+ // main window settings
+@@ -50,7 +62,8 @@ const gui_value gl_VolumeSlider = gui_value(game_list, "volumeSlider", 100);
+ // game list (column)
+ const gui_value glc_showIconEnabled = gui_value(game_list_column, "showIcon", true);
+ const gui_value glc_showNameEnabled = gui_value(game_list_column, "showName", true);
+-const gui_value glc_showCompatibility = gui_value(game_list_column, "showCompatibility", false);
++const gui_value glc_showCompatibility =
++    gui_value(game_list_column, "showCompatibility", FORK_DEFAULT_ON);
+ const gui_value glc_showSerialEnabled = gui_value(game_list_column, "showSerial", true);
+ const gui_value glc_showRegionEnabled = gui_value(game_list_column, "showRegion", true);
+ const gui_value glc_showFirmwareEnabled = gui_value(game_list_column, "showFirmware", true);
+@@ -73,6 +86,8 @@ const gui_value vm_versionPath = gui_value(version_manager, "versionPath", "");
  const gui_value vm_versionSelected = gui_value(version_manager, "versionSelected", "");
  const gui_value vm_showChangeLog = gui_value(version_manager, "showChangeLog", "");
  const gui_value vm_checkOnStartup = gui_value(version_manager, "checkOnStartup", "");
@@ -482,7 +2405,7 @@ index 66e2905..ecb8e70 100644
  } // namespace gui
  
 diff --git a/src/qt_gui/main_window.cpp b/src/qt_gui/main_window.cpp
-index 4d06e63..a4d99d0 100644
+index 4d06e63..cb32a65 100644
 --- a/src/qt_gui/main_window.cpp
 +++ b/src/qt_gui/main_window.cpp
 @@ -1,8 +1,13 @@
@@ -507,7 +2430,21 @@ index 4d06e63..a4d99d0 100644
      LoadVersionComboBox();
      if (m_gui_settings->GetValue(gui::vm_checkOnStartup).toBool()) {
          auto versionDialog = new VersionDialog(m_gui_settings, this);
-@@ -1487,7 +1493,7 @@ tr("No emulator version was selected.\nThe Version Manager menu will then open.\
+@@ -873,6 +879,13 @@ void MainWindow::CreateConnects() {
+ 
+     // Package install.
+     connect(ui->bootGameAct, &QAction::triggered, this, &MainWindow::BootGame);
++
++    // File > Install Packages (PKG), as in shadPS4 v0.7.0.
++    auto* installPkgAct =
++        new QAction(QIcon(":images/folder_icon.png"), tr("Install Packages (PKG)"), this);
++    installPkgAct->setObjectName("installPkgAct");
++    ui->menuFile->insertAction(ui->bootGameAct, installPkgAct);
++    connect(installPkgAct, &QAction::triggered, this, &MainWindow::InstallPkg);
+     connect(ui->gameInstallPathAct, &QAction::triggered, this, &MainWindow::InstallDirectory);
+ 
+     // elf viewer
+@@ -1487,7 +1500,7 @@ tr("No emulator version was selected.\nThe Version Manager menu will then open.\
      EmulatorState::GetInstance()->SetGameRunning(true);
      last_game_path = path;
  
@@ -516,7 +2453,7 @@ index 4d06e63..a4d99d0 100644
      m_ipc_client->startEmulator(fileInfo, final_args, workDir);
      m_ipc_client->setActiveController(GamepadSelect::GetSelectedGamepad());
  }
-@@ -1564,7 +1570,7 @@ void MainWindow::StartEmulatorExecutable(std::filesystem::path emuPath, QString
+@@ -1564,7 +1577,7 @@ void MainWindow::StartEmulatorExecutable(std::filesystem::path emuPath, QString
      }
  
      EmulatorState::GetInstance()->SetGameRunning(true);
@@ -525,7 +2462,7 @@ index 4d06e63..a4d99d0 100644
      m_ipc_client->startEmulator(fileInfo, args, workDir, disable_ipc);
  }
  
-@@ -1600,7 +1606,7 @@ void MainWindow::RestartEmulator() {
+@@ -1600,7 +1613,7 @@ void MainWindow::RestartEmulator() {
      }
  
      QFileInfo fileInfo(exe);
@@ -534,7 +2471,7 @@ index 4d06e63..a4d99d0 100644
  
      m_ipc_client->startEmulator(fileInfo, args, workDir);
  }
-@@ -1683,3 +1689,50 @@ void MainWindow::LoadVersionComboBox() {
+@@ -1683,3 +1696,50 @@ void MainWindow::LoadVersionComboBox() {
  
      ui->versionComboBox->adjustSize();
  }
@@ -586,7 +2523,7 @@ index 4d06e63..a4d99d0 100644
 +    return dir;
 +}
 diff --git a/src/qt_gui/main_window.h b/src/qt_gui/main_window.h
-index fd69169..40d9339 100644
+index fd69169..5f05771 100644
 --- a/src/qt_gui/main_window.h
 +++ b/src/qt_gui/main_window.h
 @@ -42,6 +42,8 @@ public:
@@ -598,6 +2535,206 @@ index fd69169..40d9339 100644
      bool showLabels;
      std::shared_ptr<IpcClient> m_ipc_client;
  
+@@ -81,6 +83,9 @@ private:
+     void SetLastIconSizeBullet();
+     void SetUiIcons(bool isWhite);
+     void BootGame();
++    void InstallPkg();
++    void InstallPkgFile(const std::filesystem::path& file, const std::filesystem::path& install_dir,
++                        int pkg_num, int pkg_count);
+     void AddRecentFiles(QString filePath);
+     void LoadTranslation();
+     void PlayBackgroundMusic();
+diff --git a/src/qt_gui/pkg_install.cpp b/src/qt_gui/pkg_install.cpp
+new file mode 100644
+index 0000000..4df92b2
+--- /dev/null
++++ b/src/qt_gui/pkg_install.cpp
+@@ -0,0 +1,184 @@
++// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++// PKG installation, brought back from shadPS4 v0.7.0. The keys come from the Crypto Key Manager.
++
++#include <numeric>
++#include <QEventLoop>
++#include <QFileDialog>
++#include <QFutureWatcher>
++#include <QInputDialog>
++#include <QMessageBox>
++#include <QProgressDialog>
++#include <QtConcurrent>
++
++#include "common/path_util.h"
++#include "core/crypto/crypto.h"
++#include "core/emulator_settings.h"
++#include "core/file_format/pkg.h"
++#include "core/file_format/psf.h"
++#include "crypto_key_dialog.h"
++#include "main_window.h"
++
++void MainWindow::InstallPkg() {
++    if (!Crypto::HasPkgKeys()) {
++        const auto answer = QMessageBox::question(
++            this, tr("Install Packages (PKG)"),
++            tr("Installing PKG files needs the Fake keyset and the PKG Derived Key3 keyset.\n"
++               "They are not included with the program. Open the Crypto Key Manager to enter "
++               "them?"));
++        if (answer == QMessageBox::Yes) {
++            auto keyDialog = new CryptoManagerDialog(this);
++            keyDialog->exec();
++        }
++        if (!Crypto::HasPkgKeys()) {
++            return;
++        }
++    }
++
++    const QStringList files = QFileDialog::getOpenFileNames(
++        this, tr("Install Packages (PKG)"), QString(), tr("PKG File (*.PKG *.pkg)"));
++    if (files.isEmpty()) {
++        return;
++    }
++
++    const auto install_dirs = EmulatorSettings.GetGameInstallDirs();
++    std::filesystem::path install_dir;
++    if (install_dirs.empty()) {
++        const QString dir = QFileDialog::getExistingDirectory(
++            this, tr("Select the folder to install the games to"));
++        if (dir.isEmpty()) {
++            return;
++        }
++        install_dir = Common::FS::PathFromQString(dir);
++    } else if (install_dirs.size() == 1) {
++        install_dir = install_dirs.front();
++    } else {
++        QStringList names;
++        for (const auto& dir : install_dirs) {
++            QString name;
++            Common::FS::PathToQString(name, dir);
++            names << name;
++        }
++        bool ok = false;
++        const QString chosen = QInputDialog::getItem(this, tr("Install Packages (PKG)"),
++                                                     tr("Install to:"), names, 0, false, &ok);
++        if (!ok) {
++            return;
++        }
++        install_dir = Common::FS::PathFromQString(chosen);
++    }
++
++    for (int i = 0; i < files.size(); ++i) {
++        InstallPkgFile(Common::FS::PathFromQString(files[i]), install_dir, i + 1, files.size());
++    }
++    RefreshGameTable();
++}
++
++void MainWindow::InstallPkgFile(const std::filesystem::path& file,
++                                const std::filesystem::path& install_dir, int pkg_num,
++                                int pkg_count) {
++    PKG pkg;
++    std::string failreason;
++    if (!pkg.Open(file, failreason)) {
++        QMessageBox::critical(this, tr("PKG ERROR"),
++                              failreason.empty() ? tr("File doesn't appear to be a valid PKG file")
++                                                 : QString::fromStdString(failreason));
++        return;
++    }
++    PSF psf;
++    if (!psf.Open(pkg.sfo)) {
++        QMessageBox::critical(this, tr("PKG ERROR"), tr("Could not read SFO."));
++        return;
++    }
++    const std::string title_id{pkg.GetTitleID()};
++    const auto category = psf.GetString("CATEGORY");
++    const bool is_patch = QString::fromStdString(pkg.GetPkgFlags()).contains("PATCH");
++    const bool is_addon = category.has_value() && *category == "ac";
++
++    std::filesystem::path game_folder = install_dir / title_id;
++    if (const auto found = Common::FS::FindGameByID(install_dir, title_id, 5); found) {
++        game_folder = found->parent_path();
++    }
++    std::filesystem::path extract_path = game_folder;
++
++    if (is_patch || is_addon) {
++        if (!std::filesystem::exists(game_folder)) {
++            QMessageBox::information(this, tr("PKG Extraction"),
++                                     tr("PKG is a patch or DLC, please install the game first!"));
++            return;
++        }
++        if (is_patch) {
++            // The emulator loads updates from the "-UPDATE" folder next to the game.
++            auto base = game_folder;
++            if (base.extension() == ".zar") {
++                base.replace_extension();
++            }
++            extract_path = base.parent_path() / (base.filename().string() + "-UPDATE");
++        } else {
++            const auto content_id = psf.GetString("CONTENT_ID");
++            if (!content_id.has_value()) {
++                QMessageBox::critical(this, tr("PKG ERROR"), tr("The PKG has no CONTENT_ID."));
++                return;
++            }
++            // CONTENT_ID looks like UP0000-CUSA00000_00-LABEL; the DLC folder is the label.
++            const QStringList parts = QString::fromStdString(std::string{*content_id}).split('-');
++            const std::string label = parts.size() > 2 ? parts[2].toStdString() : title_id;
++            extract_path = EmulatorSettings.GetAddonInstallDir() / title_id / label;
++        }
++    }
++
++    QString extract_dir;
++    Common::FS::PathToQString(extract_dir, extract_path);
++    if (std::filesystem::exists(extract_path)) {
++        const auto answer =
++            QMessageBox::question(this, tr("PKG Extraction"),
++                                  tr("Already installed:") + "\n" + extract_dir + "\n\n" +
++                                      tr("Would you like to overwrite?"),
++                                  QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
++        if (answer != QMessageBox::Yes) {
++            return;
++        }
++    }
++
++    if (!pkg.Extract(file, extract_path, failreason)) {
++        QMessageBox::critical(this, tr("PKG ERROR"), QString::fromStdString(failreason));
++        return;
++    }
++
++    const int file_count = static_cast<int>(pkg.GetNumberOfFiles());
++    if (file_count > 0) {
++        QVector<int> indices(file_count);
++        std::iota(indices.begin(), indices.end(), 0);
++
++        QProgressDialog dialog(this);
++        dialog.setWindowTitle(tr("PKG Extraction"));
++        dialog.setWindowModality(Qt::WindowModal);
++        dialog.setLabelText(tr("Extracting PKG %1/%2").arg(pkg_num).arg(pkg_count));
++        dialog.setRange(0, file_count);
++        dialog.setAutoClose(true);
++
++        QFutureWatcher<void> watcher;
++        QEventLoop loop;
++        connect(&dialog, &QProgressDialog::canceled, &watcher, &QFutureWatcher<void>::cancel);
++        connect(&watcher, &QFutureWatcher<void>::progressValueChanged, &dialog,
++                &QProgressDialog::setValue);
++        connect(&watcher, &QFutureWatcher<void>::finished, &loop, &QEventLoop::quit);
++        watcher.setFuture(
++            QtConcurrent::map(indices, [&pkg](int index) { pkg.ExtractFiles(index); }));
++        dialog.show();
++        if (!watcher.isFinished()) {
++            loop.exec();
++        }
++        watcher.waitForFinished();
++        dialog.close();
++        if (watcher.isCanceled()) {
++            return;
++        }
++    }
++
++    if (pkg_num == pkg_count) {
++        QMessageBox::information(this, tr("Extraction Finished"),
++                                 tr("Game successfully installed at %1").arg(extract_dir));
++    }
++}
 diff --git a/src/qt_gui/settings_dialog.cpp b/src/qt_gui/settings_dialog.cpp
 index 0a58c7a..53cb76e 100644
 --- a/src/qt_gui/settings_dialog.cpp
