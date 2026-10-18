@@ -45,10 +45,14 @@ constexpr static std::array DescriptorHeapSizes = {
 };
 
 static u32 NumCompileWorkers() {
-    // Use every hardware thread but a few kept for the game, GPU and presentation threads, so the
-    // boot-time cache warm-up and in-game compiles finish as fast as the CPU allows.
+    // The real bottleneck on a cold cache isn't CPU threads, it's the GPU driver's own shader
+    // compiler: NVIDIA's (and some others') contends heavily with itself under many concurrent
+    // pipeline-creation calls, which can stall the driver badly enough to trip Windows' GPU
+    // timeout (TDR) during a big first-run compile storm. Cap well below full hardware
+    // concurrency so a 16+ thread CPU doesn't throw that many compiles at the driver at once;
+    // this only slows down cold cache warm-up, not steady-state play once the cache is warm.
     const u32 hw_threads = std::max(std::thread::hardware_concurrency(), 2u);
-    return std::clamp(hw_threads > 4 ? hw_threads - 4 : 2u, 2u, 32u);
+    return std::clamp(hw_threads > 4 ? hw_threads - 4 : 2u, 2u, 8u);
 }
 
 PipelineCompileWorkers::PipelineCompileWorkers(u32 num_threads) {
