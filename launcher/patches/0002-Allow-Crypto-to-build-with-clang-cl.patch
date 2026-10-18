@@ -1,0 +1,31 @@
+From 4379276281414f9232bd993bfbc3a414c9e598f2 Mon Sep 17 00:00:00 2001
+From: ci <ci@localhost>
+Date: Sun, 18 Oct 2026 12:47:37 +0000
+Subject: [PATCH] Allow Crypto++ to build with clang-cl
+
+---
+ CMakeLists.txt | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 864c1ef..7247623 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -209,6 +209,14 @@ if (NOT TARGET cryptopp::cryptopp)
+         GIT_TAG CRYPTOPP_8_9_0
+         GIT_SHALLOW TRUE)
+     FetchContent_MakeAvailable(cryptopp_src)
++    # Crypto++ hard-stops on clang-cl (_MSC_VER together with __clang__) in config_os.h, which
++    # is the compiler this launcher is built with on Windows. Remove that stop before the sources
++    # and the copied headers are used.
++    file(READ ${cryptopp_src_SOURCE_DIR}/config_os.h CRYPTOPP_CONFIG_OS_CONTENT)
++    string(REPLACE "#if (defined(_MSC_VER) && defined(__clang__))"
++                   "#if 0 /* clang-cl allowed by shadPS4 fork build */"
++                   CRYPTOPP_CONFIG_OS_CONTENT "${CRYPTOPP_CONFIG_OS_CONTENT}")
++    file(WRITE ${cryptopp_src_SOURCE_DIR}/config_os.h "${CRYPTOPP_CONFIG_OS_CONTENT}")
+     set(CRYPTOPP_INSTALL OFF)
+     set(CRYPTOPP_BUILD_TESTING OFF)
+     set(CRYPTOPP_SOURCES ${cryptopp_src_SOURCE_DIR})
+-- 
+2.43.0
+
