@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <string>
+#include <fmt/format.h>
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/thread.h"
@@ -131,6 +134,27 @@ void Scheduler::Wait(u64 tick, std::source_location caller) {
     work_semaphore.Wait(tick, caller);
 }
 
+void Scheduler::RecordWork(char kind, std::span<const u64> shader_hashes) {
+    WorkRecord& record = work_records[num_work_records++ % NumWorkRecords];
+    record.kind = kind;
+    record.num_hashes = static_cast<u32>(std::min(shader_hashes.size(), record.hashes.size()));
+    std::copy_n(shader_hashes.begin(), record.num_hashes, record.hashes.begin());
+}
+
+void Scheduler::LogRecentWork() const {
+    const u64 count = std::min<u64>(num_work_records, NumWorkRecords);
+    LOG_CRITICAL(Render_Vulkan, "Last {} draws/dispatches before device lost (oldest first):",
+                 count);
+    for (u64 i = num_work_records - count; i < num_work_records; ++i) {
+        const WorkRecord& record = work_records[i % NumWorkRecords];
+        std::string shaders;
+        for (u32 j = 0; j < record.num_hashes; ++j) {
+            shaders += fmt::format(" {:#x}", record.hashes[j]);
+        }
+        LOG_CRITICAL(Render_Vulkan, "  #{} {}:{}", i, record.kind, shaders);
+    }
+}
+
 void Scheduler::PopPendingOperations() {
     std::unique_lock lk(pending_ops_mutex);
     work_semaphore.Refresh();
@@ -238,6 +262,9 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
 
     ImGui::Core::TextureManager::Submit();
     auto submit_result = instance.GetGraphicsQueue().submit(submit_info, info.fence);
+    if (submit_result == vk::Result::eErrorDeviceLost) {
+        LogRecentWork();
+    }
     ASSERT_MSG(submit_result != vk::Result::eErrorDeviceLost, "Device lost during submit");
 
     work_semaphore.Refresh();

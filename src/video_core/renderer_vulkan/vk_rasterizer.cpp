@@ -183,6 +183,17 @@ void Rasterizer::EliminateFastClear() {
     ScopeMarkerEnd();
 }
 
+static void RecordPipelineWork(Scheduler& scheduler, char kind, const Pipeline* pipeline) {
+    std::array<u64, 5> hashes{};
+    u32 count = 0;
+    for (const auto* stage : pipeline->GetStages()) {
+        if (stage && count < hashes.size()) {
+            hashes[count++] = stage->pgm_hash;
+        }
+    }
+    scheduler.RecordWork(kind, std::span{hashes.data(), count});
+}
+
 void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     RENDERER_TRACE;
 
@@ -197,6 +208,7 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     if (!pipeline) {
         return;
     }
+    RecordPipelineWork(scheduler, 'D', pipeline);
 
     PrepareRenderState(pipeline);
     if (!BindResources(pipeline)) {
@@ -256,6 +268,7 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     if (!pipeline) {
         return;
     }
+    RecordPipelineWork(scheduler, 'I', pipeline);
 
     PrepareRenderState(pipeline);
     if (!BindResources(pipeline)) {
@@ -328,6 +341,7 @@ void Rasterizer::DispatchDirect() {
     if (!pipeline) {
         return;
     }
+    RecordPipelineWork(scheduler, 'C', pipeline);
 
     const auto& cs = pipeline->GetStage(Shader::SwStage::Compute);
     if (ExecuteShaderHLE(cs, liverpool->regs, cs_program, *this)) {
@@ -363,6 +377,7 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
     if (!pipeline) {
         return;
     }
+    RecordPipelineWork(scheduler, 'C', pipeline);
 
     if (!BindResources(pipeline)) {
         return;

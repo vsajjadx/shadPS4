@@ -5,6 +5,8 @@
 
 #include <condition_variable>
 #include <source_location>
+#include <span>
+#include <array>
 #include <mutex>
 #include <thread>
 #include <queue>
@@ -367,6 +369,9 @@ public:
     /// Sends the current execution context to the GPU and waits for it to complete.
     void Finish();
 
+    /// Remembers the shaders of the most recent draw or dispatch for device lost reports.
+    void RecordWork(char kind, std::span<const u64> shader_hashes);
+
     /// Waits for the given tick to trigger on the GPU.
     void Wait(u64 tick, std::source_location caller = std::source_location::current());
 
@@ -457,6 +462,16 @@ private:
 
 private:
     const Instance& instance;
+    struct WorkRecord {
+        char kind{};
+        u32 num_hashes{};
+        std::array<u64, 5> hashes{};
+    };
+    static constexpr u32 NumWorkRecords = 64;
+    std::array<WorkRecord, NumWorkRecords> work_records{};
+    u64 num_work_records{};
+    void LogRecentWork() const;
+
     Semaphore work_semaphore;
     CommandPool command_pool;
     DynamicState dynamic_state;
