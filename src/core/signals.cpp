@@ -182,19 +182,51 @@ void WriteCrashDump(void* exception_pointers) {
     }
     // Thread stacks, registers and the memory they point at; the whole guest address space
     // would be gigabytes.
-    constexpr int DumpType = 0x00000001 /* MiniDumpWithDataSegs */ |
-                             0x00000040 /* MiniDumpWithIndirectlyReferencedMemory */ |
-                             0x00000020 /* MiniDumpWithUnloadedModules */ |
-                             0x00001000 /* MiniDumpWithThreadInfo */;
-    DumpExceptionInfo info{GetCurrentThreadId(),
-                           static_cast<EXCEPTION_POINTERS*>(exception_pointers), FALSE};
-    const BOOL ok = write_dump(GetCurrentProcess(), GetCurrentProcessId(), file, DumpType,
-                               exception_pointers ? &info : nullptr, nullptr, nullptr);
+    static constexpr int DumpType = 0x00000001 /* MiniDumpWithDataSegs */ |
+                                    0x00000040 /* MiniDumpWithIndirectlyReferencedMemory */ |
+                                    0x00000020 /* MiniDumpWithUnloadedModules */ |
+                                    0x00001000 /* MiniDumpWithThreadInfo */;
+    // Written from a helper thread, as dbghelp recommends: dumping the faulting thread from its
+    // own exception handler can hang. Give up after a while rather than keep the game frozen.
+    struct DumpJob {
+        MiniDumpWriteDumpFn write;
+        HANDLE file;
+        DumpExceptionInfo info;
+        bool has_exception;
+        BOOL ok;
+        DWORD error;
+    } job{write_dump,
+          file,
+          DumpExceptionInfo{GetCurrentThreadId(),
+                            static_cast<EXCEPTION_POINTERS*>(exception_pointers), FALSE},
+          exception_pointers != nullptr,
+          FALSE,
+          0};
+    const HANDLE worker = CreateThread(
+        nullptr, 0,
+        [](LPVOID param) -> DWORD {
+            auto* dump = static_cast<DumpJob*>(param);
+            dump->ok = dump->write(GetCurrentProcess(), GetCurrentProcessId(), dump->file, DumpType,
+                                   dump->has_exception ? &dump->info : nullptr, nullptr, nullptr);
+            dump->error = dump->ok ? 0 : GetLastError();
+            return 0;
+        },
+        &job, 0, nullptr);
+    if (worker == nullptr) {
+        CloseHandle(file);
+        LOG_ERROR(Debug, "Could not start the crash dump writer: {}", GetLastError());
+        return;
+    }
+    if (WaitForSingleObject(worker, 20000) != WAIT_OBJECT_0) {
+        LOG_ERROR(Debug, "Writing crash dump timed out");
+        return;
+    }
+    CloseHandle(worker);
     CloseHandle(file);
-    if (ok) {
+    if (job.ok) {
         LOG_CRITICAL(Debug, "Crash dump written to {}", path.string());
     } else {
-        LOG_ERROR(Debug, "Writing crash dump failed: {}", GetLastError());
+        LOG_ERROR(Debug, "Writing crash dump failed: {}", job.error);
     }
 #else
     static_cast<void>(exception_pointers);

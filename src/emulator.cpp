@@ -482,6 +482,18 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
             LOG_INFO(Config, "UFC 4: linear image readbacks forced on");
         }
     }
+    // Driveclub reads GPU-rendered lighting and linear images back on the CPU; without precise
+    // and linear image readbacks the game renders dark.
+    if (id == "CUSA00003" || id == "CUSA00093") {
+        if (EmulatorSettings.GetReadbacksMode() != GpuReadbacksMode::Precise) {
+            EmulatorSettings.SetReadbacksMode(GpuReadbacksMode::Precise, true);
+            LOG_INFO(Config, "Driveclub: GPU readbacks forced to Precise");
+        }
+        if (!EmulatorSettings.IsReadbackLinearImagesEnabled()) {
+            EmulatorSettings.SetReadbackLinearImagesEnabled(true, true);
+            LOG_INFO(Config, "Driveclub: linear image readbacks forced on");
+        }
+    }
     game_info.title = title;
     game_info.app_ver = app_version;
     game_info.firmware_ver = fw_version & 0xFFF00000;

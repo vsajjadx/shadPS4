@@ -44,11 +44,17 @@ std::string StackTrace(const RegisterFile& regs, const MemoryProbe& probe) {
             break;
         }
         const u64 value = *reinterpret_cast<const u64*>(slot);
-        if (probe.is_executable(value, probe.user)) {
-            trace += Describe(value);
-            trace += ' ';
-            found++;
+        if (!probe.is_executable(value, probe.user)) {
+            continue;
         }
+        // Only guest module addresses; host DLL frames say nothing about the game's code path.
+        const auto description = Describe(value);
+        if (description.starts_with("0x")) {
+            continue;
+        }
+        trace += description;
+        trace += ' ';
+        found++;
     }
     return trace;
 }

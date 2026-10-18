@@ -81,6 +81,7 @@ int GameController::ReadStates(State* states, int states_num) {
         // Retained history can make a later multi-sample read return up to 64 stale reports, so
         // mixed single- and multi-sample reads require dedicated tests.
         states[0] = m_state;
+        states[0].buttonsState = TakeSingleReadButtons();
         return 1;
     }
 
@@ -97,8 +98,40 @@ int GameController::ReadStates(State* states, int states_num) {
 
 void GameController::Button(OrbisPadButtonDataOffset button, bool is_pressed) {
     std::lock_guard lock{m_state_mutex};
+    const u32 was_pressed = static_cast<u32>(m_state.buttonsState) & static_cast<u32>(button);
     m_state.OnButton(button, is_pressed);
+    if (!is_pressed && was_pressed) {
+        constexpr u8 MaxQueuedTaps = 8;
+        for (u32 i = 0; i < m_unread_taps.size(); i++) {
+            if ((was_pressed & (1u << i)) && m_unread_taps[i] < MaxQueuedTaps) {
+                m_unread_taps[i]++;
+            }
+        }
+    }
     PushStateLocked();
+}
+
+// Games that poll one state per frame lose a tap whose press and release both land between two
+// polls, which makes button mashing feel unresponsive. Every completed tap is reported as one
+// pressed read followed by one released read.
+OrbisPadButtonDataOffset GameController::TakeSingleReadButtons() {
+    const u32 current = static_cast<u32>(m_state.buttonsState);
+    const u32 last = static_cast<u32>(m_last_reported_buttons);
+    u32 out = 0;
+    for (u32 i = 0; i < m_unread_taps.size(); i++) {
+        const u32 bit = 1u << i;
+        if (last & bit) {
+            if (m_unread_taps[i] > 0) {
+                m_unread_taps[i]--;
+            } else {
+                out |= current & bit;
+            }
+        } else if (m_unread_taps[i] > 0 || (current & bit)) {
+            out |= bit;
+        }
+    }
+    m_last_reported_buttons = static_cast<OrbisPadButtonDataOffset>(out);
+    return m_last_reported_buttons;
 }
 
 void GameController::Axis(Input::Axis axis, int value, bool smooth) {
@@ -160,6 +193,8 @@ void GameController::ConnectController(SDL_Gamepad* pad) {
         SetLightBarRGB({});
     }
     m_states_queue.Clear();
+    m_unread_taps = {};
+    m_last_reported_buttons = {};
     if (!m_state.connected) {
         ++m_state.connected_count;
         if (m_state.connected_count == 0) {
@@ -174,6 +209,8 @@ void GameController::ConnectController(SDL_Gamepad* pad) {
 void GameController::DisconnectController() {
     std::lock_guard lock{m_state_mutex};
     m_states_queue.Clear();
+    m_unread_taps = {};
+    m_last_reported_buttons = {};
     m_sdl_gamepad = nullptr;
 
     const u8 connected_count = m_state.connected_count;

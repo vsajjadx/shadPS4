@@ -123,7 +123,13 @@ private:
     Colour colour;
     std::optional<Colour> override_colour{};
 
+    Libraries::Pad::OrbisPadButtonDataOffset TakeSingleReadButtons();
+
     State m_state;
+    // Completed taps per button not yet seen by a single-state read, and the buttons that read
+    // last reported, so taps shorter than the game's polling interval still reach it.
+    std::array<u8, 32> m_unread_taps{};
+    Libraries::Pad::OrbisPadButtonDataOffset m_last_reported_buttons{};
 
     std::mutex m_state_mutex;
     RingBufferQueue<State> m_states_queue;

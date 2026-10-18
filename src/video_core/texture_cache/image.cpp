@@ -60,7 +60,7 @@ static vk::ImageType ConvertImageType(AmdGpu::ImageType type) noexcept {
     case AmdGpu::ImageType::Color3D:
         return vk::ImageType::e3D;
     default:
-        UNREACHABLE();
+        return vk::ImageType::e2D;
     }
 }
 

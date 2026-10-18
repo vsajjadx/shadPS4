@@ -27,7 +27,7 @@ vk::ImageViewType ConvertImageViewType(AmdGpu::ImageType type) {
     case AmdGpu::ImageType::Color3D:
         return vk::ImageViewType::e3D;
     default:
-        UNREACHABLE();
+        return vk::ImageViewType::e2D;
     }
 }
 
@@ -45,7 +45,7 @@ bool IsViewTypeCompatible(AmdGpu::ImageType view_type, AmdGpu::ImageType image_t
     case AmdGpu::ImageType::Color3D:
         return image_type == AmdGpu::ImageType::Color3D;
     default:
-        UNREACHABLE();
+        return false;
     }
 }
 

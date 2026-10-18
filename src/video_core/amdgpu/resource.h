@@ -485,7 +485,7 @@ struct Sampler {
         case AnisoRatio::Sixteen:
             return 16.0f;
         default:
-            UNREACHABLE();
+            return 1.0f;
         }
     }
 };
