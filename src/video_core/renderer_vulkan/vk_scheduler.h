@@ -5,7 +5,9 @@
 
 #include <condition_variable>
 #include <source_location>
+#include <set>
 #include <span>
+#include <vector>
 #include <array>
 #include <mutex>
 #include <thread>
@@ -464,13 +466,14 @@ private:
     const Instance& instance;
     struct WorkRecord {
         char kind{};
+        bool first_use{};
         u32 num_hashes{};
         std::array<u64, 5> hashes{};
     };
-    static constexpr u32 NumWorkRecords = 64;
-    std::array<WorkRecord, NumWorkRecords> work_records{};
-    u64 num_work_records{};
-    void LogRecentWork() const;
+    std::mutex work_records_mutex;
+    std::vector<WorkRecord> work_records;
+    std::set<std::array<u64, 5>> seen_work;
+    void LogSubmittedWork(const std::vector<WorkRecord>& records, const char* reason) const;
 
     Semaphore work_semaphore;
     CommandPool command_pool;

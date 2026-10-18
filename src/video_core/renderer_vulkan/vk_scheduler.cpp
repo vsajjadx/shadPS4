@@ -135,23 +135,33 @@ void Scheduler::Wait(u64 tick, std::source_location caller) {
 }
 
 void Scheduler::RecordWork(char kind, std::span<const u64> shader_hashes) {
-    WorkRecord& record = work_records[num_work_records++ % NumWorkRecords];
+    WorkRecord record;
     record.kind = kind;
     record.num_hashes = static_cast<u32>(std::min(shader_hashes.size(), record.hashes.size()));
     std::copy_n(shader_hashes.begin(), record.num_hashes, record.hashes.begin());
+    std::scoped_lock lk{work_records_mutex};
+    record.first_use = seen_work.insert(record.hashes).second;
+    if (work_records.size() < 16384) {
+        work_records.push_back(record);
+    }
 }
 
-void Scheduler::LogRecentWork() const {
-    const u64 count = std::min<u64>(num_work_records, NumWorkRecords);
-    LOG_CRITICAL(Render_Vulkan, "Last {} draws/dispatches before device lost (oldest first):",
-                 count);
-    for (u64 i = num_work_records - count; i < num_work_records; ++i) {
-        const WorkRecord& record = work_records[i % NumWorkRecords];
-        std::string shaders;
-        for (u32 j = 0; j < record.num_hashes; ++j) {
-            shaders += fmt::format(" {:#x}", record.hashes[j]);
+void Scheduler::LogSubmittedWork(const std::vector<WorkRecord>& records,
+                                 const char* reason) const {
+    LOG_CRITICAL(Render_Vulkan, "{}: submit holds {} draws/dispatches", reason, records.size());
+    for (size_t i = 0; i < records.size();) {
+        size_t run = 1;
+        while (i + run < records.size() && records[i + run].kind == records[i].kind &&
+               records[i + run].hashes == records[i].hashes) {
+            ++run;
         }
-        LOG_CRITICAL(Render_Vulkan, "  #{} {}:{}", i, record.kind, shaders);
+        std::string shaders;
+        for (u32 j = 0; j < records[i].num_hashes; ++j) {
+            shaders += fmt::format(" {:#x}", records[i].hashes[j]);
+        }
+        LOG_CRITICAL(Render_Vulkan, "  {}{} x{}:{}", records[i].first_use ? "NEW " : "",
+                     records[i].kind, run, shaders);
+        i += run;
     }
 }
 
@@ -262,10 +272,33 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
 
     ImGui::Core::TextureManager::Submit();
     auto submit_result = instance.GetGraphicsQueue().submit(submit_info, info.fence);
+    std::vector<WorkRecord> submitted_work;
+    {
+        std::scoped_lock work_lk{work_records_mutex};
+        submitted_work = std::move(work_records);
+        work_records.clear();
+    }
     if (submit_result == vk::Result::eErrorDeviceLost) {
-        LogRecentWork();
+        LogSubmittedWork(submitted_work, "Device lost while submitting");
     }
     ASSERT_MSG(submit_result != vk::Result::eErrorDeviceLost, "Device lost during submit");
+
+    const vk::SemaphoreWaitInfo wait_info = {
+        .semaphoreCount = 1,
+        .pSemaphores = &timeline,
+        .pValues = &signal_value,
+    };
+    const vk::Result wait_result =
+        instance.GetDevice().waitSemaphores(&wait_info, 4'000'000'000ULL);
+    if (wait_result == vk::Result::eErrorDeviceLost) {
+        LogSubmittedWork(submitted_work, "Device lost while this submit was executing");
+    } else if (wait_result == vk::Result::eTimeout) {
+        static u32 timeout_reports = 0;
+        if (timeout_reports++ < 3) {
+            LogSubmittedWork(submitted_work, "Submit still executing after 4s");
+        }
+    }
+    ASSERT_MSG(wait_result != vk::Result::eErrorDeviceLost, "Device lost while executing submit");
 
     work_semaphore.Refresh();
     BeginSession();
