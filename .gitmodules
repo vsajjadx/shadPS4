@@ -169,3 +169,6 @@
 [submodule "externals/opus"]
 	path = externals/opus
 	url = https://github.com/xiph/opus.git
+[submodule "externals/fsr-vulkan"]
+	path = externals/fsr-vulkan
+	url = https://github.com/FireBurn/FSR-Vulkan.git

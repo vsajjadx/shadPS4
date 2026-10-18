@@ -624,6 +624,7 @@ bool EmulatorSettingsImpl::TransferSettings() {
         setFromToml(s.present_mode, gpu, "presentMode");
         setFromToml(s.hdr_allowed, gpu, "allowHDR");
         setFromToml(s.fsr_enabled, gpu, "fsrEnabled");
+        setFromToml(s.frame_generation_enabled, gpu, "frameGenerationEnabled");
         setFromToml(s.rcas_enabled, gpu, "rcasEnabled");
         setFromToml(s.rcas_attenuation, gpu, "rcasAttenuation");
     }

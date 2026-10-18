@@ -40,6 +40,7 @@ option(ENABLE_DISCORD_RPC "Enable the Discord RPC integration" ON)
 option(ENABLE_UPDATER "Enables the options to updater" ON)
 option(ENABLE_TESTS "Build unit tests (requires GTest)" OFF)
 option(ENABLE_SYSTEM_LIBRARIES "Enable building against system libraries" OFF)
+cmake_dependent_option(ENABLE_FSR_FRAMEGEN "Enable FSR 3.1 frame generation" ON WIN32 OFF)
 
 # First, determine whether to use CMAKE_OSX_ARCHITECTURES or CMAKE_SYSTEM_PROCESSOR.
 if (APPLE AND CMAKE_OSX_ARCHITECTURES)
@@ -1217,6 +1218,7 @@ set(VIDEO_CORE src/video_core/amdgpu/cb_db_extent.h
                src/video_core/renderer_vulkan/vk_platform.h
                src/video_core/renderer_vulkan/vk_presenter.cpp
                src/video_core/renderer_vulkan/vk_presenter.h
+               src/video_core/renderer_vulkan/vk_frame_generation.h
                src/video_core/renderer_vulkan/vk_rasterizer.cpp
                src/video_core/renderer_vulkan/vk_rasterizer.h
                src/video_core/renderer_vulkan/vk_resource_pool.cpp
@@ -1387,6 +1389,15 @@ target_compile_definitions(Dear_ImGui PRIVATE IMGUI_USER_CONFIG="${PROJECT_SOURC
 
 if (ENABLE_DISCORD_RPC)
     target_compile_definitions(shadps4 PRIVATE ENABLE_DISCORD_RPC)
+endif()
+
+if (ENABLE_FSR_FRAMEGEN)
+    target_sources(shadps4 PRIVATE
+        src/video_core/renderer_vulkan/vk_frame_generation.cpp
+        src/video_core/renderer_vulkan/vk_fsr_vulkan_shims.cpp
+    )
+    target_link_libraries(shadps4 PRIVATE ffx-vulkan::fsr3-vk-framegeneration-3.1.6)
+    target_compile_definitions(shadps4 PRIVATE ENABLE_FSR_FRAMEGEN)
 endif()
 
 if (${CMAKE_SYSTEM_NAME} STREQUAL "Linux")

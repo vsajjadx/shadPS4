@@ -127,7 +127,7 @@ struct OverrideItem {
 };
 
 template <typename Struct, typename T>
-inline OverrideItem make_override(const char* key, Setting<T> Struct::* member) {
+inline OverrideItem make_override(const char* key, Setting<T> Struct::*member) {
     return OverrideItem{
         key,
         [member, key](void* base, const nlohmann::json& entry, std::vector<std::string>& changed) {
@@ -437,6 +437,7 @@ struct GPUSettings {
     Setting<std::string> present_mode{"Mailbox"};
     Setting<bool> hdr_allowed{false};
     Setting<bool> fsr_enabled{false};
+    Setting<bool> frame_generation_enabled{true};
     Setting<bool> rcas_enabled{true};
     Setting<int> rcas_attenuation{250};
     Setting<bool> userfaultfd{false};
@@ -459,6 +460,8 @@ struct GPUSettings {
             make_override<GPUSettings>("window_width", &GPUSettings::window_width),
             make_override<GPUSettings>("hdr_allowed", &GPUSettings::hdr_allowed),
             make_override<GPUSettings>("fsr_enabled", &GPUSettings::fsr_enabled),
+            make_override<GPUSettings>("frame_generation_enabled",
+                                       &GPUSettings::frame_generation_enabled),
             make_override<GPUSettings>("rcas_enabled", &GPUSettings::rcas_enabled),
             make_override<GPUSettings>("rcas_attenuation", &GPUSettings::rcas_attenuation),
             make_override<GPUSettings>("dump_shaders", &GPUSettings::dump_shaders),
@@ -484,7 +487,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GPUSettings, window_width, window_height, int
                                    vblank_limit, full_screen, full_screen_mode, present_mode,
                                    hdr_allowed, fsr_enabled, rcas_enabled, rcas_attenuation,
                                    userfaultfd, inline_fetch_shader, anisotropic_filtering,
-                                   texture_lod_bias)
+                                   texture_lod_bias, frame_generation_enabled)
 
 // -------------------------------
 // Vulkan settings
@@ -777,6 +780,7 @@ public:
     SETTING_FORWARD(m_gpu, InternalScreenWidth, internal_screen_width)
     SETTING_FORWARD_BOOL(m_gpu, HdrAllowed, hdr_allowed)
     SETTING_FORWARD_BOOL(m_gpu, FsrEnabled, fsr_enabled)
+    SETTING_FORWARD_BOOL(m_gpu, FrameGenerationEnabled, frame_generation_enabled)
     SETTING_FORWARD_BOOL(m_gpu, RcasEnabled, rcas_enabled)
     SETTING_FORWARD(m_gpu, RcasAttenuation, rcas_attenuation)
     SETTING_FORWARD(m_gpu, ReadbacksMode, readbacks_mode)

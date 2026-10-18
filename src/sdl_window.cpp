@@ -24,12 +24,16 @@
 #include "core/libraries/system/userservice.h"
 #include "core/user_settings.h"
 #include "imgui/friends_layer.h"
+#include "imgui/notifications_layer.h"
 #include "imgui/renderer/imgui_core.h"
 #include "input/controller.h"
 #include "input/input_handler.h"
 #include "input/input_mouse.h"
 #include "sdl_window.h"
 #include "video_core/renderdoc.h"
+#ifdef ENABLE_FSR_FRAMEGEN
+#include "video_core/renderer_vulkan/vk_frame_generation.h"
+#endif
 
 #ifdef __APPLE__
 #include <SDL3/SDL_metal.h>
@@ -242,6 +246,21 @@ void WindowSDL::WaitEvent() {
             Libraries::Kernel::DumpThreadsForHang("requested with Ctrl+L");
             break;
         }
+#ifdef ENABLE_FSR_FRAMEGEN
+        if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat &&
+            (event.key.key == SDLK_1 || event.key.key == SDLK_2) &&
+            !(event.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_SHIFT | SDL_KMOD_GUI))) {
+            const bool enable = event.key.key == SDLK_1;
+            Vulkan::FrameGeneration::SetEnabled(enable);
+            const char* message = !Vulkan::FrameGeneration::IsAvailable()
+                                      ? "FSR frame generation is not available on this GPU"
+                                  : enable ? "FSR frame generation: ON"
+                                           : "FSR frame generation: OFF";
+            LOG_INFO(Frontend, "{}", message);
+            shadNotifications::QueueNotification(message, 2.0f,
+                                                 shadNotifications::position::BottomRight);
+        }
+#endif
         OnKeyboardMouseInput(&event);
         break;
     case SDL_EVENT_GAMEPAD_ADDED:
