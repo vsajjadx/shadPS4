@@ -4,6 +4,7 @@
 #include <boost/preprocessor/stringize.hpp>
 
 #include <chrono>
+#include <fmt/format.h>
 #include <mutex>
 #include <unordered_set>
 #include "common/assert.h"
@@ -159,6 +160,17 @@ void Liverpool::ProcessCommands() {
     }
 }
 
+std::string Liverpool::DescribeState() const {
+    const s64 now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now().time_since_epoch())
+                           .count();
+    const s64 last = last_progress_ms.load(std::memory_order_relaxed);
+    return fmt::format("num_submits={} num_commands={} submit_done={} curr_qid={} "
+                       "last_task_resume={}ms_ago",
+                       num_submits.load(), num_commands.load(), submit_done.load(), curr_qid,
+                       last == 0 ? -1 : now_ms - last);
+}
+
 void Liverpool::Process(std::stop_token stoken) {
     Common::SetCurrentThreadName("shadPS4:GpuCommandProcessor");
     Libraries::Kernel::RegisterHangDiagHostThread("shadPS4:GpuCommandProcessor");
@@ -197,6 +209,10 @@ void Liverpool::Process(std::stop_token stoken) {
                 task = queue.submits.front();
             }
             task.resume();
+            last_progress_ms.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       std::chrono::steady_clock::now().time_since_epoch())
+                                       .count(),
+                                   std::memory_order_relaxed);
 
             if (task.done()) {
                 task.destroy();
@@ -1359,7 +1375,7 @@ void Liverpool::SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb) {
 
     std::scoped_lock lk{submit_mutex};
     ++num_submits;
-    submit_cv.notify_one();
+    submit_cv.notify_all();
 }
 
 void Liverpool::SubmitAsc(u32 gnm_vqid, std::span<const u32> acb) {
@@ -1376,7 +1392,7 @@ void Liverpool::SubmitAsc(u32 gnm_vqid, std::span<const u32> acb) {
     std::scoped_lock lk{submit_mutex};
     num_mapped_queues = std::max(num_mapped_queues, gnm_vqid + 1);
     ++num_submits;
-    submit_cv.notify_one();
+    submit_cv.notify_all();
 }
 
 } // namespace AmdGpu

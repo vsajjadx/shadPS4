@@ -26,6 +26,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <fmt/format.h>
 #include <thread>
 
 extern Frontend::WindowSDL* g_window;
@@ -91,7 +92,36 @@ static void ResetSubmissionLock(Platform::InterruptId irq) {
 static void WaitGpuIdle() {
     HLE_TRACE;
     std::unique_lock lock{m_wait_idle};
-    cv_lock.wait(lock, [] { return submission_lock == 0; });
+    // The idle interrupt is the normal wake-up. Re-check the real GPU state periodically so a
+    // missed wake-up can never leave every submitting thread blocked forever (frozen game).
+    while (!cv_lock.wait_for(lock, std::chrono::milliseconds(100),
+                             [] { return submission_lock == 0; })) {
+        if (liverpool && liverpool->IsGpuIdle()) {
+            static u32 recovered = 0;
+            if (recovered++ < 5) {
+                LOG_WARNING(Lib_GnmDriver,
+                            "GPU is idle but the submission lock was never released; releasing it");
+            }
+            submission_lock = 0;
+            break;
+        }
+    }
+}
+
+// Marks submissions as blocked until the GPU goes idle. The idle check and the flag update happen
+// under the same lock the idle interrupt takes, so the interrupt cannot slip in between them.
+static void LockSubmissionsUntilIdle() {
+    std::scoped_lock lock{m_wait_idle};
+    if (!liverpool->IsGpuIdle()) {
+        submission_lock = true;
+    }
+}
+
+std::string GetGpuDebugState() {
+    if (!liverpool) {
+        return "liverpool not created";
+    }
+    return fmt::format("submission_lock={} {}", submission_lock, liverpool->DescribeState());
 }
 
 // Write a special NOP packet with N DWs data block
@@ -1517,9 +1547,7 @@ s32 PS4_SYSV_ABI sceGnmRequestFlipAndSubmitDoneForWorkload(u64 workload, u32* gp
     }
     liverpool->SubmitGfx(dcb_span, {});
 
-    if (!liverpool->IsGpuIdle()) {
-        submission_lock = true;
-    }
+    LockSubmissionsUntilIdle();
     liverpool->SubmitDone();
     send_init_packet = true;
 
@@ -2522,9 +2550,7 @@ s32 PS4_SYSV_ABI sceGnmSubmitDone() {
     LOG_DEBUG(Lib_GnmDriver, "called");
     std::scoped_lock lk{m_submit_lock};
     WaitGpuIdle();
-    if (!liverpool->IsGpuIdle()) {
-        submission_lock = true;
-    }
+    LockSubmissionsUntilIdle();
     liverpool->SubmitDone();
     send_init_packet = true;
     ++frames_submitted;

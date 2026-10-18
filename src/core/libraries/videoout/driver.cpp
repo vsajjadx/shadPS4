@@ -11,6 +11,7 @@
 #include "core/emulator_settings.h"
 #include "core/libraries/kernel/threads/hang_diag.h"
 #include "core/libraries/kernel/time.h"
+#include "core/libraries/gnmdriver/gnmdriver.h"
 #include "core/libraries/videoout/driver.h"
 #include "core/libraries/videoout/videoout_error.h"
 #include "imgui/renderer/imgui_core.h"
@@ -453,6 +454,8 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
             !stall_dumped && std::chrono::steady_clock::now() - last_flip > flip_stall_timeout) {
             stall_dumped = true;
             if (stall_dumps++ < 3) {
+                LOG_CRITICAL(Lib_VideoOut, "GPU state at stall: {}",
+                             Libraries::GnmDriver::GetGpuDebugState());
                 Libraries::Kernel::DumpThreadsForHang("no flip for 10 seconds");
             }
         }
