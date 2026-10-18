@@ -207,6 +207,97 @@ jobs:
         path: ${{github.workspace}}/build/shadPS4.map
         if-no-files-found: warn
 
+  windows-launcher:
+    runs-on: windows-2025
+    needs: get-info
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Check out and patch the Qt launcher
+      shell: bash
+      run: |
+        echo "FORK_TIME=$(git log -1 --format=%ct)" >> $GITHUB_ENV
+        git clone --filter=blob:none https://github.com/shadps4-emu/shadps4-qtlauncher qtlauncher
+        cd qtlauncher
+        git checkout "$(cat ../launcher/UPSTREAM_COMMIT)"
+        git submodule update --init --recursive --depth 1 || git submodule update --init --recursive
+        git -c user.name=ci -c user.email=ci@localhost am ../launcher/patches/*.patch
+
+    - name: Setup Qt
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: 6.10.0
+        host: windows
+        target: desktop
+        arch: win64_msvc2022_64
+        archives: qtbase qttools
+        modules: qtmultimedia
+
+    - name: Cache CMake Build
+      uses: hendrikmuhs/ccache-action@v1.2.21
+      env:
+          cache-name: ${{ runner.os }}-launcher-cache-cmake-build
+      with:
+        append-timestamp: false
+        key: ${{ env.cache-name }}-${{ hashFiles('launcher/**') }}
+
+    - name: Configure CMake
+      working-directory: qtlauncher
+      run: cmake --fresh -G Ninja -B build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DENABLE_UPDATER=ON -DFORK_BUNDLE_REV=${{ needs.get-info.outputs.fullhash }} -DFORK_BUNDLE_REPO=${{ github.repository }} -DFORK_BUNDLE_TIME=${{ env.FORK_TIME }} -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+    - name: Build
+      working-directory: qtlauncher
+      shell: pwsh
+      run: |
+        cmake --build build --config ${{env.BUILD_TYPE}} --parallel $env:NUMBER_OF_PROCESSORS 2>&1 | Tee-Object -FilePath build.log
+        exit $LASTEXITCODE
+
+    - name: Report compile errors
+      if: failure()
+      shell: pwsh
+      run: |
+        $errs = Select-String -Path qtlauncher/build.log -Pattern ' error[: ]|FAILED:|undefined|fatal error' | Select-Object -First 25 | ForEach-Object { $_.Line.Trim().Replace('%','%25') }
+        $msg = ($errs -join '%0A')
+        Write-Output "::error title=compile-errors::$msg"
+
+    - name: Deploy
+      working-directory: qtlauncher
+      run: |
+        mkdir upload
+        mkdir upload/qtplugins
+        move build/shadPS4QtLauncher.exe upload
+        cp dist/qt.conf upload/qt.conf
+        windeployqt --plugindir upload/qtplugins --no-compiler-runtime --no-system-d3d-compiler --no-system-dxc-compiler --dir upload upload/shadPS4QtLauncher.exe
+
+    - name: Upload launcher
+      uses: actions/upload-artifact@v7
+      with:
+        name: launcher-win64
+        path: qtlauncher/upload/
+        retention-days: 3
+
+  windows-bundle:
+    runs-on: ubuntu-24.04
+    needs: [get-info, windows-sdl, windows-launcher]
+    steps:
+    - name: Download the emulator
+      uses: actions/download-artifact@v8
+      with:
+        name: shadps4-win64-sdl-${{ needs.get-info.outputs.date }}-${{ needs.get-info.outputs.shorthash }}
+        path: bundle
+
+    - name: Download the launcher
+      uses: actions/download-artifact@v8
+      with:
+        name: launcher-win64
+        path: bundle
+
+    - name: Upload the package
+      uses: actions/upload-artifact@v7
+      with:
+        name: shadPS4-AntiCrash-win64-${{ needs.get-info.outputs.date }}-${{ needs.get-info.outputs.shorthash }}
+        path: bundle/
+
   macos-sdl:
     if: false  # Windows-only build
     runs-on: macos-26

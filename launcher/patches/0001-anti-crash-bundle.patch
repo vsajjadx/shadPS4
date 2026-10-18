@@ -1,0 +1,655 @@
+From fd11f97629c79028c811d92bb2ea4b05e0620834 Mon Sep 17 00:00:00 2001
+From: vsajjadx <noreply@github.com>
+Date: Sun, 18 Oct 2026 14:12:10 +0330
+Subject: [PATCH] Bundle with shadPS4 Anti-Crash: fork updater, bundled
+ emulator, resolution list, frame generation
+
+---
+ CMakeLists.txt                 |  10 ++
+ src/core/emulator_settings.h   |   8 +-
+ src/qt_gui/check_update.cpp    | 223 ++++++++++++++++++++++++++++++++-
+ src/qt_gui/check_update.h      |   6 +
+ src/qt_gui/gui_settings.h      |   7 ++
+ src/qt_gui/main_window.cpp     |  40 ++++++
+ src/qt_gui/main_window.h       |   1 +
+ src/qt_gui/settings_dialog.cpp |  78 +++++++++++-
+ src/qt_gui/settings_dialog.h   |   7 ++
+ 9 files changed, 373 insertions(+), 7 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 641fcc6..5055264 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -411,6 +411,16 @@ target_link_libraries(shadPS4QtLauncher PRIVATE Qt6::Widgets Qt6::Concurrent Qt6
+ if (ENABLE_UPDATER)
+     add_definitions(-DENABLE_UPDATER)
+ endif()
++
++# Builds bundled with a shadPS4 fork check that fork's releases for updates of the whole package.
++set(FORK_BUNDLE_REV "" CACHE STRING "Commit of the shadPS4 fork that this launcher is bundled with")
++set(FORK_BUNDLE_REPO "vsajjadx/shadPS4" CACHE STRING "GitHub repository of the bundled shadPS4 fork")
++set(FORK_BUNDLE_TIME "0" CACHE STRING "Commit time of the bundled fork, in seconds since 1970")
++if (FORK_BUNDLE_REV)
++    target_compile_definitions(shadPS4QtLauncher PRIVATE FORK_BUNDLE_REV="${FORK_BUNDLE_REV}"
++                                                         FORK_BUNDLE_REPO="${FORK_BUNDLE_REPO}"
++                                                         FORK_BUNDLE_TIME=${FORK_BUNDLE_TIME}LL)
++endif()
+ if (HIDE_VERSION_MANAGER)
+     add_definitions(-DHIDE_VERSION_MANAGER)
+ endif()
+diff --git a/src/core/emulator_settings.h b/src/core/emulator_settings.h
+index d07147e..992aab3 100644
+--- a/src/core/emulator_settings.h
++++ b/src/core/emulator_settings.h
+@@ -127,7 +127,7 @@ struct OverrideItem {
+ };
+ 
+ template <typename Struct, typename T>
+-inline OverrideItem make_override(const char* key, Setting<T> Struct::* member) {
++inline OverrideItem make_override(const char* key, Setting<T> Struct::*member) {
+     return OverrideItem{
+         key,
+         [member, key](void* base, const nlohmann::json& entry, std::vector<std::string>& changed) {
+@@ -432,6 +432,7 @@ struct GPUSettings {
+     Setting<int> rcas_attenuation{250};
+     Setting<bool> userfaultfd{false};
+     Setting<bool> inline_fetch_shader{false};
++    Setting<bool> frame_generation_enabled{false};
+ 
+     std::vector<OverrideItem> GetOverrideableFields() const {
+         return std::vector<OverrideItem>{
+@@ -456,6 +457,8 @@ struct GPUSettings {
+             make_override<GPUSettings>("vblank_frequency", &GPUSettings::vblank_frequency),
+             make_override<GPUSettings>("userfaultfd", &GPUSettings::userfaultfd),
+             make_override<GPUSettings>("inline_fetch_shader", &GPUSettings::inline_fetch_shader),
++            make_override<GPUSettings>("frame_generation_enabled",
++                                       &GPUSettings::frame_generation_enabled),
+         };
+     }
+ };
+@@ -465,7 +468,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GPUSettings, window_width, window_height, int
+                                    direct_memory_access_enabled, dump_shaders, patch_shaders,
+                                    vblank_frequency, full_screen, full_screen_mode, present_mode,
+                                    hdr_allowed, fsr_enabled, rcas_enabled, rcas_attenuation,
+-                                   userfaultfd, inline_fetch_shader)
++                                   userfaultfd, inline_fetch_shader, frame_generation_enabled)
+ 
+ // -------------------------------
+ // Vulkan settings
+@@ -744,6 +747,7 @@ public:
+     SETTING_FORWARD_BOOL_READONLY(m_gpu, PatchShaders, patch_shaders)
+     SETTING_FORWARD_BOOL(m_gpu, UserfaultfdTracking, userfaultfd)
+     SETTING_FORWARD_BOOL_READONLY(m_gpu, InlineFetchShader, inline_fetch_shader)
++    SETTING_FORWARD_BOOL(m_gpu, FrameGenerationEnabled, frame_generation_enabled)
+ 
+     u32 GetVblankFrequency() {
+         if (m_gpu.vblank_frequency.value < 30) {
+diff --git a/src/qt_gui/check_update.cpp b/src/qt_gui/check_update.cpp
+index 1f43aba..e5844d6 100644
+--- a/src/qt_gui/check_update.cpp
++++ b/src/qt_gui/check_update.cpp
+@@ -17,6 +17,7 @@
+ #include <QProcess>
+ #include <QProgressBar>
+ #include <QPushButton>
++#include <QRegularExpression>
+ #include <QStandardPaths>
+ #include <QString>
+ #include <QStringList>
+@@ -26,6 +27,7 @@
+ #include "check_update.h"
+ #include "common/path_util.h"
+ #include "common/scm_rev.h"
++#include "core/emulator_state.h"
+ 
+ using namespace Common::FS;
+ 
+@@ -41,6 +43,10 @@ CheckUpdate::CheckUpdate(std::shared_ptr<gui_settings> gui_settings, const bool
+ CheckUpdate::~CheckUpdate() {}
+ 
+ void CheckUpdate::CheckForUpdates(const bool showMessage) {
++#ifdef FORK_BUNDLE_REV
++    CheckForkUpdates(showMessage);
++    return;
++#endif
+     QUrl url;
+ 
+     bool checkName = true;
+@@ -407,6 +413,10 @@ void CheckUpdate::DownloadUpdate(const QString& url) {
+ }
+ 
+ void CheckUpdate::Install() {
++#ifdef FORK_BUNDLE_REV
++    InstallFork();
++    return;
++#endif
+     QString userPath;
+     Common::FS::PathToQString(userPath, Common::FS::GetUserPath(Common::FS::PathType::UserDir));
+ 
+@@ -461,9 +471,7 @@ void CheckUpdate::Install() {
+         "Remove-Item -Recurse -Force '%2'\n"
+         "Start-Process -FilePath '%3\\shadPS4QtLauncher.exe' "
+         "-WorkingDirectory ([WildcardPattern]::Escape('%3'))\n");
+-    arguments << "-ExecutionPolicy"
+-              << "Bypass"
+-              << "-File" << scriptFileName;
++    arguments << "-ExecutionPolicy" << "Bypass" << "-File" << scriptFileName;
+     processCommand = "powershell.exe";
+ 
+ #elif defined(Q_OS_LINUX)
+@@ -600,3 +608,212 @@ void CheckUpdate::Install() {
+             QString(tr("Failed to create the update script file") + ":\n" + scriptFileName));
+     }
+ }
++
++#ifdef FORK_BUNDLE_REV
++// The launcher and the emulator ship together in one zip on the fork's GitHub releases. The zip
++// name ends with the short commit it was built from, which is compared with this build's commit.
++void CheckUpdate::CheckForkUpdates(bool showMessage) {
++    setWindowTitle(tr("Auto Updater"));
++    QNetworkRequest request(QUrl(
++        QStringLiteral("https://api.github.com/repos/%1/releases/latest").arg(FORK_BUNDLE_REPO)));
++    request.setRawHeader("Accept", "application/vnd.github+json");
++    QNetworkReply* reply = networkManager->get(request);
++
++    connect(reply, &QNetworkReply::finished, this, [this, reply, showMessage]() {
++        reply->deleteLater();
++        if (reply->error() != QNetworkReply::NoError) {
++            // A startup check stays silent when there is no network.
++            if (showMessage) {
++                QMessageBox::warning(this, tr("Auto Updater"),
++                                     tr("Could not check for updates.") + "\n" +
++                                         reply->errorString());
++            }
++            close();
++            return;
++        }
++
++        const QJsonObject release = QJsonDocument::fromJson(reply->readAll()).object();
++        const QString tag = release["tag_name"].toString();
++        QString downloadUrl;
++        QString assetName;
++        for (const QJsonValue& value : release["assets"].toArray()) {
++            const QJsonObject asset = value.toObject();
++            const QString name = asset["name"].toString();
++            if (!name.endsWith(".zip", Qt::CaseInsensitive)) {
++                continue;
++            }
++            // Prefer the Windows package when a release has several zips.
++            if (downloadUrl.isEmpty() || name.contains("win", Qt::CaseInsensitive)) {
++                downloadUrl = asset["browser_download_url"].toString();
++                assetName = name;
++            }
++        }
++        if (tag.isEmpty() || downloadUrl.isEmpty()) {
++            if (showMessage) {
++                QMessageBox::information(this, tr("Auto Updater"),
++                                         tr("No update is available yet."));
++            }
++            close();
++            return;
++        }
++
++        const QString currentRev = QStringLiteral(FORK_BUNDLE_REV);
++        static const QRegularExpression revRegex("([0-9a-fA-F]{7,40})(?=\\.zip$)");
++        const QRegularExpressionMatch match = revRegex.match(assetName);
++        bool upToDate = false;
++        if (match.hasMatch()) {
++            upToDate = currentRev.startsWith(match.captured(1), Qt::CaseInsensitive);
++        } else {
++            // Without a commit in the file name the tag names the build.
++            upToDate = m_gui_settings->GetValue(gui::vm_installedForkTag).toString() == tag;
++        }
++
++        // A release older than this build is not offered as an update.
++        const QDateTime published =
++            QDateTime::fromString(release["published_at"].toString(), Qt::ISODate);
++        if (published.isValid() && published.toSecsSinceEpoch() <= FORK_BUNDLE_TIME) {
++            upToDate = true;
++        }
++
++        if (upToDate) {
++            m_gui_settings->SetValue(gui::vm_installedForkTag, tag);
++            if (showMessage) {
++                QMessageBox::information(this, tr("Auto Updater"),
++                                         tr("Your version is already up to date!"));
++            }
++            close();
++            return;
++        }
++
++        QString date = release["published_at"].toString();
++        const QDateTime dateTime = QDateTime::fromString(date, Qt::ISODate);
++        if (dateTime.isValid()) {
++            date = dateTime.toLocalTime().toString("yyyy-MM-dd HH:mm");
++        }
++        m_pendingForkTag = tag;
++        SetupForkUI(downloadUrl,
++                    release["name"].toString().isEmpty() ? tag : release["name"].toString(), date,
++                    release["body"].toString());
++    });
++}
++
++void CheckUpdate::SetupForkUI(const QString& downloadUrl, const QString& title, const QString& date,
++                              const QString& notes) {
++    setMinimumSize(520, 0);
++    setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
++    QVBoxLayout* layout = new QVBoxLayout(this);
++
++    QHBoxLayout* titleLayout = new QHBoxLayout();
++    QLabel* imageLabel = new QLabel(this);
++    imageLabel->setPixmap(QPixmap(":/images/shadps4.png"));
++    imageLabel->setScaledContents(true);
++    imageLabel->setFixedSize(50, 50);
++    titleLayout->addWidget(imageLabel);
++    titleLayout->addWidget(new QLabel("<h2>" + tr("A new version is available") + "</h2>", this));
++    titleLayout->addStretch();
++    layout->addLayout(titleLayout);
++
++    layout->addWidget(new QLabel(
++        QStringLiteral("<b>%1</b><br>%2 %3").arg(title.toHtmlEscaped(), tr("Released:"), date),
++        this));
++
++    if (!notes.trimmed().isEmpty()) {
++        QTextBrowser* notesView = new QTextBrowser(this);
++        notesView->setOpenExternalLinks(true);
++        notesView->setMarkdown(notes);
++        notesView->setMinimumHeight(180);
++        layout->addWidget(notesView);
++    }
++
++    autoUpdateCheckBox = new QCheckBox(tr("Check for Updates at Startup"), this);
++    autoUpdateCheckBox->setChecked(m_gui_settings->GetValue(gui::gen_checkForUpdates).toBool());
++    connect(autoUpdateCheckBox, &QCheckBox::checkStateChanged, this, [this](Qt::CheckState state) {
++        m_gui_settings->SetValue(gui::gen_checkForUpdates, state == Qt::Checked);
++    });
++    layout->addWidget(autoUpdateCheckBox);
++
++    QHBoxLayout* buttons = new QHBoxLayout();
++    buttons->addWidget(new QLabel(tr("Do you want to update now?"), this));
++    buttons->addStretch();
++    yesButton = new QPushButton(tr("Update"), this);
++    noButton = new QPushButton(tr("Later"), this);
++    yesButton->setDefault(true);
++    buttons->addWidget(yesButton);
++    buttons->addWidget(noButton);
++    layout->addLayout(buttons);
++
++    connect(yesButton, &QPushButton::clicked, this, [this, downloadUrl]() {
++        if (EmulatorState::GetInstance()->IsGameRunning()) {
++            QMessageBox::warning(this, tr("Auto Updater"),
++                                 tr("Please close the running game before updating."));
++            return;
++        }
++        yesButton->setEnabled(false);
++        noButton->setEnabled(false);
++        DownloadUpdate(downloadUrl);
++    });
++    connect(noButton, &QPushButton::clicked, this, [this]() { close(); });
++
++    setLayout(layout);
++    adjustSize();
++}
++
++void CheckUpdate::InstallFork() {
++    QString rootPath = QCoreApplication::applicationDirPath();
++    const QString tempDirPath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
++                                "/Temp/temp_download_update";
++    m_gui_settings->SetValue(gui::vm_installedForkTag, m_pendingForkTag);
++
++#ifdef Q_OS_WIN
++    const QString scriptFileName = tempDirPath + "/update.ps1";
++    // Waits for the launcher to close, unpacks the zip (also when its files sit in a folder),
++    // copies everything over the installation and starts the new launcher.
++    const QString scriptContent = QStringLiteral(
++        "$ErrorActionPreference = 'Continue'\n"
++        "$tmp = '%1'\n"
++        "$root = '%2'\n"
++        "Write-Output 'Updating shadPS4...'\n"
++        "Wait-Process -Id %3 -Timeout 30 -ErrorAction SilentlyContinue\n"
++        "Get-Process -Name shadPS4 -ErrorAction SilentlyContinue | Where-Object { $_.Path -and "
++        "$_.Path.StartsWith($root) } | Wait-Process -Timeout 30 -ErrorAction SilentlyContinue\n"
++        "$ext = Join-Path $tmp 'extracted'\n"
++        "if (Test-Path -LiteralPath $ext) { Remove-Item -Recurse -Force -LiteralPath $ext }\n"
++        "Expand-Archive -LiteralPath (Join-Path $tmp 'temp_download_update.zip') "
++        "-DestinationPath $ext -Force\n"
++        "$exe = Get-ChildItem -LiteralPath $ext -Recurse -Filter 'shadPS4QtLauncher.exe' | "
++        "Select-Object -First 1\n"
++        "if (-not $exe) { $exe = Get-ChildItem -LiteralPath $ext -Recurse -Filter 'shadPS4.exe' | "
++        "Select-Object -First 1 }\n"
++        "$src = if ($exe) { $exe.DirectoryName } else { $ext }\n"
++        "Get-ChildItem -LiteralPath $src -Force | ForEach-Object { Copy-Item -LiteralPath "
++        "$_.FullName -Destination $root -Recurse -Force }\n"
++        "Remove-Item -Recurse -Force -LiteralPath $tmp\n"
++        "Start-Process -FilePath (Join-Path $root 'shadPS4QtLauncher.exe') -WorkingDirectory "
++        "$root\n");
++
++    QFile scriptFile(scriptFileName);
++    if (!scriptFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
++        QMessageBox::warning(
++            this, tr("Error"),
++            QString(tr("Failed to create the update script file") + ":\n" + scriptFileName));
++        return;
++    }
++    auto escape = [](QString path) { return QDir::toNativeSeparators(path).replace("'", "''"); };
++    QTextStream out(&scriptFile);
++    scriptFile.write("\xEF\xBB\xBF");
++    out << scriptContent.arg(escape(tempDirPath), escape(rootPath))
++               .arg(QCoreApplication::applicationPid());
++    out.flush();
++    scriptFile.close();
++
++    QProcess::startDetached("powershell.exe", {"-NoProfile", "-ExecutionPolicy", "Bypass",
++                                               "-WindowStyle", "Hidden", "-File", scriptFileName});
++    exit(EXIT_SUCCESS);
++#else
++    QMessageBox::information(this, tr("Auto Updater"),
++                             tr("Automatic installation is only available on Windows. Unzip the "
++                                "downloaded update into the emulator folder:") +
++                                 "\n" + tempDirPath + "/temp_download_update.zip");
++#endif
++}
++#endif
+diff --git a/src/qt_gui/check_update.h b/src/qt_gui/check_update.h
+index 139059c..0723801 100644
+--- a/src/qt_gui/check_update.h
++++ b/src/qt_gui/check_update.h
+@@ -27,6 +27,11 @@ private:
+     void setupUI(const QString& downloadUrl, const QString& latestDate, const QString& latestRev,
+                  const QString& currentDate, const QString& currentRev);
+ 
++    void CheckForkUpdates(bool showMessage);
++    void SetupForkUI(const QString& downloadUrl, const QString& tag, const QString& date,
++                     const QString& notes);
++    void InstallFork();
++
+     void requestChangelog(const QString& currentRev, const QString& latestRev,
+                           const QString& downloadUrl, const QString& latestDate,
+                           const QString& currentDate);
+@@ -35,6 +40,7 @@ private:
+     QPushButton* yesButton;
+     QPushButton* noButton;
+     QString updateDownloadUrl;
++    QString m_pendingForkTag;
+ 
+     QNetworkAccessManager* networkManager;
+     std::shared_ptr<gui_settings> m_gui_settings;
+diff --git a/src/qt_gui/gui_settings.h b/src/qt_gui/gui_settings.h
+index 66e2905..ecb8e70 100644
+--- a/src/qt_gui/gui_settings.h
++++ b/src/qt_gui/gui_settings.h
+@@ -17,7 +17,12 @@ const QString favorites = "favorites";
+ const QString version_manager = "version_manager";
+ 
+ // general
++#ifdef FORK_BUNDLE_REV
++// Its own key, so a setting saved by the official launcher does not turn the fork updates off.
++const gui_value gen_checkForUpdates = gui_value(general_settings, "checkForForkUpdates", true);
++#else
+ const gui_value gen_checkForUpdates = gui_value(general_settings, "checkForUpdates", false);
++#endif
+ const gui_value gen_showChangeLog = gui_value(general_settings, "showChangeLog", false);
+ const gui_value gen_recentFiles =
+     gui_value(main_window, "recentFiles", QVariant::fromValue(QList<QString>()));
+@@ -73,6 +78,8 @@ const gui_value vm_versionPath = gui_value(version_manager, "versionPath", "");
+ const gui_value vm_versionSelected = gui_value(version_manager, "versionSelected", "");
+ const gui_value vm_showChangeLog = gui_value(version_manager, "showChangeLog", "");
+ const gui_value vm_checkOnStartup = gui_value(version_manager, "checkOnStartup", "");
++const gui_value vm_bundledAdopted = gui_value(version_manager, "bundledAdopted", false);
++const gui_value vm_installedForkTag = gui_value(version_manager, "installedForkTag", "");
+ 
+ } // namespace gui
+ 
+diff --git a/src/qt_gui/main_window.cpp b/src/qt_gui/main_window.cpp
+index 4d06e63..01e1622 100644
+--- a/src/qt_gui/main_window.cpp
++++ b/src/qt_gui/main_window.cpp
+@@ -1,8 +1,13 @@
+ // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <algorithm>
+ #include <QComboBox>
++#include <QCoreApplication>
++#include <QDateTime>
++#include <QDir>
+ #include <QDockWidget>
++#include <QFileInfo>
+ #include <QKeyEvent>
+ #include <QPlainTextEdit>
+ #include <QProgressDialog>
+@@ -99,6 +104,7 @@ bool MainWindow::Init() {
+     CheckUpdateMain(true);
+ #endif
+ 
++    UseBundledEmulator();
+     LoadVersionComboBox();
+     if (m_gui_settings->GetValue(gui::vm_checkOnStartup).toBool()) {
+         auto versionDialog = new VersionDialog(m_gui_settings, this);
+@@ -1683,3 +1689,37 @@ void MainWindow::LoadVersionComboBox() {
+ 
+     ui->versionComboBox->adjustSize();
+ }
++
++void MainWindow::UseBundledEmulator() {
++    // The emulator that ships next to the launcher is listed as a version and selected the first
++    // time, or whenever the selected emulator is missing. A later choice in the list is kept.
++#ifdef Q_OS_WIN
++    const QString exeName = "shadPS4.exe";
++#else
++    const QString exeName = "shadps4";
++#endif
++    const QString bundled = QDir(QCoreApplication::applicationDirPath()).filePath(exeName);
++    if (!QFileInfo::exists(bundled)) {
++        return;
++    }
++    const QString name = "shadPS4 Anti-Crash (included)";
++    const auto versions = VersionManager::GetVersionList();
++    const bool listed = std::ranges::any_of(versions, [&](const auto& v) {
++        return v.name == name.toStdString() && v.path == bundled.toStdString();
++    });
++    if (!listed) {
++        VersionManager::AddNewVersion({
++            .name = name.toStdString(),
++            .path = bundled.toStdString(),
++            .date = QDateTime::currentDateTime().toString("yyyy-MM-dd").toStdString(),
++            .codename = "anti-crash",
++            .type = VersionManager::VersionType::Custom,
++        });
++    }
++    const QString selected = m_gui_settings->GetValue(gui::vm_versionSelected).toString();
++    if (!m_gui_settings->GetValue(gui::vm_bundledAdopted).toBool() || selected.isEmpty() ||
++        !QFileInfo::exists(selected)) {
++        m_gui_settings->SetValue(gui::vm_versionSelected, bundled);
++        m_gui_settings->SetValue(gui::vm_bundledAdopted, true);
++    }
++}
+diff --git a/src/qt_gui/main_window.h b/src/qt_gui/main_window.h
+index fd69169..20242c1 100644
+--- a/src/qt_gui/main_window.h
++++ b/src/qt_gui/main_window.h
+@@ -42,6 +42,7 @@ public:
+     void StopGame();
+     void RestartGame();
+     void LoadVersionComboBox();
++    void UseBundledEmulator();
+     bool showLabels;
+     std::shared_ptr<IpcClient> m_ipc_client;
+ 
+diff --git a/src/qt_gui/settings_dialog.cpp b/src/qt_gui/settings_dialog.cpp
+index 0a58c7a..53cb76e 100644
+--- a/src/qt_gui/settings_dialog.cpp
++++ b/src/qt_gui/settings_dialog.cpp
+@@ -1,6 +1,7 @@
+ // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <array>
+ #include <iostream>
+ #include <vector>
+ #include <AL/al.h>
+@@ -11,6 +12,7 @@
+ #include <QFileDialog>
+ #include <QHoverEvent>
+ #include <QMessageBox>
++#include <QSignalBlocker>
+ #include <SDL3/SDL.h>
+ #include <fmt/format.h>
+ 
+@@ -133,6 +135,7 @@ SettingsDialog::SettingsDialog(std::shared_ptr<gui_settings> gui_settings,
+ 
+     ui->setupUi(this);
+     ui->tabWidgetSettings->setUsesScrollButtons(false);
++    SetupGraphicsExtras();
+     GetPhysicalDevices();
+ 
+     initialHeight = this->height();
+@@ -549,6 +552,7 @@ SettingsDialog::SettingsDialog(std::shared_ptr<gui_settings> gui_settings,
+         // Graphics
+         ui->graphicsAdapterGroupBox->installEventFilter(this);
+         ui->windowSizeGroupBox->installEventFilter(this);
++        frameGenCheckBox->installEventFilter(this);
+         ui->presentModeGroupBox->installEventFilter(this);
+         ui->heightDivider->installEventFilter(this);
+         ui->nullGpuCheckBox->installEventFilter(this);
+@@ -754,6 +758,8 @@ void SettingsDialog::LoadValuesFromConfig() {
+     ui->widthSpinBox->setValue(EmulatorSettings.GetWindowWidth());
+     ui->heightSpinBox->setValue(EmulatorSettings.GetWindowHeight());
+     ui->enableHDRCheckBox->setChecked(EmulatorSettings.IsHdrAllowed());
++    SyncResolutionComboBox();
++    frameGenCheckBox->setChecked(EmulatorSettings.IsFrameGenerationEnabled());
+ 
+     ui->FSRCheckBox->setChecked(EmulatorSettings.IsFsrEnabled());
+     ui->RCASCheckBox->setChecked(EmulatorSettings.IsRcasEnabled());
+@@ -1010,7 +1016,9 @@ void SettingsDialog::updateNoteTextEdit(const QString& elementName) {
+                   "Fifo: Frames synchronize with your screen's refresh rate. New frames will be queued behind pending frames. Ensures all frames are presented but may increase latency.\\n"
+                   "Immediate: Frames immediately present to your screen when ready. May result in tearing.");
+     } else if (elementName == "windowSizeGroupBox") {
+-        text = tr("Width/Height:\\nSets the size of the emulator window at launch, which can be resized during gameplay.\\nThis is different from the in-game resolution.");
++        text = tr("Window Size:\\nPick the size of the emulator window at launch. It can be resized during gameplay.\\nThis is different from the in-game resolution.");
++    } else if (elementName == "frameGenCheckBox") {
++        text = tr("Enable Frame Generation:\\nAdds a generated frame between every two game frames with AMD FSR 3.1, so the game looks smoother.\\nWorks best when the game already runs at 30 FPS or more. It can also be turned on and off in game with the 1 and 2 keys.");
+     } else if (elementName == "heightDivider") {
+         text = tr("Vblank Frequency:\\nThe frame rate at which the emulator refreshes at (60hz is the baseline, whether the game runs at 30 or 60fps). Changing this may have adverse effects, such as increasing the game speed, or breaking critical game functionality that does not expect this to change!");
+     } else if (elementName == "dumpShadersCheckBox") {
+@@ -1169,6 +1177,7 @@ void SettingsDialog::UpdateSettings(bool is_specific) {
+     EmulatorSettings.SetWindowHeight(ui->heightSpinBox->value(), is_specific);
+     EmulatorSettings.SetHdrAllowed(ui->enableHDRCheckBox->isChecked(), is_specific);
+     EmulatorSettings.SetFsrEnabled(ui->FSRCheckBox->isChecked(), is_specific);
++    EmulatorSettings.SetFrameGenerationEnabled(frameGenCheckBox->isChecked(), is_specific);
+     EmulatorSettings.SetRcasEnabled(ui->RCASCheckBox->isChecked(), is_specific);
+     EmulatorSettings.SetRcasAttenuation(ui->RCASSlider->value(), is_specific);
+ 
+@@ -1338,7 +1347,7 @@ void SettingsDialog::SetDefaultValues() {
+         m_gui_settings->SetValue(gui::gl_backgroundImageOpacity, 50);
+         m_gui_settings->SetValue(gui::gl_playBackgroundMusic, false);
+         m_gui_settings->SetValue(gui::gl_backgroundMusicVolume, 50);
+-        m_gui_settings->SetValue(gui::gen_checkForUpdates, false);
++        m_gui_settings->SetValue(gui::gen_checkForUpdates, gui::gen_checkForUpdates.def);
+         m_gui_settings->SetValue(gui::gen_showChangeLog, false);
+         m_gui_settings->SetValue(gui::gen_guiLanguage, "en_US");
+         m_gui_settings->SetValue(gui::glc_showLoadGameSizeEnabled, true);
+@@ -1528,3 +1537,68 @@ void SettingsDialog::GetPhysicalDevices() {
+     m_physical_devices.push_back(QString::fromStdString(gpuName));
+ #endif
+ }
++
++void SettingsDialog::SetupGraphicsExtras() {
++    // Window size: a list of common resolutions instead of typing the width and height. The hidden
++    // spin boxes keep holding the values that are loaded and saved.
++    ui->widthLabel->setVisible(false);
++    ui->widthSpinBox->setVisible(false);
++    ui->heightLabel->setVisible(false);
++    ui->heightSpinBox->setVisible(false);
++
++    resolutionComboBox = new QComboBox(ui->windowSizeGroupBox);
++    resolutionComboBox->setObjectName("resolutionComboBox");
++    static constexpr std::array<std::pair<int, int>, 10> resolutions{{
++        {1280, 720},
++        {1366, 768},
++        {1600, 900},
++        {1920, 1080},
++        {2560, 1080},
++        {2560, 1440},
++        {3440, 1440},
++        {3200, 1800},
++        {3840, 2160},
++        {5120, 2880},
++    }};
++    for (const auto& [width, height] : resolutions) {
++        QString name = QStringLiteral("%1 x %2").arg(width).arg(height);
++        if (height == 720) {
++            name += " (HD)";
++        } else if (height == 1080 && width == 1920) {
++            name += " (Full HD)";
++        } else if (height == 1440 && width == 2560) {
++            name += " (2K)";
++        } else if (height == 2160) {
++            name += " (4K)";
++        }
++        resolutionComboBox->addItem(name, QSize(width, height));
++    }
++    ui->resLayout->addWidget(resolutionComboBox);
++
++    connect(resolutionComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
++            [this](int index) {
++                const QSize size = resolutionComboBox->itemData(index).toSize();
++                if (size.isValid()) {
++                    ui->widthSpinBox->setValue(size.width());
++                    ui->heightSpinBox->setValue(size.height());
++                }
++            });
++
++    // Frame generation, also toggled in game with the 1 and 2 keys.
++    frameGenCheckBox = new QCheckBox(tr("Enable Frame Generation (FSR 3.1)"), ui->FSRGroupBox);
++    frameGenCheckBox->setObjectName("frameGenCheckBox");
++    ui->verticalLayout_5->insertWidget(0, frameGenCheckBox);
++}
++
++void SettingsDialog::SyncResolutionComboBox() {
++    const QSize current(ui->widthSpinBox->value(), ui->heightSpinBox->value());
++    int index = resolutionComboBox->findData(current);
++    if (index < 0) {
++        // A size from an older config that is not in the list stays selectable.
++        resolutionComboBox->addItem(
++            tr("Custom (%1 x %2)").arg(current.width()).arg(current.height()), current);
++        index = resolutionComboBox->count() - 1;
++    }
++    QSignalBlocker blocker(resolutionComboBox);
++    resolutionComboBox->setCurrentIndex(index);
++}
+diff --git a/src/qt_gui/settings_dialog.h b/src/qt_gui/settings_dialog.h
+index d6373d3..20fd4ad 100644
+--- a/src/qt_gui/settings_dialog.h
++++ b/src/qt_gui/settings_dialog.h
+@@ -5,6 +5,8 @@
+ 
+ #include <memory>
+ #include <span>
++#include <QCheckBox>
++#include <QComboBox>
+ #include <QDialog>
+ #include <QGroupBox>
+ #include <QPushButton>
+@@ -52,6 +54,8 @@ private:
+     void GetPhysicalDevices();
+     void SaveSettings();
+     void RefreshAudioDevices();
++    void SetupGraphicsExtras();
++    void SyncResolutionComboBox();
+ 
+     void closeEvent(QCloseEvent* event) override;
+ 
+@@ -65,6 +69,9 @@ private:
+     bool is_game_specific = false;
+     bool is_game_saving = false;
+ 
++    QComboBox* resolutionComboBox{};
++    QCheckBox* frameGenCheckBox{};
++
+     std::unique_ptr<Ui::SettingsDialog> ui;
+     std::shared_ptr<gui_settings> m_gui_settings;
+     std::shared_ptr<IpcClient> m_ipc_client;
+-- 
+2.43.0
+
