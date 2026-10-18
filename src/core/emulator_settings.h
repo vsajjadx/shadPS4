@@ -437,7 +437,7 @@ struct GPUSettings {
     Setting<std::string> present_mode{"Mailbox"};
     Setting<bool> hdr_allowed{false};
     Setting<bool> fsr_enabled{false};
-    Setting<bool> frame_generation_enabled{true};
+    Setting<bool> frame_generation_enabled{false};
     // Windows: the GPU command thread gets a physical core of its own.
     Setting<bool> gpu_thread_core_reserve{true};
     Setting<bool> rcas_enabled{true};

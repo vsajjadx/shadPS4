@@ -17,7 +17,7 @@ namespace Vulkan {
 
 namespace FrameGeneration {
 
-static std::atomic_bool enabled{true};
+static std::atomic_bool enabled{false};
 static std::atomic_bool available{true};
 
 void SetEnabled(bool enable) {
