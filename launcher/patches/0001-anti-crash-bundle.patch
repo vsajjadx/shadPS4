@@ -1,4 +1,4 @@
-From f8b4c8fa45ac2e1b15225159edd4ed820a6a2a5b Mon Sep 17 00:00:00 2001
+From 2683c123b8a7c4683d6ef2b42881da756f847c07 Mon Sep 17 00:00:00 2001
 From: vsajjadx <noreply@github.com>
 Date: Sun, 18 Oct 2026 14:12:10 +0330
 Subject: [PATCH] Bundle with shadPS4 Anti-Crash
@@ -7,7 +7,7 @@ Fork updater, bundled emulator, resolution list, frame generation switch, existi
 folders first, compatibility overrides from the fork, About links to the fork, and PKG
 installation from shadPS4 v0.7.0 with keys from the Crypto Key Manager.
 ---
- CMakeLists.txt                    |  47 ++-
+ CMakeLists.txt                    |  49 ++-
  src/common/path_util.cpp          |  37 +-
  src/core/crypto/crypto.cpp        | 177 +++++++++
  src/core/crypto/crypto.h          |  61 +++
@@ -28,7 +28,7 @@ installation from shadPS4 v0.7.0 with keys from the Crypto Key Manager.
  src/qt_gui/pkg_install.cpp        | 184 +++++++++
  src/qt_gui/settings_dialog.cpp    |  78 +++-
  src/qt_gui/settings_dialog.h      |   7 +
- 21 files changed, 2386 insertions(+), 17 deletions(-)
+ 21 files changed, 2388 insertions(+), 17 deletions(-)
  create mode 100644 src/core/crypto/crypto.cpp
  create mode 100644 src/core/crypto/crypto.h
  create mode 100644 src/core/file_format/pfs.h
@@ -39,7 +39,7 @@ installation from shadPS4 v0.7.0 with keys from the Crypto Key Manager.
  create mode 100644 src/qt_gui/pkg_install.cpp
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 641fcc6..bfff8cb 100644
+index 641fcc6..864c1ef 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -181,7 +181,8 @@ set_source_files_properties(src/shadps4.rc PROPERTIES COMPILE_DEFINITIONS "APP_V
@@ -52,7 +52,7 @@ index 641fcc6..bfff8cb 100644
      message(STATUS "not main, disabling auto update")
      set(ENABLE_UPDATER OFF)
  endif()
-@@ -200,6 +201,31 @@ find_package(ZArchive 0.1.2 MODULE)
+@@ -200,6 +201,33 @@ find_package(ZArchive 0.1.2 MODULE)
  list(POP_BACK CMAKE_MODULE_PATH)
  
  add_subdirectory(externals)
@@ -70,6 +70,8 @@ index 641fcc6..bfff8cb 100644
 +    # Instruction set checks do not see the target's compile options.
 +    set(CRYPTOPP_DISABLE_AESNI ON)
 +    set(CRYPTOPP_DISABLE_AVX2 ON)
++    # The CI has no MASM, so the portable C++ code is used instead of the assembly files.
++    set(CRYPTOPP_DISABLE_ASM ON)
 +    FetchContent_Declare(cryptopp_cmake
 +        GIT_REPOSITORY https://github.com/abdes/cryptopp-cmake.git
 +        GIT_TAG CRYPTOPP_8_9_0
@@ -84,7 +86,7 @@ index 641fcc6..bfff8cb 100644
  include_directories(src)
  
  find_package(Qt6 REQUIRED COMPONENTS Widgets Concurrent LinguistTools Network Multimedia)
-@@ -258,6 +284,13 @@ set(CORE src/core/file_format/elf.cpp
+@@ -258,6 +286,13 @@ set(CORE src/core/file_format/elf.cpp
           src/core/file_format/npbind.cpp
           src/core/file_format/npbind.h
           src/core/file_format/psf.cpp
@@ -98,7 +100,7 @@ index 641fcc6..bfff8cb 100644
           src/core/file_format/psf.h
           src/core/file_format/trp.cpp
           src/core/file_format/trp.h
-@@ -293,6 +326,7 @@ if (ENABLE_UPDATER)
+@@ -293,6 +328,7 @@ if (ENABLE_UPDATER)
  endif()
  
  set(QT_GUI src/qt_gui/about_dialog.cpp
@@ -106,7 +108,7 @@ index 641fcc6..bfff8cb 100644
             src/qt_gui/about_dialog.h
             src/qt_gui/about_dialog.ui
             src/qt_gui/background_music_player.cpp
-@@ -407,10 +441,21 @@ if (NOT APPLE)
+@@ -407,10 +443,21 @@ if (NOT APPLE)
      target_link_libraries(shadPS4QtLauncher PRIVATE Vulkan::Headers volk_headers)
  endif()
  
