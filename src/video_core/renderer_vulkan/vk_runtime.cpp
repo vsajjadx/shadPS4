@@ -478,8 +478,29 @@ void Runtime::CopyColorAndDepth(VideoCore::Image* src, VideoCore::Image* dst) {
         blit_helper->ReinterpretColorAsMsDepth(
             dst->info.size.width, dst->info.size.height, dst->info.num_samples,
             src->info.pixel_format, dst->info.pixel_format, src->GetImage(), dst->GetImage());
+    } else if (src->info.num_samples > 1 && src->info.props.is_depth &&
+               dst->info.num_samples == 1 && !dst->info.props.is_depth) {
+        // MSAA depth sampled as a 1x color texture. Without this the new image stayed
+        // uninitialized and every depth-based effect read garbage (Driveclub night tracks went
+        // black). From akitaonrails/shadPS4 a108ad9.
+        bool needs_flush =
+            Transit(src, vk::ImageLayout::eShaderReadOnlyOptimal,
+                    vk::PipelineStageFlagBits2::eFragmentShader, vk::AccessFlagBits2::eShaderRead);
+        needs_flush |= Transit(dst, vk::ImageLayout::eColorAttachmentOptimal,
+                               vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                               vk::AccessFlagBits2::eColorAttachmentWrite);
+        if (needs_flush) {
+            FlushBarriers();
+        }
+        blit_helper->ReinterpretMsDepthAsColor(
+            dst->info.size.width, dst->info.size.height, src->info.num_samples,
+            src->info.pixel_format, dst->info.pixel_format, src->GetImage(), dst->GetImage());
+        dst->flags |= VideoCore::ImageFlagBits::GpuModified;
+        dst->flags &= ~VideoCore::ImageFlagBits::Dirty;
     } else {
-        LOG_WARNING(Render_Vulkan, "Unimplemented depth overlap copy");
+        LOG_WARNING(Render_Vulkan, "Unimplemented depth overlap copy: {} {}x -> {} {}x",
+                    vk::to_string(src->info.pixel_format), src->info.num_samples,
+                    vk::to_string(dst->info.pixel_format), dst->info.num_samples);
     }
 }
 

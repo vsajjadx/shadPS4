@@ -463,10 +463,16 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     // Compiling a new pipeline on the GPU thread freezes the game for tens of milliseconds, so
     // pipelines are built on worker threads for every game. A game-specific config can still turn
     // it off for a title that needs every draw of a pipeline's first frames.
-    if (!EmulatorSettings.IsAsyncPipelineCompilation() &&
+    // Driveclub renders lighting probes and exposure data in passes it doesn't repeat, so a draw
+    // skipped while its pipeline compiles leaves the scene dark.
+    const bool needs_every_draw = id == "CUSA00003" || id == "CUSA00093";
+    if (!EmulatorSettings.IsAsyncPipelineCompilation() && !needs_every_draw &&
         !EmulatorSettings.IsAsyncPipelineCompilationGameSpecific()) {
         EmulatorSettings.SetAsyncPipelineCompilation(true, true);
         LOG_INFO(Config, "Asynchronous pipeline compilation forced on");
+    } else if (needs_every_draw && EmulatorSettings.IsAsyncPipelineCompilation()) {
+        EmulatorSettings.SetAsyncPipelineCompilation(false, true);
+        LOG_INFO(Config, "Asynchronous pipeline compilation turned off for this game");
     }
     // UFC 4 reads GPU-rendered data back on the CPU, including images the GPU renders in linear
     // layout. Without precise readbacks every fight is a black arena with only the HUD, and

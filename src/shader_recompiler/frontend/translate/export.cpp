@@ -103,6 +103,14 @@ void Translator::ExportRenderTarget(const GcnInst& inst) {
                                     color_buffer.data_format == AmdGpu::DataFormat::Format8_8 ||
                                     color_buffer.data_format == AmdGpu::DataFormat::Format8_8_8_8);
 
+    // The CB stores 11/11/10 unsigned floats with negatives and NaN as 0 and overflow as the
+    // largest finite value (65024); Vulkan leaves those undefined, and a NaN kept in an HDR
+    // target spreads through post-processing as black blotches (Driveclub, from the
+    // BlackLineInteractive Driveclub port).
+    const bool ufloat_target = color_buffer.num_format == AmdGpu::NumberFormat::Float &&
+                               (color_buffer.data_format == AmdGpu::DataFormat::Format10_11_11 ||
+                                color_buffer.data_format == AmdGpu::DataFormat::Format11_11_10);
+
     // Swizzle components and export
     for (u32 i = 0; i < 4; ++i) {
         const auto swizzled_comp = components[color_buffer.swizzle.Map(i)];
@@ -113,6 +121,11 @@ void Translator::ExportRenderTarget(const GcnInst& inst) {
         if (needs_unorm_fixup) {
             // FIXME: Fix-up for GPUs where float-to-unorm rounding is off from expected.
             converted = ir.FPSub(converted, ir.Imm32(1.f / 127500.f));
+        }
+        if (ufloat_target && i < 3) {
+            // Ordered compare: NaN is not greater than 0.
+            converted = IR::F32{ir.Select(ir.FPGreaterThan(converted, ir.Imm32(0.f)),
+                                          ir.FPMin(converted, ir.Imm32(65024.f)), ir.Imm32(0.f))};
         }
         ir.SetAttribute(mrt, converted, i);
     }

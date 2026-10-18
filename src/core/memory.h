@@ -255,6 +255,17 @@ public:
 
     void SetPrtArea(u32 id, VAddr address, u64 size);
 
+    /// Whether the range lies inside a partially resident texture aperture. Those are GPU
+    /// mapped but have no CPU mapping; their contents are read through CopySparseMemory.
+    bool IsPrtRange(VAddr address, u64 size) const {
+        for (const auto& area : prt_areas) {
+            if (area.mapped && address >= area.start && address + size <= area.end) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     void CopySparseMemory(VAddr source, u8* dest, u64 size);
 
     bool TryWriteBacking(void* address, const void* data, u64 size);

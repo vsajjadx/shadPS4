@@ -960,7 +960,8 @@ bool Rasterizer::IsImageInfoUsable(const VideoCore::ImageInfo& info) {
         it != checked_mapped_ranges.end() && it->second >= info.guest_size) {
         return true;
     }
-    if (!memory->IsMappedRange(info.guest_address, info.guest_size)) {
+    if (!memory->IsMappedRange(info.guest_address, info.guest_size) &&
+        !memory->IsPrtRange(info.guest_address, info.guest_size)) {
         return false;
     }
     u64& checked_size = checked_mapped_ranges[info.guest_address];

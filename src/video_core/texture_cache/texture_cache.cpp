@@ -151,11 +151,20 @@ void TextureCache::DownloadImageMemory(ImageId image_id, DownloadMemoryFlags fla
     }
 }
 
+static u64 HashGuestMemory(VAddr addr, u64 size);
+
+// Partially resident textures have no CPU mapping, so they are hashed through the backing pages.
+static u64 HashImageMemory(VAddr addr, u64 size) {
+    if (Core::Memory::Instance()->IsPrtRange(addr, size)) {
+        return HashGuestMemory(addr, size);
+    }
+    return XXH3_64bits(std::bit_cast<const u8*>(addr), size);
+}
+
 void TextureCache::MarkAsMaybeDirty(ImageId image_id, Image& image) {
     if (image.cpu_hash == 0) {
         // Initialize hash
-        const u8* addr = std::bit_cast<u8*>(image.info.guest_address);
-        image.cpu_hash = XXH3_64bits(addr, image.info.guest_size);
+        image.cpu_hash = HashImageMemory(image.info.guest_address, image.info.guest_size);
     }
     image.flags |= ImageFlagBits::MaybeCpuDirty;
     UntrackImage(image_id);
@@ -775,14 +784,13 @@ void TextureCache::RefreshImage(Image& image) {
         // The image size should be less than page size to be considered MaybeCpuDirty
         // So this calculation should be very uncommon and reasonably fast
         // For now we'll just check up to 64 first pixels
-        const auto addr = std::bit_cast<u8*>(image.info.guest_address);
         const u32 w = std::min(image.info.size.width, u32(8));
         const u32 h = std::min(image.info.size.height, u32(8));
 
         const u32 s_w = image.info.props.is_block ? Common::DivCeil(w, 4u) : w;
         const u32 s_h = image.info.props.is_block ? Common::DivCeil(h, 4u) : h;
         const u32 size = s_w * s_h * (image.info.num_bits / 8);
-        const u64 hash = XXH3_64bits(addr, size);
+        const u64 hash = HashImageMemory(image.info.guest_address, size);
         if (image.cpu_hash == hash) {
             image.flags &= ~ImageFlagBits::MaybeCpuDirty;
             return;
