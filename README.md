@@ -71,6 +71,8 @@ The zip includes the latest official shadPS4 Qt launcher, with a few additions:
 | :---: | :---: |
 | ![Life Is Strange](./documents/Screenshots/games/life-is-strange.jpg) | ![Murdered: Soul Suspect](./documents/Screenshots/games/murdered-soul-suspect.jpg) |
 
+**DualSense support:** If you use a DualSense controller, games that have a separate controller audio channel will play it through the controller's speaker, with no special settings required.
+
 ## What is different from the official shadPS4
 
 - **Fewer crashes.** Many errors that used to close the emulator are now caught, and the game
