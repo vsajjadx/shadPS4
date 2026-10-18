@@ -51,7 +51,7 @@ The zip includes the latest official shadPS4 Qt launcher, with a few additions:
 
 ## Installing PKG files
 
-1. Open **Tools → Crypto Key Manager** and enter two key sets: **Fake Keyset** and
+1. Open **Settings → Crypto Key Manager** and enter two key sets: **Fake Keyset** and
    **PKG Derived Key3 Keyset**. You only do this once.
    *The keys are not included with this program. You need to supply them yourself.*
 2. Choose **File → Install Packages (PKG)** and select one or more `.pkg` files.
