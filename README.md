@@ -33,9 +33,7 @@ per-game settings. The default settings work.
 
 The zip includes the latest official shadPS4 Qt launcher, with a few additions:
 
-- **Automatic updates.** When a new version is released here, the launcher tells you when it
-  starts. Press **Update** and it downloads the new version, replaces itself and the emulator,
-  and opens again.
+- **Automatic updates.** When a new version is released here, the launcher tells you.
 - **Your saves are safe.** The launcher uses the save and settings folders you already have.
   It only makes new ones if none exist, and updates never touch them.
 - **Easy window size.** Pick the size from a list (720p, 1080p, 1440p, 4K and more) instead of
@@ -43,8 +41,7 @@ The zip includes the latest official shadPS4 Qt launcher, with a few additions:
 - **Frame generation switch.** Turn on FSR 3.1 frame generation in **Settings → Graphics**.
 - **Compatibility list.** Shows the official list, plus the games this build runs that the
   official one doesn't.
-- **Install PKG files.** **File → Install Packages (PKG)** installs games, updates and DLC,
-  like shadPS4 v0.7.
+- **Install PKG files.
 
 > Already using the official launcher with a `user` folder next to it? Unzip into that same
 > folder and replace the files. Your games, saves and settings stay as they are.
@@ -97,10 +94,8 @@ open-source projects.
 
 - The [**shadPS4**](https://github.com/shadps4-emu/shadPS4) team, for the emulator this fork is
   built on.
-- Community forks whose fixes are included: shadGT, Pink-shadPS4, shadPS4-sotc, the The Order:
-  1886 port, AYOUB1080p, GR2fork and others.
-- [**fpPS4**](https://github.com/red-prig/fpPS4) and [**Mesa**](https://gitlab.freedesktop.org/mesa/mesa),
-  for open-source reference code.
+- Community forks fixes
+ open-source reference code.
 - AMD [**FidelityFX**](https://github.com/FireBurn/FSR-Vulkan), for FSR frame generation.
 
 ## License
