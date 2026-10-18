@@ -393,6 +393,19 @@ const Buffer* BufferCache::GetArena(u64 first_block, u64 last_block) {
     return new_arena;
 }
 
+void BufferCache::LogDeviceLocalBudget() const {
+    const auto& memory_properties = instance.GetMemoryProperties();
+    std::array<VmaBudget, VK_MAX_MEMORY_HEAPS> budgets{};
+    vmaGetHeapBudgets(instance.GetAllocator(), budgets.data());
+    for (u32 i = 0; i < memory_properties.memoryHeapCount; ++i) {
+        if (memory_properties.memoryHeaps[i].flags & vk::MemoryHeapFlagBits::eDeviceLocal) {
+            LOG_INFO(Render, "Device local heap {}: {} MB used of {} MB budget ({} MB allocated)",
+                     i, budgets[i].usage >> 20, budgets[i].budget >> 20,
+                     budgets[i].statistics.blockBytes >> 20);
+        }
+    }
+}
+
 void BufferCache::AllocateBackingSlab() {
     // Sparse backing used to be allocated with one vkAllocateMemory per EnsureResident call, often
     // a single 64 KB block, and never freed. Drivers limit the number of live allocations
@@ -418,6 +431,7 @@ void BufferCache::AllocateBackingSlab() {
             ++num_backing_slabs;
             LOG_INFO(Render, "Allocated sparse backing slab #{} of {} MB", num_backing_slabs,
                      slab_size >> 20);
+            LogDeviceLocalBudget();
             return;
         }
         ASSERT_MSG(slab_size > block_size, "Failed to allocate sparse backing memory: {}",

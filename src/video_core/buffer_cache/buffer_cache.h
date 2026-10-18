@@ -144,6 +144,7 @@ private:
 
     const Buffer* GetArena(u64 first_block, u64 last_block);
 
+    void LogDeviceLocalBudget() const;
     void AllocateBackingSlab();
 
     void EnsureResident(const Buffer* arena, u64 first_block, u64 last_block);

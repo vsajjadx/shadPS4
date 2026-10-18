@@ -148,6 +148,13 @@ void Scheduler::RecordWork(char kind, std::span<const u64> shader_hashes) {
 
 void Scheduler::LogSubmittedWork(const std::vector<WorkRecord>& records,
                                  const char* reason) const {
+    const auto& memory_properties = instance.GetMemoryProperties();
+    std::array<VmaBudget, VK_MAX_MEMORY_HEAPS> budgets{};
+    vmaGetHeapBudgets(instance.GetAllocator(), budgets.data());
+    for (u32 i = 0; i < memory_properties.memoryHeapCount; ++i) {
+        LOG_CRITICAL(Render_Vulkan, "Memory heap {}: {} MB used of {} MB budget", i,
+                     budgets[i].usage >> 20, budgets[i].budget >> 20);
+    }
     LOG_CRITICAL(Render_Vulkan, "{}: submit holds {} draws/dispatches", reason, records.size());
     for (size_t i = 0; i < records.size();) {
         size_t run = 1;
