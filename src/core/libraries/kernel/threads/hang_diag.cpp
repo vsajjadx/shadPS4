@@ -10,6 +10,8 @@
 
 #include "common/logging/log.h"
 #include "common/singleton.h"
+#include "common/thread.h"
+#include "core/emulator_settings.h"
 #include "core/libraries/kernel/equeue.h"
 #include "core/libraries/kernel/threads/hang_diag.h"
 #include "core/libraries/kernel/threads/pthread.h"
@@ -207,6 +209,10 @@ WaitScope::~WaitScope() {
 }
 
 void RegisterHangDiagHostThread(std::string_view name) {
+    // The GPU command processor is the emulator's busiest thread.
+    if (name == "shadPS4:GpuCommandProcessor" && EmulatorSettings.IsGpuThreadCoreReserve()) {
+        Common::ReserveCoreForCurrentThread();
+    }
 #ifdef _WIN32
     HANDLE handle{};
     if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &handle,

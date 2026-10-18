@@ -438,6 +438,8 @@ struct GPUSettings {
     Setting<bool> hdr_allowed{false};
     Setting<bool> fsr_enabled{false};
     Setting<bool> frame_generation_enabled{true};
+    // Windows: the GPU command thread gets a physical core of its own.
+    Setting<bool> gpu_thread_core_reserve{true};
     Setting<bool> rcas_enabled{true};
     Setting<int> rcas_attenuation{250};
     Setting<bool> userfaultfd{false};
@@ -462,6 +464,8 @@ struct GPUSettings {
             make_override<GPUSettings>("fsr_enabled", &GPUSettings::fsr_enabled),
             make_override<GPUSettings>("frame_generation_enabled",
                                        &GPUSettings::frame_generation_enabled),
+            make_override<GPUSettings>("gpu_thread_core_reserve",
+                                       &GPUSettings::gpu_thread_core_reserve),
             make_override<GPUSettings>("rcas_enabled", &GPUSettings::rcas_enabled),
             make_override<GPUSettings>("rcas_attenuation", &GPUSettings::rcas_attenuation),
             make_override<GPUSettings>("dump_shaders", &GPUSettings::dump_shaders),
@@ -487,7 +491,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GPUSettings, window_width, window_height, int
                                    vblank_limit, full_screen, full_screen_mode, present_mode,
                                    hdr_allowed, fsr_enabled, rcas_enabled, rcas_attenuation,
                                    userfaultfd, inline_fetch_shader, anisotropic_filtering,
-                                   texture_lod_bias, frame_generation_enabled)
+                                   texture_lod_bias, frame_generation_enabled,
+                                   gpu_thread_core_reserve)
 
 // -------------------------------
 // Vulkan settings
@@ -781,6 +786,7 @@ public:
     SETTING_FORWARD_BOOL(m_gpu, HdrAllowed, hdr_allowed)
     SETTING_FORWARD_BOOL(m_gpu, FsrEnabled, fsr_enabled)
     SETTING_FORWARD_BOOL(m_gpu, FrameGenerationEnabled, frame_generation_enabled)
+    SETTING_FORWARD_BOOL(m_gpu, GpuThreadCoreReserve, gpu_thread_core_reserve)
     SETTING_FORWARD_BOOL(m_gpu, RcasEnabled, rcas_enabled)
     SETTING_FORWARD(m_gpu, RcasAttenuation, rcas_attenuation)
     SETTING_FORWARD(m_gpu, ReadbacksMode, readbacks_mode)
