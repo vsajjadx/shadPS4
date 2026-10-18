@@ -832,7 +832,8 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
 
     frame->has_generated = false;
 #ifdef ENABLE_FSR_FRAMEGEN
-    if (FrameGeneration::IsEnabled() && frame->generated_image && !frame->is_hdr) {
+    if (FrameGeneration::IsEnabled() && generation_wanted && frame->generated_image &&
+        !frame->is_hdr) {
         frame->has_generated = frame_generator->Generate(
             cmdbuf, frame->image, frame->generated_image, frame->width, frame->height);
     } else {
@@ -932,23 +933,38 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
     return frame;
 }
 
-bool Presenter::ShouldPresentGenerated() {
-    using namespace std::chrono_literals;
-    const auto half_interval = flip_interval / 2;
-    if (half_interval < 2ms || half_interval > 40ms) {
-        return false;
+float Presenter::GetDisplayRefreshRate() {
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_refresh_query < std::chrono::seconds(1)) {
+        return refresh_rate;
     }
-    // Two presents per game frame only fit when the display shows a new image at least that often.
-    float refresh_rate = 60.0f;
+    last_refresh_query = now;
     if (const SDL_DisplayID display = SDL_GetDisplayForWindow(window.GetSDLWindow())) {
         if (const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(display);
             mode && mode->refresh_rate > 0.0f) {
             refresh_rate = mode->refresh_rate;
         }
     }
-    const auto refresh_period = std::chrono::nanoseconds(
-        static_cast<s64>(1'000'000'000.0 / static_cast<double>(refresh_rate)));
-    return half_interval >= refresh_period * 9 / 10;
+    return refresh_rate;
+}
+
+bool Presenter::UpdateGenerationPacing() {
+    using namespace std::chrono_literals;
+    bool paceable = false;
+    if (FrameGeneration::IsEnabled()) {
+        const auto half_interval = flip_interval / 2;
+        if (half_interval >= 2ms && half_interval <= 40ms) {
+            // The generated and the real image each stay on screen for the same whole number of
+            // refreshes only when half a game frame is a whole multiple of the refresh period.
+            const double ratio = std::chrono::duration<double>(half_interval).count() *
+                                 static_cast<double>(GetDisplayRefreshRate());
+            const double nearest = std::max(1.0, std::round(ratio));
+            const double tolerance = (generation_wanted ? 0.15 : 0.08) * nearest;
+            paceable = ratio >= 0.92 && std::abs(ratio - nearest) <= tolerance;
+        }
+    }
+    generation_wanted = paceable;
+    return paceable;
 }
 
 void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame) {
@@ -957,17 +973,21 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         return;
     }
     const auto now = std::chrono::steady_clock::now();
+    bool steady_cadence = false;
     if (last_real_present.time_since_epoch().count() != 0) {
         const auto interval = now - last_real_present;
+        steady_cadence = flip_interval.count() != 0 &&
+                         std::chrono::abs(interval - flip_interval) * 5 <= flip_interval;
         flip_interval = flip_interval.count() == 0 || interval > flip_interval * 3
                             ? std::chrono::duration_cast<std::chrono::nanoseconds>(interval)
                             : (flip_interval * 7 + interval) / 8;
     }
     last_real_present = now;
 
+    const bool paceable = UpdateGenerationPacing();
     if (frame->has_generated) {
         frame->has_generated = false;
-        if (ShouldPresentGenerated()) {
+        if (paceable && steady_cadence) {
             const auto generated_shown = std::chrono::steady_clock::now();
             PresentImage(frame, false, is_game_frame, true);
             // The real frame follows halfway to the next one.

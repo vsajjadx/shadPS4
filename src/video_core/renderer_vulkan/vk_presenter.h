@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <memory>
@@ -114,7 +115,8 @@ private:
     Frame* GetRenderFrame();
 
     void PresentImage(Frame* frame, bool is_reusing_frame, bool is_game_frame, bool generated);
-    bool ShouldPresentGenerated();
+    float GetDisplayRefreshRate();
+    bool UpdateGenerationPacing();
     void CreateGeneratedImage(Frame* frame, vk::Format format);
     void DestroyGeneratedImage(Frame* frame);
 
@@ -155,6 +157,9 @@ private:
 #endif
     std::chrono::steady_clock::time_point last_real_present{};
     std::chrono::nanoseconds flip_interval{};
+    std::atomic_bool generation_wanted{false};
+    std::chrono::steady_clock::time_point last_refresh_query{};
+    float refresh_rate{60.0f};
 };
 
 } // namespace Vulkan
