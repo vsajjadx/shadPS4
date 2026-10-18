@@ -4,6 +4,7 @@
 #pragma once
 
 #include <deque>
+#include <span>
 #include <boost/container/small_vector.hpp>
 
 #include "common/enum.h"
@@ -152,6 +153,10 @@ private:
 
     bool SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 size, bool is_written,
                            bool is_texel_buffer);
+
+    static constexpr u64 MaxUploadPartBytes = 256_MB;
+
+    void UploadInParts(const Buffer* arena, std::span<const vk::BufferCopy> ranges);
 
     bool SynchronizeMemoryFromImage(const Buffer* arena, VAddr device_addr, u32 size);
 

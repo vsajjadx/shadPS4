@@ -342,6 +342,42 @@ std::vector<PhysicalCore> EnumeratePhysicalCores() {
     return cores;
 }
 
+/// The logical CPUs of the largest L3 cache when the L3 caches differ in size (Ryzen with 3D
+/// V-Cache), 0 otherwise.
+u64 LargestL3CacheMask() {
+    DWORD length = 0;
+    GetLogicalProcessorInformationEx(RelationCache, nullptr, &length);
+    if (length == 0) {
+        return 0;
+    }
+    std::vector<std::byte> buffer(length);
+    auto* info = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buffer.data());
+    if (!GetLogicalProcessorInformationEx(RelationCache, info, &length)) {
+        return 0;
+    }
+    DWORD largest = 0;
+    DWORD smallest = ~DWORD{0};
+    u64 largest_mask = 0;
+    for (std::byte* it = buffer.data(); it < buffer.data() + length;) {
+        const auto* entry = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(it);
+        it += entry->Size;
+        if (entry->Relationship != RelationCache || entry->Cache.Level != 3 ||
+            entry->Cache.GroupMask.Group != 0) {
+            continue;
+        }
+        const DWORD size = entry->Cache.CacheSize;
+        smallest = std::min(smallest, size);
+        if (size > largest) {
+            largest = size;
+            largest_mask = 0;
+        }
+        if (size == largest) {
+            largest_mask |= static_cast<u64>(entry->Cache.GroupMask.Mask);
+        }
+    }
+    return largest > smallest ? largest_mask : 0;
+}
+
 std::atomic<u64> reserved_core_mask{0};
 std::atomic<DWORD> reserved_core_owner{0};
 
@@ -401,7 +437,17 @@ void ReserveCoreForCurrentThread() {
     if (!GetProcessAffinityMask(GetCurrentProcess(), &process_mask, &system_mask)) {
         return;
     }
-    const u64 core = cores.back().mask & static_cast<u64>(process_mask);
+    u64 core = cores.back().mask;
+    if (const u64 l3_mask = LargestL3CacheMask()) {
+        for (auto it = cores.rbegin(); it != cores.rend(); ++it) {
+            if ((it->mask & l3_mask) == it->mask &&
+                it->efficiency_class == cores.back().efficiency_class) {
+                core = it->mask;
+                break;
+            }
+        }
+    }
+    core &= static_cast<u64>(process_mask);
     if (core == 0 || (static_cast<u64>(process_mask) & ~core) == 0) {
         return;
     }

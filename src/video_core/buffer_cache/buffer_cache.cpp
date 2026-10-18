@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <optional>
 #include <magic_enum/magic_enum.hpp>
 #include <xxhash.h>
 
@@ -493,7 +494,11 @@ bool BufferCache::SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 
         copies.emplace_back(total_size_bytes, addr, size);
         total_size_bytes += size;
     });
-    if (!copies.empty()) {
+    if (total_size_bytes > MaxUploadPartBytes) {
+        // A staging buffer the size of a gigabyte upload can fail to allocate when other
+        // programs hold video memory, which ended the game. Upload such ranges a part at a time.
+        UploadInParts(arena, copies);
+    } else if (!copies.empty()) {
         const auto staging = staging_pool.Request(total_size_bytes, MemoryType::HostUncached);
         for (auto& copy : copies) {
             memory->CopySparseMemory(copy.dstOffset, staging.mapped + copy.srcOffset, copy.size);
@@ -507,6 +512,44 @@ bool BufferCache::SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 
         return SynchronizeMemoryFromImage(arena, device_addr, size);
     }
     return false;
+}
+
+void BufferCache::UploadInParts(const Buffer* arena, std::span<const vk::BufferCopy> ranges) {
+    boost::container::small_vector<vk::BufferCopy, 4> part_copies;
+    std::optional<Vulkan::StagingBufferRef> staging;
+    u64 part_bytes = 0;
+    const auto upload_part = [&] {
+        staging->Flush();
+        runtime.CopyBuffer(staging->buffer, arena, part_copies);
+        part_copies.clear();
+        part_bytes = 0;
+    };
+    bool first_part = true;
+    for (const auto& range : ranges) {
+        for (u64 done = 0; done < range.size;) {
+            if (part_bytes == 0) {
+                if (!first_part) {
+                    // The staging memory is free again once the GPU copied the previous part.
+                    scheduler.Finish();
+                }
+                first_part = false;
+                staging = staging_pool.Request(MaxUploadPartBytes, MemoryType::HostUncached);
+            }
+            const u64 part_size = std::min(range.size - done, MaxUploadPartBytes - part_bytes);
+            const VAddr addr = range.dstOffset + done;
+            memory->CopySparseMemory(addr, staging->mapped + part_bytes, part_size);
+            part_copies.emplace_back(staging->offset + part_bytes, addr - arena->cpu_addr,
+                                     part_size);
+            part_bytes += part_size;
+            done += part_size;
+            if (part_bytes == MaxUploadPartBytes) {
+                upload_part();
+            }
+        }
+    }
+    if (part_bytes != 0) {
+        upload_part();
+    }
 }
 
 bool BufferCache::SynchronizeMemoryFromImage(const Buffer* arena, VAddr device_addr, u32 size) {

@@ -169,8 +169,12 @@ private:
     std::array<ImageBinding, AmdGpu::NUM_COLOR_BUFFERS> cb_descs;
     ImageBinding db_desc;
 
-    boost::container::static_vector<vk::DescriptorImageInfo, Shader::NUM_IMAGES> image_infos;
-    boost::container::static_vector<vk::DescriptorBufferInfo, Shader::NUM_BUFFERS> buffer_infos;
+    // Filled for every stage of a pipeline, with the samplers next to the images.
+    static constexpr u32 MaxPipelineImageInfos =
+        (Shader::NUM_IMAGES + Shader::NUM_SAMPLERS) * Shader::MaxStageTypes;
+    static constexpr u32 MaxPipelineBufferInfos = Shader::NUM_BUFFERS * Shader::MaxStageTypes;
+    boost::container::static_vector<vk::DescriptorImageInfo, MaxPipelineImageInfos> image_infos;
+    boost::container::static_vector<vk::DescriptorBufferInfo, MaxPipelineBufferInfos> buffer_infos;
 
     struct BoundBuffer {
         const VideoCore::Buffer* buffer;

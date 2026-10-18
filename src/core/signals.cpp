@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <exception>
 #include <string>
 #include <fmt/format.h>
 #include "common/arch.h"
@@ -11,6 +13,7 @@
 #include "common/decoder.h"
 #include "common/elf_info.h"
 #include "common/path_util.h"
+#include "common/scope_exit.h"
 #include "common/signal_context.h"
 #include "core/cpu_patches.h" // Windows static guest red-zone protection
 #include "core/guest_fault_recovery.h"
@@ -23,6 +26,7 @@
 #ifdef _WIN32
 #include <windows.h>
 static constexpr DWORD MS_VC_EXCEPTION = 0x406D1388;
+static constexpr DWORD MSVC_CPP_EXCEPTION = 0xE06D7363;
 #else
 #include <csignal>
 #include <dlfcn.h>
@@ -235,6 +239,135 @@ void WriteCrashDump(void* exception_pointers) {
 
 #if defined(_WIN32)
 
+/// Number of readable bytes from address to the end of its memory region, 0 if not readable.
+static size_t ReadableBytes(const void* address) noexcept {
+    MEMORY_BASIC_INFORMATION info{};
+    if (address == nullptr || VirtualQuery(address, &info, sizeof(info)) == 0) {
+        return 0;
+    }
+    if (info.State != MEM_COMMIT || (info.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
+        return 0;
+    }
+    return reinterpret_cast<uintptr_t>(info.BaseAddress) + info.RegionSize -
+           reinterpret_cast<uintptr_t>(address);
+}
+
+static bool IsReadable(const void* address, size_t size) noexcept {
+    return ReadableBytes(address) >= size;
+}
+
+static std::string DescribeHostAddress(u64 address) {
+    HMODULE module = nullptr;
+    if (address != 0 &&
+        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCSTR>(address), &module) &&
+        module != nullptr) {
+        std::array<char, MAX_PATH> path{};
+        const DWORD length =
+            GetModuleFileNameA(module, path.data(), static_cast<DWORD>(path.size()));
+        const char* name = path.data();
+        for (DWORD i = 0; i < length && i < path.size(); ++i) {
+            if (path[i] == '\\' || path[i] == '/') {
+                name = path.data() + i + 1;
+            }
+        }
+        return fmt::format("{}+{:#x}", name, address - reinterpret_cast<u64>(module));
+    }
+    return fmt::format("{:#x}", address);
+}
+
+/// Logs the call stack from a context by unwinding host code with its unwind data. Stops at the
+/// first frame without unwind data after the first one (guest or generated code).
+static void LogBacktrace(const char* label, const CONTEXT& start) {
+    CONTEXT context = start;
+    ULONG_PTR stack_low = 0;
+    ULONG_PTR stack_high = 0;
+    GetCurrentThreadStackLimits(&stack_low, &stack_high);
+    const bool known_stack = context.Rsp >= stack_low && context.Rsp < stack_high;
+    for (u32 frame = 0; frame < 40; ++frame) {
+        const u64 pc = context.Rip;
+        if (pc == 0) {
+            break;
+        }
+        LOG_CRITICAL(Debug, "CrashDiag v2 {} stack #{}: {}", label, frame, DescribeHostAddress(pc));
+        DWORD64 image_base = 0;
+        const PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(pc, &image_base, nullptr);
+        if (function != nullptr) {
+            PVOID handler_data = nullptr;
+            DWORD64 establisher_frame = 0;
+            RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, pc, function, &context, &handler_data,
+                             &establisher_frame, nullptr);
+        } else {
+            if (frame != 0 || !IsReadable(reinterpret_cast<const void*>(context.Rsp), 8)) {
+                break;
+            }
+            // Leaf function: the return address is on the top of the stack.
+            context.Rip = *reinterpret_cast<const u64*>(context.Rsp);
+            context.Rsp += 8;
+        }
+        if (known_stack && (context.Rsp < stack_low || context.Rsp >= stack_high)) {
+            break;
+        }
+    }
+}
+
+/// Logs a C++ exception: where it was thrown, the module that threw it, its type, its message
+/// and the call stack. Logged a limited number of times, libraries may throw and catch
+/// exceptions routinely.
+static void LogCppException(const EXCEPTION_POINTERS& exception) {
+    static std::atomic<u32> num_logged{0};
+    static thread_local bool logging = false;
+    if (logging || num_logged.fetch_add(1, std::memory_order_relaxed) >= 16) {
+        return;
+    }
+    logging = true;
+    SCOPE_EXIT {
+        logging = false;
+    };
+    const EXCEPTION_RECORD& record = *exception.ExceptionRecord;
+    LOG_CRITICAL(Debug, "CrashDiag v2: C++ exception at {}",
+                 DescribeHostAddress(reinterpret_cast<u64>(record.ExceptionAddress)));
+    if (record.NumberParameters >= 4) {
+        const u64 object = record.ExceptionInformation[1];
+        const u64 throw_info = record.ExceptionInformation[2];
+        const u64 image_base = record.ExceptionInformation[3];
+        LOG_CRITICAL(Debug, "CrashDiag v2: thrown by module {}", DescribeHostAddress(image_base));
+        // x64 ThrowInfo: attributes, unwind, forward compat, catchable type array (image RVAs).
+        const auto* info = reinterpret_cast<const s32*>(throw_info);
+        if (image_base != 0 && IsReadable(info, 4 * sizeof(s32)) && info[3] != 0) {
+            const auto* types =
+                reinterpret_cast<const s32*>(image_base + static_cast<u32>(info[3]));
+            const s32 num_types = IsReadable(types, sizeof(s32)) ? std::min<s32>(types[0], 8) : 0;
+            for (s32 i = 0; i < num_types && IsReadable(types + 1 + i, sizeof(s32)); ++i) {
+                // CatchableType: properties, type descriptor, PMD (mdisp, pdisp, vdisp), size.
+                const auto* catchable =
+                    reinterpret_cast<const s32*>(image_base + static_cast<u32>(types[1 + i]));
+                if (!IsReadable(catchable, 6 * sizeof(s32))) {
+                    break;
+                }
+                // TypeDescriptor: vftable, spare, decorated name.
+                const char* name = reinterpret_cast<const char*>(
+                    image_base + static_cast<u32>(catchable[1]) + 2 * sizeof(void*));
+                const size_t max_length = std::min<size_t>(ReadableBytes(name), 160);
+                std::string type_name;
+                for (size_t c = 0; c < max_length && name[c] != '\0'; ++c) {
+                    type_name.push_back(name[c]);
+                }
+                LOG_CRITICAL(Debug, "CrashDiag v2: exception type {}", type_name);
+                if (type_name == ".?AVexception@std@@" && catchable[3] == -1 && object != 0) {
+                    const auto* error =
+                        reinterpret_cast<const std::exception*>(object + catchable[2]);
+                    if (IsReadable(error, 2 * sizeof(void*))) {
+                        LOG_CRITICAL(Debug, "CrashDiag v2: what(): {}", error->what());
+                    }
+                }
+            }
+        }
+    }
+    LogBacktrace("C++ exception", *exception.ContextRecord);
+}
+
 static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
     using namespace Libraries::Kernel;
     const auto* signals = Signals::Instance();
@@ -331,6 +464,11 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
     case MS_VC_EXCEPTION:
         LOG_DEBUG(Debug, "Pass MS_VC_EXCEPTION at {} to handler", address);
         return EXCEPTION_EXECUTE_HANDLER;
+    case MSVC_CPP_EXCEPTION:
+        // A C++ throw before any catch: the thrower may catch it itself. It keeps its course and
+        // is logged, so an uncaught one that terminates the emulator leaves its origin behind.
+        LogCppException(*pExp);
+        return EXCEPTION_CONTINUE_SEARCH;
     default:
         break;
     }
@@ -422,6 +560,7 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
                 }
                 LOG_CRITICAL(Debug, "StackCodeRefs: {}", frames);
             }
+            LogBacktrace("unhandled", *pExp->ContextRecord);
         }
         WriteCrashDump(pExp);
         Common::Singleton<Core::Emulator>::Instance()->Shutdown();
@@ -671,7 +810,7 @@ SignalDispatch::SignalDispatch() {
     ASSERT_MSG(handle = AddVectoredExceptionHandler(0, SignalHandler),
                "Failed to register exception handler.");
 #else
-    struct sigaction action{};
+    struct sigaction action {};
     action.sa_sigaction = SignalHandler;
     action.sa_flags = SA_SIGINFO | SA_ONSTACK;
     sigemptyset(&action.sa_mask);
@@ -695,7 +834,7 @@ void SignalDispatch::RemoveHandlers() {
         std::quick_exit(1);
     }
 #else
-    struct sigaction action{};
+    struct sigaction action {};
     action.sa_handler = SIG_DFL;
     action.sa_flags = 0;
     sigemptyset(&action.sa_mask);
