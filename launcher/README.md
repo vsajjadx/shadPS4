@@ -12,5 +12,8 @@ The patches add:
 - The included `shadPS4.exe` is listed and selected as the emulator version.
 - A list of common window sizes instead of typing the width and height.
 - A frame generation (FSR 3.1) switch in the Graphics tab.
+- Existing `user` and `launcher` folders next to the launcher (or in the working directory) are
+  used before the standard ones, and the emulator runs in the same place, so saves and settings
+  that already exist keep being used. New folders are only made when none exist.
 
 To update the launcher, change `UPSTREAM_COMMIT` and refresh the patches against it.

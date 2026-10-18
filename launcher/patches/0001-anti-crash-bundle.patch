@@ -1,4 +1,4 @@
-From fd11f97629c79028c811d92bb2ea4b05e0620834 Mon Sep 17 00:00:00 2001
+From 97f237985db06d549315388d9a03daa7afd6ff00 Mon Sep 17 00:00:00 2001
 From: vsajjadx <noreply@github.com>
 Date: Sun, 18 Oct 2026 14:12:10 +0330
 Subject: [PATCH] Bundle with shadPS4 Anti-Crash: fork updater, bundled
@@ -6,15 +6,16 @@ Subject: [PATCH] Bundle with shadPS4 Anti-Crash: fork updater, bundled
 
 ---
  CMakeLists.txt                 |  10 ++
+ src/common/path_util.cpp       |  37 +++++-
  src/core/emulator_settings.h   |   8 +-
  src/qt_gui/check_update.cpp    | 223 ++++++++++++++++++++++++++++++++-
  src/qt_gui/check_update.h      |   6 +
  src/qt_gui/gui_settings.h      |   7 ++
- src/qt_gui/main_window.cpp     |  40 ++++++
- src/qt_gui/main_window.h       |   1 +
+ src/qt_gui/main_window.cpp     |  59 ++++++++-
+ src/qt_gui/main_window.h       |   2 +
  src/qt_gui/settings_dialog.cpp |  78 +++++++++++-
  src/qt_gui/settings_dialog.h   |   7 ++
- 9 files changed, 373 insertions(+), 7 deletions(-)
+ 10 files changed, 423 insertions(+), 14 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
 index 641fcc6..5055264 100644
@@ -37,6 +38,76 @@ index 641fcc6..5055264 100644
  if (HIDE_VERSION_MANAGER)
      add_definitions(-DHIDE_VERSION_MANAGER)
  endif()
+diff --git a/src/common/path_util.cpp b/src/common/path_util.cpp
+index 59e39b7..a5898a0 100644
+--- a/src/common/path_util.cpp
++++ b/src/common/path_util.cpp
+@@ -2,7 +2,9 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include <fstream>
++#include <optional>
+ #include <unordered_map>
++#include <vector>
+ #include "common/logging/log.h"
+ #include "common/path_util.h"
+ #include "common/types.h"
+@@ -82,6 +84,30 @@ static std::optional<std::filesystem::path> GetBundleParentDirectory() {
+ }
+ #endif
+ 
++// Folders next to the launcher come first, then the working directory, so saves and settings
++// that already exist are used. A new folder is only made in the standard place when none exists.
++static std::optional<std::filesystem::path> FindExistingPortableDir(const char* name) {
++    std::vector<std::filesystem::path> bases;
++#ifdef _WIN32
++    wchar_t exe_path[MAX_PATH] = {0};
++    if (GetModuleFileNameW(nullptr, exe_path, MAX_PATH) > 0) {
++        bases.push_back(std::filesystem::path(exe_path).parent_path());
++    }
++#endif
++    std::error_code ec;
++    const auto cwd = std::filesystem::current_path(ec);
++    if (!ec) {
++        bases.push_back(cwd);
++    }
++    for (const auto& base : bases) {
++        const auto dir = base / name;
++        if (std::filesystem::is_directory(dir, ec)) {
++            return dir;
++        }
++    }
++    return std::nullopt;
++}
++
+ static auto UserPaths = [] {
+ #if defined(__APPLE__)
+     // Set the current path to the directory containing the app bundle.
+@@ -91,8 +117,9 @@ static auto UserPaths = [] {
+ #endif
+ 
+     // Try the portable launcher directory first.
+-    auto user_dir = std::filesystem::current_path() / PORTABLE_DIR;
+-    if (!std::filesystem::exists(user_dir)) {
++    const auto portable_user_dir = FindExistingPortableDir(PORTABLE_DIR);
++    auto user_dir = portable_user_dir.value_or(std::filesystem::current_path() / PORTABLE_DIR);
++    if (!portable_user_dir) {
+         // If it doesn't exist, use the standard path for the platform instead.
+         // NOTE: On Windows we currently just create the portable directory instead.
+ #ifdef __APPLE__
+@@ -113,8 +140,10 @@ static auto UserPaths = [] {
+     }
+ 
+     // Try the portable user directory first.
+-    auto launcher_dir = std::filesystem::current_path() / PORTABLE_LAUNCHER_DIR;
+-    if (!std::filesystem::exists(launcher_dir)) {
++    const auto portable_launcher_dir = FindExistingPortableDir(PORTABLE_LAUNCHER_DIR);
++    auto launcher_dir =
++        portable_launcher_dir.value_or(std::filesystem::current_path() / PORTABLE_LAUNCHER_DIR);
++    if (!portable_launcher_dir) {
+         // If it doesn't exist, use the standard path for the platform instead.
+         // NOTE: On Windows we currently just create the portable directory instead.
+ #ifdef __APPLE__
 diff --git a/src/core/emulator_settings.h b/src/core/emulator_settings.h
 index d07147e..992aab3 100644
 --- a/src/core/emulator_settings.h
@@ -401,7 +472,7 @@ index 66e2905..ecb8e70 100644
  } // namespace gui
  
 diff --git a/src/qt_gui/main_window.cpp b/src/qt_gui/main_window.cpp
-index 4d06e63..01e1622 100644
+index 4d06e63..a4d99d0 100644
 --- a/src/qt_gui/main_window.cpp
 +++ b/src/qt_gui/main_window.cpp
 @@ -1,8 +1,13 @@
@@ -426,7 +497,34 @@ index 4d06e63..01e1622 100644
      LoadVersionComboBox();
      if (m_gui_settings->GetValue(gui::vm_checkOnStartup).toBool()) {
          auto versionDialog = new VersionDialog(m_gui_settings, this);
-@@ -1683,3 +1689,37 @@ void MainWindow::LoadVersionComboBox() {
+@@ -1487,7 +1493,7 @@ tr("No emulator version was selected.\nThe Version Manager menu will then open.\
+     EmulatorState::GetInstance()->SetGameRunning(true);
+     last_game_path = path;
+ 
+-    QString workDir = QDir::currentPath();
++    QString workDir = EmulatorWorkDir();
+     m_ipc_client->startEmulator(fileInfo, final_args, workDir);
+     m_ipc_client->setActiveController(GamepadSelect::GetSelectedGamepad());
+ }
+@@ -1564,7 +1570,7 @@ void MainWindow::StartEmulatorExecutable(std::filesystem::path emuPath, QString
+     }
+ 
+     EmulatorState::GetInstance()->SetGameRunning(true);
+-    QString workDir = QDir::currentPath();
++    QString workDir = EmulatorWorkDir();
+     m_ipc_client->startEmulator(fileInfo, args, workDir, disable_ipc);
+ }
+ 
+@@ -1600,7 +1606,7 @@ void MainWindow::RestartEmulator() {
+     }
+ 
+     QFileInfo fileInfo(exe);
+-    QString workDir = fileInfo.absolutePath();
++    QString workDir = EmulatorWorkDir();
+ 
+     m_ipc_client->startEmulator(fileInfo, args, workDir);
+ }
+@@ -1683,3 +1689,50 @@ void MainWindow::LoadVersionComboBox() {
  
      ui->versionComboBox->adjustSize();
  }
@@ -464,15 +562,29 @@ index 4d06e63..01e1622 100644
 +        m_gui_settings->SetValue(gui::vm_bundledAdopted, true);
 +    }
 +}
++
++QString MainWindow::EmulatorWorkDir() const {
++    // The emulator looks for a "user" folder in its working directory, so it runs where the
++    // launcher found its own one and both use the same saves and settings.
++    const auto user_dir = Common::FS::GetUserPath(Common::FS::PathType::UserDir);
++    QString dir;
++    if (user_dir.filename() == "user") {
++        Common::FS::PathToQString(dir, user_dir.parent_path());
++    } else {
++        dir = QCoreApplication::applicationDirPath();
++    }
++    return dir;
++}
 diff --git a/src/qt_gui/main_window.h b/src/qt_gui/main_window.h
-index fd69169..20242c1 100644
+index fd69169..40d9339 100644
 --- a/src/qt_gui/main_window.h
 +++ b/src/qt_gui/main_window.h
-@@ -42,6 +42,7 @@ public:
+@@ -42,6 +42,8 @@ public:
      void StopGame();
      void RestartGame();
      void LoadVersionComboBox();
 +    void UseBundledEmulator();
++    QString EmulatorWorkDir() const;
      bool showLabels;
      std::shared_ptr<IpcClient> m_ipc_client;
  
