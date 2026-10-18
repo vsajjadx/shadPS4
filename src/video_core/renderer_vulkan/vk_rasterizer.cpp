@@ -947,8 +947,26 @@ bool Rasterizer::IsImageInfoUsable(const VideoCore::ImageInfo& info) {
     }
     // The texture cache hashes and uploads the whole guest range, so a T# reaching into
     // unmapped memory (e.g. garbage from an SRT walker failure) faults in XXH3 and crashes.
-    constexpr u32 MaxGuestSize = 1_GB;
-    if (info.guest_size > MaxGuestSize) {
+    // A stale T# with a plausible address and format can still describe a 1-3 GB image through
+    // its pitch and layer fields: registering it uploaded gigabytes in one frame (1-3 s freezes)
+    // and again on every write to that range. Real textures stay far below 512 MiB (8K x 8K x 4
+    // bytes is 256 MiB), and tiling pads small textures many times over, but not to 16 MiB.
+    // (From the theorder1886-port.)
+    constexpr u64 MaxGuestSize = 512_MB;
+    const u64 texels =
+        u64(info.size.width) * info.size.height * info.size.depth * info.resources.layers;
+    const bool padded =
+        info.guest_size > 16_MB && info.guest_size / 64 > texels * std::max(info.num_bits, 8u) / 8;
+    if (info.guest_size > MaxGuestSize || padded) {
+        static std::atomic<u32> reported{0};
+        if (reported.fetch_add(1, std::memory_order_relaxed) < 8) {
+            LOG_WARNING(Render_Vulkan,
+                        "Not binding implausible texture {:#x}: {} MiB, {}x{}x{} pitch {}, {} "
+                        "layers, {} levels",
+                        info.guest_address, info.guest_size >> 20, info.size.width,
+                        info.size.height, info.size.depth, info.pitch, info.resources.layers,
+                        info.resources.levels);
+        }
         return false;
     }
     const u64 generation = gpu_mappings_generation.load(std::memory_order_acquire);
@@ -1039,10 +1057,10 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
                             "layers={}, guest_size={:#x}, data_format={}, tile_mode={}, type={}, "
                             "base_array={}, last_array={}, pitch={}",
                             stage.hw_stage, stage.pgm_hash, desc_idx, desc.info.guest_address,
-                            desc.info.size.width, desc.info.size.height,
-                            desc.info.size.depth, desc.info.resources.levels,
-                            desc.info.resources.layers, desc.info.guest_size,
-                            static_cast<u32>(data_fmt), static_cast<u32>(tsharp.GetTileMode()),
+                            desc.info.size.width, desc.info.size.height, desc.info.size.depth,
+                            desc.info.resources.levels, desc.info.resources.layers,
+                            desc.info.guest_size, static_cast<u32>(data_fmt),
+                            static_cast<u32>(tsharp.GetTileMode()),
                             static_cast<u32>(tsharp.GetType()), static_cast<u32>(tsharp.base_array),
                             static_cast<u32>(tsharp.last_array), tsharp.Pitch());
                 image_id = {};

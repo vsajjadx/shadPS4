@@ -171,16 +171,18 @@ Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,
     auto image_format_properties =
         instance.GetPhysicalDevice().getImageFormatProperties2(format_info);
     if (image_format_properties.result == vk::Result::eErrorFormatNotSupported &&
-        info.props.is_block) {
-        // Some drivers have no storage usage for certain compressed formats (BC5 on AMD).
-        // Creating the image regardless is undefined; fall back to what a sampled texture
-        // needs, first without storage, then without the uncompressed-view capability.
+        (info.props.is_block || (usage_flags & vk::ImageUsageFlagBits::eStorage))) {
+        // Some drivers have no storage usage for certain formats (BC5 and BC6H on AMD).
+        // Creating the image regardless is undefined and can lose the device a few frames
+        // later; fall back to what a sampled texture needs, first without storage, then
+        // without the uncompressed-view capability.
         usage_flags &= ~vk::ImageUsageFlagBits::eStorage;
         format_features = FormatFeatureFlags(usage_flags);
         format_info.usage = usage_flags;
         image_format_properties =
             instance.GetPhysicalDevice().getImageFormatProperties2(format_info);
-        if (image_format_properties.result == vk::Result::eErrorFormatNotSupported) {
+        if (image_format_properties.result == vk::Result::eErrorFormatNotSupported &&
+            info.props.is_block) {
             flags &= ~vk::ImageCreateFlagBits::eBlockTexelViewCompatible;
             format_info.flags = flags;
             image_format_properties =

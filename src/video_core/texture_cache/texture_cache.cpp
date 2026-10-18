@@ -503,10 +503,9 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
 
     // A heavy frame looks the same few hundred textures up thousands of times. Exact matches
     // are remembered until the set of registered images changes. (From the inFAMOUS PC port.)
-    FoundImage& found =
-        found_images[((info.guest_address >> 12) ^ (info.guest_address >> 23) ^ info.guest_size ^
-                      (u64(info.pixel_format) << 3)) &
-                     (found_images.size() - 1)];
+    FoundImage& found = found_images[((info.guest_address >> 12) ^ (info.guest_address >> 23) ^
+                                      info.guest_size ^ (u64(info.pixel_format) << 3)) &
+                                     (found_images.size() - 1)];
     if (found.generation == image_set_generation && found.guest_address == info.guest_address &&
         found.guest_size == info.guest_size && found.size == info.size &&
         found.pixel_format == info.pixel_format && found.type == info.type &&
@@ -591,7 +590,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     // Anything resolved through an overlap or created just now goes through the full path again.
     if (perfect_match && image.info.guest_address == info.guest_address) {
         found = {image_set_generation, info.guest_address, info.guest_size, info.size,
-                 info.pixel_format, info.type, exact_fmt, image_id};
+                 info.pixel_format,    info.type,          exact_fmt,       image_id};
     }
 
     // If the image requested is a subresource of the image from cache record its location.
@@ -834,14 +833,55 @@ void TextureCache::RefreshImage(Image& image) {
 
     scheduler.EndRendering();
 
-    const bool was_fully_tracked = image.track_addr == image.info.guest_address &&
-                                   image.track_addr_end ==
-                                       image.info.guest_address + image.info.guest_size;
+    const bool was_fully_tracked =
+        image.track_addr == image.info.guest_address &&
+        image.track_addr_end == image.info.guest_address + image.info.guest_size;
     const auto [in_buffer, in_offset] =
         buffer_cache.ObtainBufferForImage(image.info.guest_address, image.info.guest_size);
     const auto [buffer, offset] = tile_manager.DetileImage(in_buffer, in_offset, image.info);
     for (auto& copy : image_copies) {
         copy.bufferOffset += offset;
+    }
+
+    // A copy reading past its source buffer faults the GPU (a driver crash or a lost device). A
+    // stale descriptor or a failed detile can describe far more data than the buffer holds
+    // (512x512 with hundreds of layers): skip the copies that do not fit. (From the
+    // theorder1886-port.)
+    const u32 block = image.info.props.is_block ? 4u : 1u;
+    const u64 texel_bytes = std::max(image.info.num_bits / 8u, 1u);
+    const auto past_buffer = [&](const vk::BufferImageCopy& copy) {
+        const u64 row = Common::DivCeil(
+            copy.bufferRowLength ? copy.bufferRowLength : copy.imageExtent.width, block);
+        const u64 rows = Common::DivCeil(
+            copy.bufferImageHeight ? copy.bufferImageHeight : copy.imageExtent.height, block);
+        const u64 slices = u64(copy.imageSubresource.layerCount) * copy.imageExtent.depth;
+        if (slices == 0) {
+            return false;
+        }
+        const u64 end =
+            copy.bufferOffset + ((slices - 1) * rows * row +
+                                 (Common::DivCeil(copy.imageExtent.height, block) - 1) * row +
+                                 Common::DivCeil(copy.imageExtent.width, block)) *
+                                    texel_bytes;
+        if (end <= buffer->SizeBytes()) {
+            return false;
+        }
+        static std::atomic<u32> warned{0};
+        if (warned.fetch_add(1, std::memory_order_relaxed) < 8) {
+            LOG_ERROR(Render,
+                      "Skipping upload of {:#x} {}x{}x{} layers {} mip {}: reads {} bytes "
+                      "of a {} byte buffer",
+                      image.info.guest_address, image.info.size.width, image.info.size.height,
+                      image.info.size.depth, copy.imageSubresource.layerCount,
+                      copy.imageSubresource.mipLevel, end, buffer->SizeBytes());
+        }
+        return true;
+    };
+    image_copies.erase(std::remove_if(image_copies.begin(), image_copies.end(), past_buffer),
+                       image_copies.end());
+    if (image_copies.empty()) {
+        image.flags &= ~ImageFlagBits::Dirty;
+        return;
     }
 
     runtime.UploadImage(&image, buffer, image_copies);

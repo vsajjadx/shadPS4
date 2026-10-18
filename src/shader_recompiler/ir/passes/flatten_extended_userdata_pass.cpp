@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstring>
+#include <mutex>
 #include <optional>
+#include <string_view>
 #include <unordered_map>
 #include <boost/container/flat_map.hpp>
 #include <queue>
@@ -29,8 +32,34 @@
 
 using namespace Xbyak::util;
 
-static Xbyak::CodeGenerator g_srt_codegen(32_MB);
+static Xbyak::CodeGenerator g_srt_codegen(128_MB);
 static const u8* g_srt_codegen_start = nullptr;
+// Shaders are translated and loaded from the cache on several threads.
+static std::recursive_mutex g_srt_codegen_mutex;
+
+// The permutations of a program share its walker, and each kept a copy that was never freed:
+// with the hundreds of permutations of some material shaders the 32 MB code buffer ran out
+// during a session ("code is too big") and the emulator stopped. Identical walkers are shared.
+static std::unordered_multimap<size_t, std::pair<const u8*, size_t>> g_srt_walkers;
+
+static size_t SrtWalkerKey(const u8* code, size_t size) {
+    return std::hash<std::string_view>{}({reinterpret_cast<const char*>(code), size});
+}
+
+static const u8* FindSrtWalker(const u8* code, size_t size) {
+    const auto [begin, end] = g_srt_walkers.equal_range(SrtWalkerKey(code, size));
+    for (auto it = begin; it != end; ++it) {
+        // A walker the fault handler patched no longer matches its code and is not reused.
+        if (it->second.second == size && std::memcmp(it->second.first, code, size) == 0) {
+            return it->second.first;
+        }
+    }
+    return nullptr;
+}
+
+static void AddSrtWalker(const u8* code, size_t size) {
+    g_srt_walkers.emplace(SrtWalkerKey(code, size), std::pair{code, size});
+}
 
 namespace {
 static bool SrtWalkerSignalHandler(void* context, void* fault_address);
@@ -52,10 +81,15 @@ static void EnsureSrtWalkerHandler() {
 namespace Shader {
 
 PFN_SrtWalker RegisterWalkerCode(const u8* ptr, size_t size) {
+    std::scoped_lock lock{g_srt_codegen_mutex};
     EnsureSrtWalkerHandler();
+    if (const u8* existing = FindSrtWalker(ptr, size)) {
+        return reinterpret_cast<PFN_SrtWalker>(const_cast<u8*>(existing));
+    }
     const auto func_addr = (PFN_SrtWalker)g_srt_codegen.getCurr();
     g_srt_codegen.db(ptr, size);
     g_srt_codegen.ready();
+    AddSrtWalker(reinterpret_cast<const u8*>(func_addr), size);
     return func_addr;
 }
 
@@ -965,8 +999,10 @@ static void GenerateSrtProgram(Info& info, PassInfo& pass_info) {
         return;
     }
 
+    std::scoped_lock lock{g_srt_codegen_mutex};
     EnsureSrtWalkerHandler();
 
+    const size_t walker_start = c.getSize();
     info.srt_info.walker_func = c.getCurr<PFN_SrtWalker>();
     pass_info.dst_off_dw = NUM_USER_DATA_REGS;
     ASSERT(pass_info.dst_off_dw == info.srt_info.flattened_bufsize_dw);
@@ -980,6 +1016,13 @@ static void GenerateSrtProgram(Info& info, PassInfo& pass_info) {
 
     info.srt_info.walker_func_size =
         c.getCurr() - reinterpret_cast<const u8*>(info.srt_info.walker_func);
+    const auto* walker = reinterpret_cast<const u8*>(info.srt_info.walker_func);
+    if (const u8* existing = FindSrtWalker(walker, info.srt_info.walker_func_size)) {
+        c.setSize(walker_start);
+        info.srt_info.walker_func = reinterpret_cast<PFN_SrtWalker>(const_cast<u8*>(existing));
+    } else {
+        AddSrtWalker(walker, info.srt_info.walker_func_size);
+    }
 
     if (EmulatorSettings.IsDumpShaders()) {
         DumpSrtProgram(info, reinterpret_cast<const u8*>(info.srt_info.walker_func),
