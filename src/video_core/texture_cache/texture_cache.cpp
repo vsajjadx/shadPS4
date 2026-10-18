@@ -734,6 +734,7 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
                                      .owner_uid = image.image_uid,
                                      .num_samples = image.info.num_samples,
                                      .clear_mask = image.info.meta_info.htile_clear_mask,
+                                     .htile_stencil = image.info.props.has_stencil != 0,
                                  });
     }
 

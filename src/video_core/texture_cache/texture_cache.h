@@ -220,6 +220,7 @@ public:
         u64 owner_uid{};
         u32 num_samples = 1;
         s32 clear_mask = -1;
+        bool htile_stencil{}; ///< HTILE words also carry stencil state.
     };
 
     /// Returns metadata information if the specified address belongs to a live image.

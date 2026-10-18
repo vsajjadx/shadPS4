@@ -162,6 +162,10 @@ public:
     ~OrbisSem() = default;
 
     s32 Wait(bool can_block, s32 need_count, u32* timeout) {
+        if (need_count <= 0 || need_count > max_count) {
+            // No signal could ever satisfy it.
+            return ORBIS_KERNEL_ERROR_EINVAL;
+        }
         std::unique_lock lk{mutex};
         if (deleted) {
             // The semaphore was found before another thread deleted it; no future signal can wake
@@ -194,9 +198,13 @@ public:
 
     bool Signal(s32 signal_count) {
         std::scoped_lock lk{mutex};
-        if (token_count + signal_count > max_count) {
+        if (signal_count > max_count) {
             return false;
         }
+        // The waiters take their tokens before the maximum is checked: a signal that would only
+        // exceed it counting the tokens a waiter is about to take must still wake that waiter.
+        // Refusing the whole signal left the waiter asleep for good. Only what is left after the
+        // waiters is clamped to the maximum, which is reported. (As fpPS4's sema_post.)
         token_count += signal_count;
 
         // Wake up threads in order of priority.
@@ -211,7 +219,10 @@ public:
             waiter->was_signaled = true;
             waiter->sem.release();
         }
-
+        if (token_count > max_count) {
+            token_count = max_count;
+            return false;
+        }
         return true;
     }
 
@@ -424,8 +435,8 @@ s32 PS4_SYSV_ABI sceKernelSignalSema(OrbisKernelSema sem, s32 signalCount) {
     }
     s->NoteSignal(__builtin_return_address(0));
     if (!s->Signal(signalCount)) {
-        LOG_WARNING(Lib_Kernel, "sceKernelSignalSema '{}' over its maximum: {} + {} > {}", s->name,
-                    s->token_count.load(), signalCount, s->max_count);
+        LOG_WARNING(Lib_Kernel, "sceKernelSignalSema '{}' signalled {} past its maximum {}",
+                    s->name, signalCount, s->max_count);
         return ORBIS_KERNEL_ERROR_EINVAL;
     }
     return ORBIS_OK;

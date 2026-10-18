@@ -564,15 +564,17 @@ void BufferCache::UploadInParts(const Buffer* arena, std::span<const vk::BufferC
 bool BufferCache::SynchronizeMemoryFromImage(const Buffer* arena, VAddr device_addr, u32 size) {
     if (const auto meta = texture_cache.GetMetaInfo(device_addr)) {
         if (meta->type == TextureCache::MetaType::HTile) {
-            // Depth is never compressed here: tiles read as expanded (ZMask 0xF, read the depth
-            // image) with the full depth range, or as cleared (ZMask 0) before the first draw
-            // after a clear. A min/max of 0 made shaders that use HTILE for culling reject
-            // every tile.
-            static constexpr u32 HtileExpanded = 0xfffc000fu;
-            static constexpr u32 HtileCleared = 0xfffc0000u;
+            // Depth is never compressed here: tiles read as uncompressed (ZMask 0xF, read the
+            // depth image) with the full depth range, or as cleared (ZMask 0) before the first
+            // draw after a clear. With stencil, the word also holds the stencil pretest results
+            // (unknown) and stencil compression (none). Layouts and values as Mesa's radv
+            // (HTILE_Z_UNCOMPRESSED, HTILE_ZS_UNCOMPRESSED in ac_descriptors.h); a cleared tile
+            // keeps the full range instead of the clear depth, which stays conservative for
+            // shaders that cull with it.
             const bool cleared = (meta->clear_mask & 1) != 0;
+            const u32 uncompressed = meta->htile_stencil ? 0xfffff3ffu : 0xfffc000fu;
             runtime.FillBuffer(arena, arena->Offset(device_addr), size,
-                               cleared ? HtileCleared : HtileExpanded);
+                               cleared ? uncompressed & ~0xfu : uncompressed);
             return true;
         } else if (meta->type == TextureCache::MetaType::CMask) {
             const auto expanded_value = CmaskColorExpandedValue(meta->num_samples);
