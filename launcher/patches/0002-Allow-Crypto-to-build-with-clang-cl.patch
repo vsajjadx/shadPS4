@@ -1,14 +1,14 @@
-From 4379276281414f9232bd993bfbc3a414c9e598f2 Mon Sep 17 00:00:00 2001
+From c5368fa089c76640944b34161a71ab6205352e5b Mon Sep 17 00:00:00 2001
 From: ci <ci@localhost>
 Date: Sun, 18 Oct 2026 12:47:37 +0000
 Subject: [PATCH] Allow Crypto++ to build with clang-cl
 
 ---
- CMakeLists.txt | 8 ++++++++
- 1 file changed, 8 insertions(+)
+ CMakeLists.txt | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 864c1ef..7247623 100644
+index 864c1ef..b1e3ef9 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -209,6 +209,14 @@ if (NOT TARGET cryptopp::cryptopp)
@@ -26,6 +26,16 @@ index 864c1ef..7247623 100644
      set(CRYPTOPP_INSTALL OFF)
      set(CRYPTOPP_BUILD_TESTING OFF)
      set(CRYPTOPP_SOURCES ${cryptopp_src_SOURCE_DIR})
+@@ -222,6 +230,9 @@ if (NOT TARGET cryptopp::cryptopp)
+         GIT_TAG CRYPTOPP_8_9_0
+         GIT_SHALLOW TRUE)
+     FetchContent_MakeAvailable(cryptopp_cmake)
++    # config_asm.h picks the MASM helpers (CPUID64, XGETBV64) for _MSC_VER + x64, which also
++    # matches clang-cl, but the .asm files are not built. Turn the assembly paths off for real.
++    target_compile_definitions(cryptopp PUBLIC CRYPTOPP_DISABLE_ASM)
+     # Headers are included as <cryptopp/...>; the source folder also has a conflicting zlib.h.
+     file(COPY ${cryptopp_src_SOURCE_DIR}/ DESTINATION ${CMAKE_BINARY_DIR}/cryptopp_include/cryptopp
+          FILES_MATCHING PATTERN "*.h")
 -- 
 2.43.0
 

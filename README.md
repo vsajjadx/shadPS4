@@ -32,6 +32,8 @@ SPDX-License-Identifier: GPL-2.0-or-later
 | :------------------------------------------------------------------------: | :------------------------------------------------------------------: |
 | ![Yakuza screenshot](./documents/Screenshots/3.png) | ![DRIVECLUB screenshot](./documents/Screenshots/4.png) |
 
+**DualSense support:** If you use a DualSense controller, games that have a separate controller audio channel will play it through the controller's speaker, with no special settings required.
+
 # General information
 
 **shadPS4** is an early **PlayStation 4** emulator for **Windows**, **Linux** and **macOS** written in C++.
