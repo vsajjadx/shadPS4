@@ -511,6 +511,15 @@ bool BufferCache::SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 
     if (is_texel_buffer && !is_written) {
         return SynchronizeMemoryFromImage(arena, device_addr, size);
     }
+    if (!is_written) {
+        // Shaders also read HTILE through plain buffers (shadow map conversions that skip empty
+        // tiles), not only texel buffers. Nothing here writes HTILE while depth is drawn, so the
+        // guest bytes would say every tile is empty. (From the theorder1886-port.)
+        if (const auto meta = texture_cache.GetMetaInfo(device_addr);
+            meta && meta->type == TextureCache::MetaType::HTile) {
+            return SynchronizeMemoryFromImage(arena, device_addr, size);
+        }
+    }
     return false;
 }
 
@@ -555,8 +564,15 @@ void BufferCache::UploadInParts(const Buffer* arena, std::span<const vk::BufferC
 bool BufferCache::SynchronizeMemoryFromImage(const Buffer* arena, VAddr device_addr, u32 size) {
     if (const auto meta = texture_cache.GetMetaInfo(device_addr)) {
         if (meta->type == TextureCache::MetaType::HTile) {
-            static constexpr u32 ZmaskUncompressed = 0xf;
-            runtime.FillBuffer(arena, arena->Offset(device_addr), size, ZmaskUncompressed);
+            // Depth is never compressed here: tiles read as expanded (ZMask 0xF, read the depth
+            // image) with the full depth range, or as cleared (ZMask 0) before the first draw
+            // after a clear. A min/max of 0 made shaders that use HTILE for culling reject
+            // every tile.
+            static constexpr u32 HtileExpanded = 0xfffc000fu;
+            static constexpr u32 HtileCleared = 0xfffc0000u;
+            const bool cleared = (meta->clear_mask & 1) != 0;
+            runtime.FillBuffer(arena, arena->Offset(device_addr), size,
+                               cleared ? HtileCleared : HtileExpanded);
             return true;
         } else if (meta->type == TextureCache::MetaType::CMask) {
             const auto expanded_value = CmaskColorExpandedValue(meta->num_samples);
