@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <tuple>
 #include <optional>
 #include <magic_enum/magic_enum.hpp>
 #include <xxhash.h>
 
 #include "common/alignment.h"
+#include "common/slow_call.h"
 #include "core/debug_state.h"
 #include "core/memory.h"
 #include "video_core/amdgpu/liverpool.h"
@@ -423,7 +425,12 @@ void BufferCache::AllocateBackingSlab() {
             .allocationSize = slab_size,
             .memoryTypeIndex = arena_memory_type_index,
         };
-        const auto [result, memory] = device.allocateMemory(alloc_info);
+        vk::Result result;
+        vk::DeviceMemory memory;
+        {
+            Common::SlowCallScope slow{"allocateMemory (sparse backing slab)"};
+            std::tie(result, memory) = device.allocateMemory(alloc_info);
+        }
         if (result == vk::Result::eSuccess) {
             backing_slab = memory;
             backing_slab_blocks = slab_size >> block_shift;
@@ -655,12 +662,45 @@ void BufferCache::SubmitPendingArenaBinds(Vulkan::SubmitInfo& info) {
     std::vector<vk::SparseBufferMemoryBindInfo> buffer_binds;
     buffer_binds.reserve(pending_binds.size());
 
+    // Merge binds that are contiguous both in the buffer and in the backing memory. This does not
+    // change what gets bound, only how many entries the driver has to process.
+    u64 total_binds_before = 0;
+    u64 total_binds_after = 0;
+    for (auto& binds : pending_binds) {
+        total_binds_before += binds.binds.size();
+        auto& list = binds.binds;
+        size_t out = 0;
+        for (size_t i = 0; i < list.size(); ++i) {
+            if (out > 0) {
+                auto& prev = list[out - 1];
+                const auto& cur = list[i];
+                if (prev.memory == cur.memory && prev.flags == cur.flags &&
+                    prev.resourceOffset + prev.size == cur.resourceOffset &&
+                    prev.memoryOffset + prev.size == cur.memoryOffset) {
+                    prev.size += cur.size;
+                    continue;
+                }
+            }
+            list[out++] = list[i];
+        }
+        list.resize(out);
+        total_binds_after += out;
+    }
+
     for (const auto& binds : pending_binds) {
         buffer_binds.emplace_back(vk::SparseBufferMemoryBindInfo{
             .buffer = binds.arena->Handle(),
             .bindCount = static_cast<u32>(binds.binds.size()),
             .pBinds = binds.binds.data(),
         });
+    }
+    static u64 cumulative_binds = 0;
+    static u64 bind_calls = 0;
+    cumulative_binds += total_binds_after;
+    ++bind_calls;
+    if ((bind_calls % 256) == 1 || total_binds_after >= 512) {
+        LOG_INFO(Render, "Sparse bind #{}: {} binds ({} before merging), {} total so far", bind_calls,
+                 total_binds_after, total_binds_before, cumulative_binds);
     }
 
     const u64 signal_tick = memory_semaphore.NextTick();
@@ -680,7 +720,11 @@ void BufferCache::SubmitPendingArenaBinds(Vulkan::SubmitInfo& info) {
     };
 
     info.AddWait(signal_sema, signal_tick);
-    auto submit_result = instance.GetGraphicsQueue().bindSparse(sparse_info);
+    vk::Result submit_result;
+    {
+        Common::SlowCallScope slow{"vkQueueBindSparse"};
+        submit_result = instance.GetGraphicsQueue().bindSparse(sparse_info);
+    }
     ASSERT_MSG(submit_result != vk::Result::eErrorDeviceLost, "Device lost during submit");
 
     pending_binds.clear();

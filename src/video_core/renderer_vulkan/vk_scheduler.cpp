@@ -6,6 +6,7 @@
 #include <fmt/format.h>
 #include "common/assert.h"
 #include "common/debug.h"
+#include "common/slow_call.h"
 #include "common/thread.h"
 #include "imgui/renderer/texture_manager.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -280,7 +281,11 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
     };
 
     ImGui::Core::TextureManager::Submit();
-    auto submit_result = instance.GetGraphicsQueue().submit(submit_info, info.fence);
+    vk::Result submit_result;
+    {
+        Common::SlowCallScope slow{"vkQueueSubmit"};
+        submit_result = instance.GetGraphicsQueue().submit(submit_info, info.fence);
+    }
     std::vector<WorkRecord> submitted_work;
     {
         std::scoped_lock work_lk{work_records_mutex};

@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <tuple>
 #include <utility>
 #include <boost/container/small_vector.hpp>
 
 #include "common/assert.h"
+#include "common/slow_call.h"
 #include "shader_recompiler/backend/spirv/emit_spirv_discard_frag.h"
 #include "shader_recompiler/backend/spirv/emit_spirv_quad_rect.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
@@ -432,8 +434,13 @@ void GraphicsPipeline::Build() {
         .layout = *pipeline_layout,
     };
 
-    auto [pipeline_result, pipe] =
-        device.createGraphicsPipelineUnique(pipeline_cache_handle, pipeline_info);
+    vk::Result pipeline_result;
+    vk::UniquePipeline pipe;
+    {
+        Common::SlowCallScope slow{"vkCreateGraphicsPipelines"};
+        std::tie(pipeline_result, pipe) =
+            device.createGraphicsPipelineUnique(pipeline_cache_handle, pipeline_info);
+    }
     ASSERT_MSG(pipeline_result == vk::Result::eSuccess, "Failed to create graphics pipeline: {}",
                vk::to_string(pipeline_result));
     pipeline = std::move(pipe);
