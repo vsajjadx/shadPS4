@@ -1,4 +1,4 @@
-From 2683c123b8a7c4683d6ef2b42881da756f847c07 Mon Sep 17 00:00:00 2001
+From fbe1bacc10240b056137256202583e2535bbbfcd Mon Sep 17 00:00:00 2001
 From: vsajjadx <noreply@github.com>
 Date: Sun, 18 Oct 2026 14:12:10 +0330
 Subject: [PATCH] Bundle with shadPS4 Anti-Crash
@@ -628,7 +628,7 @@ index 0000000..a79c367
 +};
 diff --git a/src/core/file_format/pkg.cpp b/src/core/file_format/pkg.cpp
 new file mode 100644
-index 0000000..6fe0618
+index 0000000..7888a1c
 --- /dev/null
 +++ b/src/core/file_format/pkg.cpp
 @@ -0,0 +1,473 @@
@@ -735,7 +735,7 @@ index 0000000..6fe0618
 +                  std::string& failreason) {
 +    if (!Crypto::HasPkgKeys()) {
 +        failreason = "The PKG keys are missing. Enter the Fake and PKG Derived Key3 keysets in "
-+                     "Tools > Crypto Key Manager first.";
++                     "Settings > Manage Cryptographic Keys first.";
 +        return false;
 +    }
 +    extract_path = extract;
@@ -2549,7 +2549,7 @@ index fd69169..5f05771 100644
      void PlayBackgroundMusic();
 diff --git a/src/qt_gui/pkg_install.cpp b/src/qt_gui/pkg_install.cpp
 new file mode 100644
-index 0000000..4df92b2
+index 0000000..d827c49
 --- /dev/null
 +++ b/src/qt_gui/pkg_install.cpp
 @@ -0,0 +1,184 @@
@@ -2580,7 +2580,7 @@ index 0000000..4df92b2
 +        const auto answer = QMessageBox::question(
 +            this, tr("Install Packages (PKG)"),
 +            tr("Installing PKG files needs the Fake keyset and the PKG Derived Key3 keyset.\n"
-+               "They are not included with the program. Open the Crypto Key Manager to enter "
++               "They are not included with the program. Open Manage Cryptographic Keys to enter "
 +               "them?"));
 +        if (answer == QMessageBox::Yes) {
 +            auto keyDialog = new CryptoManagerDialog(this);
