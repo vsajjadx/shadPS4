@@ -4,13 +4,14 @@
 #include <algorithm>
 #include <string>
 #include <fmt/format.h>
-#include <vk_mem_alloc.h>
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/thread.h"
 #include "imgui/renderer/texture_manager.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
+
+#include <vk_mem_alloc.h>
 
 namespace Vulkan {
 
