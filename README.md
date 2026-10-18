@@ -80,7 +80,7 @@ The zip includes the latest official shadPS4 Qt launcher, with a few additions:
 - **Faster.** Better use of your CPU and GPU.
 - **Frame generation (optional).** Press `1` in game to turn on FSR 3.1 frame generation, `2` to
   turn it off, or use the switch in the launcher settings. It is off by default.
-- **More games run.** Games like DRIVECLUB, The Order: 1886 and The Grand Tour Game, which do
+- **More games run.** Games like NHL 24 , The Order: 1886 and The Grand Tour Game, which do
   not run on the official version, work here.
 - **Launcher included.** One download, with automatic updates.
 - **Always up to date.** The latest changes from the official shadPS4 are included.
