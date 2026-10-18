@@ -1,0 +1,62 @@
+{
+  "CUSA00004": {
+    "name": "inFAMOUS™ Second Son",
+    "status": "status-playable",
+    "version": "Anti-Crash",
+    "last_tested": "2026-10-18T00:00:00Z"
+  },
+  "CUSA00093": {
+    "name": "DRIVECLUB™",
+    "status": "status-playable",
+    "version": "Anti-Crash",
+    "last_tested": "2026-10-18T00:00:00Z"
+  },
+  "CUSA14209": {
+    "name": "EA SPORTS™ UFC® 4",
+    "status": "status-playable",
+    "version": "Anti-Crash",
+    "last_tested": "2026-10-18T00:00:00Z"
+  },
+  "CUSA00897": {
+    "name": "inFAMOUS™ First Light",
+    "status": "status-playable",
+    "version": "Anti-Crash",
+    "last_tested": "2026-10-18T00:00:00Z"
+  },
+  "CUSA01435": {
+    "name": "Life Is Strange™",
+    "status": "status-playable",
+    "version": "Anti-Crash",
+    "last_tested": "2026-10-18T00:00:00Z"
+  },
+  "CUSA00342": {
+    "name": "Murdered: Soul Suspect",
+    "status": "status-playable",
+    "version": "Anti-Crash",
+    "last_tested": "2026-10-18T00:00:00Z"
+  },
+  "CUSA23265": {
+    "name": "Need for Speed™ Hot Pursuit Remastered",
+    "status": "status-playable",
+    "version": "Anti-Crash",
+    "last_tested": "2026-10-18T00:00:00Z"
+  },
+  "CUSA37933": {
+    "name": "NHL® 24",
+    "status": "status-playable",
+    "version": "Anti-Crash",
+    "last_tested": "2026-10-18T00:00:00Z"
+  },
+  "CUSA13903": {
+    "name": "The Grand Tour Game",
+    "status": "status-playable",
+    "version": "Anti-Crash",
+    "last_tested": "2026-10-18T00:00:00Z"
+  },
+  "CUSA00076": {
+    "name": "The Order: 1886",
+    "status": "status-playable",
+    "version": "Anti-Crash",
+    "last_tested": "2026-10-18T00:00:00Z"
+  }
+}
