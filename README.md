@@ -51,17 +51,19 @@ The zip includes the latest official shadPS4 Qt launcher, with a few additions:
 
 ## Installing PKG files
 
-1. Open **Settings → Manage Cryptographic Keys** and enter two key sets: **Fake Keyset** and
-   **PKG Derived Key3 Keyset**. You only do this once.
-   *The keys are not included with this program. You need to supply them yourself.*
-2. Choose **File → Install Packages (PKG)** and select one or more `.pkg` files.
-3. If you have more than one games folder, pick where to install.
-4. Wait for the progress bar. The game then shows up in the list.
+Works like shadPS4 v0.7: **File → Install Packages (PKG)**, pick your `.pkg` files, done.
 
-- **Games** go into your games folder, in a folder named after the game ID (for example
-  `CUSA00093`).
-- **Updates** go into a `-UPDATE` folder next to the game (for example `CUSA00093-UPDATE`). The
-  emulator loads them automatically. Install the game first.
+The only extra step is once, the first time: the launcher needs your keys file (Fake keyset
+and PKG Derived Key3 keyset). It is **not included** with this program. Either:
+
+- put it next to `shadPS4QtLauncher.exe` as `keys.json` (it is picked up automatically), or
+- choose it when the launcher asks (**Choose keys file...**).
+
+After that the keys are remembered, also across updates.
+
+- **Games** go into your games folder (for example `CUSA00093`).
+- **Updates** go into a `-UPDATE` folder next to the game (for example `CUSA00093-UPDATE`) and
+  load automatically. Install the game first.
 - **DLC** goes into your DLC folder. Install the game first.
 
 ## Screenshots
