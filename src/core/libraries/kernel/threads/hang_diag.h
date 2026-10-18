@@ -44,6 +44,21 @@ private:
         ::Libraries::Kernel::WaitKind::kind, obj, __builtin_return_address(0)                      \
     }
 
+/// State of an sceKernel semaphore for the hang dump.
+struct SemaDiag {
+    s32 tokens{};
+    s32 max_tokens{};
+    s32 waiters{-1}; ///< -1 when the semaphore was busy.
+    u32 signals{};
+    const Pthread* last_signaler{};
+    u64 last_signal_caller{};
+    u64 last_signal_ms{};
+    const Pthread* last_taker{};
+    u64 last_take_caller{};
+    u64 last_take_ms{};
+};
+bool GetSemaDiag(const void* sema, SemaDiag& out);
+
 /// Registers the calling host thread (GPU, presenter, ...) so it is included in the hang dump.
 void RegisterHangDiagHostThread(std::string_view name);
 

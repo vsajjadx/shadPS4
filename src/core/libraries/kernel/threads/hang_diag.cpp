@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <mutex>
 #include <string>
 #include <vector>
 #include <fmt/format.h>
 
+#include "common/decoder.h"
 #include "common/logging/log.h"
 #include "common/singleton.h"
 #include "common/thread.h"
@@ -69,6 +71,7 @@ struct ThreadSnapshot {
     u64 rip{};
     u64 rsp{};
     u64 rbp{};
+    std::array<u64, 16> gprs{};
     std::vector<u64> stack;
 };
 
@@ -106,6 +109,8 @@ void CaptureSuspended(HANDLE handle, u64 stack_lo, u64 stack_hi, ThreadSnapshot&
     snap.rip = ctx.Rip;
     snap.rsp = ctx.Rsp;
     snap.rbp = ctx.Rbp;
+    snap.gprs = {ctx.Rax, ctx.Rcx, ctx.Rdx, ctx.Rbx, ctx.Rsp, ctx.Rbp, ctx.Rsi, ctx.Rdi,
+                 ctx.R8,  ctx.R9,  ctx.R10, ctx.R11, ctx.R12, ctx.R13, ctx.R14, ctx.R15};
 
     u64 lo = ctx.Rsp;
     u64 hi = 0;
@@ -129,6 +134,42 @@ void CaptureSuspended(HANDLE handle, u64 stack_lo, u64 stack_hi, ThreadSnapshot&
     }
 }
 #endif
+
+std::string DescribeAddress(u64 addr);
+
+/// For a thread found running guest code: its registers and the instructions at its rip, which
+/// show what a spinning loop waits for.
+void LogRunningCode(const ThreadSnapshot& snap) {
+    const auto& r = snap.gprs;
+    LOG_CRITICAL(Kernel_Pthread,
+                 "    rax={:#x} rcx={:#x} rdx={:#x} rbx={:#x} rsi={:#x} rdi={:#x} r8={:#x} "
+                 "r9={:#x}",
+                 r[0], r[1], r[2], r[3], r[6], r[7], r[8], r[9]);
+    LOG_CRITICAL(Kernel_Pthread, "    r10={:#x} r11={:#x} r12={:#x} r13={:#x} r14={:#x} r15={:#x}",
+                 r[10], r[11], r[12], r[13], r[14], r[15]);
+#ifdef _WIN32
+    std::array<u8, 96> code{};
+    SIZE_T read = 0;
+    if (!ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(snap.rip),
+                           code.data(), code.size(), &read) ||
+        read == 0) {
+        return;
+    }
+    size_t offset = 0;
+    for (u32 i = 0; i < 12 && offset < read; ++i) {
+        ZydisDecodedInstruction inst;
+        ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
+        if (!ZYAN_SUCCESS(Common::Decoder::Instance()->decodeInstruction(
+                inst, operands, code.data() + offset, read - offset))) {
+            break;
+        }
+        LOG_CRITICAL(
+            Kernel_Pthread, "    {}: {}", DescribeAddress(snap.rip + offset),
+            Common::Decoder::Instance()->disassembleInst(inst, operands, snap.rip + offset));
+        offset += inst.length;
+    }
+#endif
+}
 
 std::string DescribeAddress(u64 addr) {
     if (addr == 0) {
@@ -156,6 +197,36 @@ std::string DescribeAddress(u64 addr) {
     return fmt::format("{:#x}", addr);
 }
 
+std::string DescribeThread(const Pthread* thread, const std::vector<ThreadSnapshot>& all) {
+    if (thread == nullptr) {
+        return "none";
+    }
+    for (const auto& other : all) {
+        if (other.guest && other.thread == thread) {
+            return fmt::format("{} ({})", other.name, fmt::ptr(thread));
+        }
+    }
+    return fmt::format("{} (exited)", fmt::ptr(thread));
+}
+
+std::string DescribeAge(u64 since_ms, u64 now) {
+    return since_ms == 0 ? std::string{"never"}
+                         : fmt::format("{:.1f}s ago", (now - since_ms) / 1000.0);
+}
+
+std::string DescribeWait(const ThreadSnapshot& snap, const std::vector<ThreadSnapshot>& all,
+                         u64 now);
+
+std::string DescribeOwnerWait(const Pthread* owner, const std::vector<ThreadSnapshot>& all,
+                              u64 now) {
+    for (const auto& other : all) {
+        if (other.guest && other.thread == owner && other.wait_kind != WaitKind::Mutex) {
+            return DescribeWait(other, all, now);
+        }
+    }
+    return "?";
+}
+
 std::string DescribeWait(const ThreadSnapshot& snap, const std::vector<ThreadSnapshot>& all,
                          u64 now) {
     if (snap.wait_kind == WaitKind::None) {
@@ -168,13 +239,21 @@ std::string DescribeWait(const ThreadSnapshot& snap, const std::vector<ThreadSna
     if (snap.wait_kind == WaitKind::Mutex && snap.wait_obj != nullptr) {
         const auto* mutex = static_cast<const PthreadMutex*>(snap.wait_obj);
         const Pthread* owner = mutex->m_owner.load(std::memory_order_relaxed);
-        std::string owner_name = owner ? fmt::format("{}", fmt::ptr(owner)) : "none";
-        for (const auto& other : all) {
-            if (other.guest && other.thread == owner) {
-                owner_name = other.name;
-            }
+        out += fmt::format(", owner {}", DescribeThread(owner, all));
+        if (owner != nullptr) {
+            out += fmt::format(" which is {}", DescribeOwnerWait(owner, all, now));
         }
-        out += fmt::format(", owner {}", owner_name);
+    } else if (snap.wait_kind == WaitKind::Sema && snap.wait_obj != nullptr) {
+        SemaDiag diag{};
+        if (GetSemaDiag(snap.wait_obj, diag)) {
+            out += fmt::format(
+                ", tokens {}/{} waiters {} signals {}, last signal by {} from {} {}, last taken "
+                "by {} from {} {}",
+                diag.tokens, diag.max_tokens, diag.waiters, diag.signals,
+                DescribeThread(diag.last_signaler, all), DescribeAddress(diag.last_signal_caller),
+                DescribeAge(diag.last_signal_ms, now), DescribeThread(diag.last_taker, all),
+                DescribeAddress(diag.last_take_caller), DescribeAge(diag.last_take_ms, now));
+        }
     } else if (snap.wait_kind == WaitKind::Equeue && snap.wait_obj != nullptr) {
         out += fmt::format(", equeue '{}'",
                            static_cast<const EqueueInternal*>(snap.wait_obj)->GetName());
@@ -300,11 +379,14 @@ void DumpThreadsForHang(std::string_view reason) {
             }
         }
 #endif
-        LOG_CRITICAL(Kernel_Pthread, "[{}] {}: {}", snap.guest ? "guest" : "host", snap.name,
-                     DescribeWait(snap, snaps, now));
+        LOG_CRITICAL(Kernel_Pthread, "[{}] {} ({}): {}", snap.guest ? "guest" : "host", snap.name,
+                     fmt::ptr(snap.thread), DescribeWait(snap, snaps, now));
         if (snap.have_context) {
             LOG_CRITICAL(Kernel_Pthread, "    rip={} rsp={:#x} rbp={:#x}",
                          DescribeAddress(snap.rip), snap.rsp, snap.rbp);
+            if (snap.guest && snap.wait_kind == WaitKind::None) {
+                LogRunningCode(snap);
+            }
         }
         if (!frames.empty()) {
             LOG_CRITICAL(Kernel_Pthread, "    stack:{}", frames);

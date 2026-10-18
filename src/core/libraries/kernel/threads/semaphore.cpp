@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <limits>
 #include <list>
@@ -15,6 +17,7 @@
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/kernel/orbis_error.h"
 #include "core/libraries/kernel/posix_error.h"
+#include "core/libraries/kernel/threads/hang_diag.h"
 #include "core/libraries/kernel/threads/pthread.h"
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/libs.h"
@@ -317,7 +320,55 @@ public:
     s32 init_count;
     bool is_fifo;
     bool deleted{};
+
+    std::atomic<u32> signals{};
+    std::atomic<const Pthread*> last_signaler{};
+    std::atomic<u64> last_signal_caller{};
+    std::atomic<u64> last_signal_ms{};
+    std::atomic<const Pthread*> last_taker{};
+    std::atomic<u64> last_take_caller{};
+    std::atomic<u64> last_take_ms{};
+
+    void NoteSignal(const void* caller) {
+        signals.fetch_add(1, std::memory_order_relaxed);
+        last_signaler.store(g_curthread, std::memory_order_relaxed);
+        last_signal_caller.store(reinterpret_cast<u64>(caller), std::memory_order_relaxed);
+        last_signal_ms.store(DiagNowMs(), std::memory_order_relaxed);
+    }
+
+    void NoteTake(const void* caller) {
+        last_taker.store(g_curthread, std::memory_order_relaxed);
+        last_take_caller.store(reinterpret_cast<u64>(caller), std::memory_order_relaxed);
+        last_take_ms.store(DiagNowMs(), std::memory_order_relaxed);
+    }
+
+    static u64 DiagNowMs() {
+        return static_cast<u64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now().time_since_epoch())
+                                    .count());
+    }
 };
+
+bool GetSemaDiag(const void* sema, SemaDiag& out) {
+    if (sema == nullptr) {
+        return false;
+    }
+    auto* s = const_cast<OrbisSem*>(static_cast<const OrbisSem*>(sema));
+    out.tokens = s->token_count.load(std::memory_order_relaxed);
+    out.max_tokens = s->max_count;
+    if (s->mutex.try_lock()) {
+        out.waiters = static_cast<s32>(s->wait_list.size());
+        s->mutex.unlock();
+    }
+    out.signals = s->signals.load(std::memory_order_relaxed);
+    out.last_signaler = s->last_signaler.load(std::memory_order_relaxed);
+    out.last_signal_caller = s->last_signal_caller.load(std::memory_order_relaxed);
+    out.last_signal_ms = s->last_signal_ms.load(std::memory_order_relaxed);
+    out.last_taker = s->last_taker.load(std::memory_order_relaxed);
+    out.last_take_caller = s->last_take_caller.load(std::memory_order_relaxed);
+    out.last_take_ms = s->last_take_ms.load(std::memory_order_relaxed);
+    return true;
+}
 
 static constexpr u32 MAX_ORBIS_SEMAPHORES = std::numeric_limits<u16>::max();
 
@@ -354,8 +405,16 @@ s32 PS4_SYSV_ABI sceKernelWaitSema(OrbisKernelSema sem, s32 needCount, u32* pTim
     if (!s) {
         return ORBIS_KERNEL_ERROR_ESRCH;
     }
-    HANG_DIAG_WAIT(Sema, s.get());
-    return s->Wait(true, needCount, pTimeout);
+    const void* caller = __builtin_return_address(0);
+    s32 result;
+    {
+        HANG_DIAG_WAIT(Sema, s.get());
+        result = s->Wait(true, needCount, pTimeout);
+    }
+    if (result == ORBIS_OK) {
+        s->NoteTake(caller);
+    }
+    return result;
 }
 
 s32 PS4_SYSV_ABI sceKernelSignalSema(OrbisKernelSema sem, s32 signalCount) {
@@ -363,7 +422,10 @@ s32 PS4_SYSV_ABI sceKernelSignalSema(OrbisKernelSema sem, s32 signalCount) {
     if (!s) {
         return ORBIS_KERNEL_ERROR_ESRCH;
     }
+    s->NoteSignal(__builtin_return_address(0));
     if (!s->Signal(signalCount)) {
+        LOG_WARNING(Lib_Kernel, "sceKernelSignalSema '{}' over its maximum: {} + {} > {}", s->name,
+                    s->token_count.load(), signalCount, s->max_count);
         return ORBIS_KERNEL_ERROR_EINVAL;
     }
     return ORBIS_OK;
@@ -374,7 +436,11 @@ s32 PS4_SYSV_ABI sceKernelPollSema(OrbisKernelSema sem, s32 needCount) {
     if (!s) {
         return ORBIS_KERNEL_ERROR_ESRCH;
     }
-    return s->Wait(false, needCount, nullptr);
+    const s32 result = s->Wait(false, needCount, nullptr);
+    if (result == ORBIS_OK) {
+        s->NoteTake(__builtin_return_address(0));
+    }
+    return result;
 }
 
 s32 PS4_SYSV_ABI sceKernelCancelSema(OrbisKernelSema sem, s32 setCount, s32* pNumWaitThreads) {
