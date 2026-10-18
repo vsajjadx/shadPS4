@@ -1,4 +1,4 @@
-From 229f5b5111c4a2c2ca595ae0693430487a751995 Mon Sep 17 00:00:00 2001
+From 33cb1f0b2350c7dcd976f0d40a0dfec6e480088b Mon Sep 17 00:00:00 2001
 From: vsajjadx <noreply@github.com>
 Date: Sun, 18 Oct 2026 14:12:10 +0330
 Subject: [PATCH] Bundle with shadPS4 Anti-Crash
@@ -11,12 +11,12 @@ installation from shadPS4 v0.7.0 with keys from the Crypto Key Manager.
  src/common/key_manager.cpp        |  35 ++
  src/common/key_manager.h          |   2 +
  src/common/path_util.cpp          |  37 +-
- src/core/crypto/crypto.cpp        | 177 +++++++++
- src/core/crypto/crypto.h          |  61 +++
+ src/core/crypto/crypto.cpp        | 195 +++++++++
+ src/core/crypto/crypto.h          |  68 ++++
  src/core/emulator_settings.h      |   8 +-
  src/core/file_format/pfs.h        | 123 ++++++
- src/core/file_format/pkg.cpp      | 473 ++++++++++++++++++++++
- src/core/file_format/pkg.h        | 172 ++++++++
+ src/core/file_format/pkg.cpp      | 487 +++++++++++++++++++++++
+ src/core/file_format/pkg.h        | 177 +++++++++
  src/core/file_format/pkg_type.cpp | 638 ++++++++++++++++++++++++++++++
  src/core/file_format/pkg_type.h   |  10 +
  src/qt_gui/about_dialog.cpp       |  17 +
@@ -27,10 +27,10 @@ installation from shadPS4 v0.7.0 with keys from the Crypto Key Manager.
  src/qt_gui/gui_settings.h         |  19 +-
  src/qt_gui/main_window.cpp        |  66 +++-
  src/qt_gui/main_window.h          |   5 +
- src/qt_gui/pkg_install.cpp        | 227 +++++++++++
+ src/qt_gui/pkg_install.cpp        | 228 +++++++++++
  src/qt_gui/settings_dialog.cpp    |  78 +++-
  src/qt_gui/settings_dialog.h      |   7 +
- 23 files changed, 2468 insertions(+), 17 deletions(-)
+ 23 files changed, 2513 insertions(+), 17 deletions(-)
  create mode 100644 src/core/crypto/crypto.cpp
  create mode 100644 src/core/crypto/crypto.h
  create mode 100644 src/core/file_format/pfs.h
@@ -260,13 +260,14 @@ index 59e39b7..a5898a0 100644
  #ifdef __APPLE__
 diff --git a/src/core/crypto/crypto.cpp b/src/core/crypto/crypto.cpp
 new file mode 100644
-index 0000000..239448b
+index 0000000..cfae47d
 --- /dev/null
 +++ b/src/core/crypto/crypto.cpp
-@@ -0,0 +1,177 @@
+@@ -0,0 +1,195 @@
 +// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
++#include <algorithm>
 +#include <array>
 +#include <cstring>
 +#include <cryptopp/hmac.h>
@@ -298,6 +299,23 @@ index 0000000..239448b
 +bool Crypto::HasPkgKeys() {
 +    const auto keys = KeyManager::GetInstance();
 +    return keys && keys->IsFakeKeysetValid() && keys->isPkgDerivedKey3KeysetValid();
++}
++
++void Crypto::PasscodeKey(std::string_view content_id, std::string_view passcode, u32 index,
++                         std::span<CryptoPP::byte, 32> key) {
++    const auto sha256 = [](const CryptoPP::byte* data, size_t size, CryptoPP::byte* out) {
++        CryptoPP::SHA256().CalculateDigest(out, data, size);
++    };
++    std::array<CryptoPP::byte, 96> data{};
++    const std::array<CryptoPP::byte, 4> index_be{
++        static_cast<CryptoPP::byte>(index >> 24), static_cast<CryptoPP::byte>(index >> 16),
++        static_cast<CryptoPP::byte>(index >> 8), static_cast<CryptoPP::byte>(index)};
++    sha256(index_be.data(), index_be.size(), data.data());
++    std::array<CryptoPP::byte, 48> cid{};
++    std::memcpy(cid.data(), content_id.data(), std::min<size_t>(content_id.size(), 36));
++    sha256(cid.data(), cid.size(), data.data() + 32);
++    std::memcpy(data.data() + 64, passcode.data(), std::min<size_t>(passcode.size(), 32));
++    sha256(data.data(), data.size(), key.data());
 +}
 +
 +void Crypto::RSA2048Decrypt(std::span<CryptoPP::byte, 32> dec_key,
@@ -443,16 +461,17 @@ index 0000000..239448b
 +}
 diff --git a/src/core/crypto/crypto.h b/src/core/crypto/crypto.h
 new file mode 100644
-index 0000000..4c3e76c
+index 0000000..752f6a0
 --- /dev/null
 +++ b/src/core/crypto/crypto.h
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,68 @@
 +// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
 +#pragma once
 +
 +#include <span>
++#include <string_view>
 +#include <cryptopp/aes.h>
 +#include <cryptopp/filters.h>
 +#include <cryptopp/modes.h>
@@ -467,6 +486,12 @@ index 0000000..4c3e76c
 +public:
 +    /// The PKG keys are not part of the program. They come from the Crypto Key Manager.
 +    static bool HasPkgKeys();
++
++    /// Fake PKGs made with a passcode (usually 32 zeros) derive their keys from the passcode and
++    /// the content ID, so they need no RSA keys: SHA256(SHA256(index) | SHA256(content ID) |
++    /// passcode), as in LibOrbisPkg. Index 1 is the EKPFS and index 3 the entry key.
++    static void PasscodeKey(std::string_view content_id, std::string_view passcode, u32 index,
++                            std::span<CryptoPP::byte, 32> key);
 +
 +    void RSA2048Decrypt(std::span<CryptoPP::byte, 32> dk3,
 +                        std::span<const CryptoPP::byte, 256> ciphertext,
@@ -686,10 +711,10 @@ index 0000000..a79c367
 +};
 diff --git a/src/core/file_format/pkg.cpp b/src/core/file_format/pkg.cpp
 new file mode 100644
-index 0000000..7888a1c
+index 0000000..9a67a20
 --- /dev/null
 +++ b/src/core/file_format/pkg.cpp
-@@ -0,0 +1,473 @@
+@@ -0,0 +1,487 @@
 +// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -791,11 +816,10 @@ index 0000000..7888a1c
 +
 +bool PKG::Extract(const std::filesystem::path& filepath, const std::filesystem::path& extract,
 +                  std::string& failreason) {
-+    if (!Crypto::HasPkgKeys()) {
-+        failreason = "The PKG keys are missing. Enter the Fake and PKG Derived Key3 keysets in "
-+                     "Settings > Manage Cryptographic Keys first.";
-+        return false;
-+    }
++    // With the RSA keysets every fake PKG opens. Without them, the keys are derived from the
++    // passcode that fake PKGs are usually made with.
++    const bool use_rsa_keys = Crypto::HasPkgKeys();
++    static constexpr std::string_view DefaultPasscode = "00000000000000000000000000000000";
 +    extract_path = extract;
 +    pkgpath = filepath;
 +    Common::FS::IOFile file(filepath, Common::FS::FileAccessMode::Read);
@@ -881,8 +905,12 @@ index 0000000..7888a1c
 +                file.Read(key1[i]);
 +            }
 +
-+            PKG::crypto.RSA2048Decrypt(dk3_, key1[3], true); // decrypt DK3
-+        } else if (entry.id == 0x20) {                       // IMAGE_KEY, seek; IV_KEY
++            if (use_rsa_keys) {
++                PKG::crypto.RSA2048Decrypt(dk3_, key1[3], true); // decrypt DK3
++            } else {
++                Crypto::PasscodeKey(ContentId(), DefaultPasscode, 3, dk3_);
++            }
++        } else if (entry.id == 0x20) { // IMAGE_KEY, seek; IV_KEY
 +            file.Seek(entry.offset);
 +            file.Read(imgkeydata);
 +
@@ -890,11 +918,15 @@ index 0000000..7888a1c
 +            std::memcpy(concatenated_ivkey_dk3.data(), &entry, sizeof(entry));
 +            std::memcpy(concatenated_ivkey_dk3.data() + sizeof(entry), dk3_.data(), sizeof(dk3_));
 +
-+            PKG::crypto.ivKeyHASH256(concatenated_ivkey_dk3, ivKey); // ivkey_
-+            // imgkey_ to use for last step to get ekpfs
-+            PKG::crypto.aesCbcCfb128Decrypt(ivKey, imgkeydata, imgKey);
-+            // ekpfs key to get data and tweak keys.
-+            PKG::crypto.RSA2048Decrypt(ekpfsKey, imgKey, false);
++            if (use_rsa_keys) {
++                PKG::crypto.ivKeyHASH256(concatenated_ivkey_dk3, ivKey); // ivkey_
++                // imgkey_ to use for last step to get ekpfs
++                PKG::crypto.aesCbcCfb128Decrypt(ivKey, imgkeydata, imgKey);
++                // ekpfs key to get data and tweak keys.
++                PKG::crypto.RSA2048Decrypt(ekpfsKey, imgKey, false);
++            } else {
++                Crypto::PasscodeKey(ContentId(), DefaultPasscode, 1, ekpfsKey);
++            }
 +        } else if (entry.id == 0x80) {
 +            // GENERAL_DIGESTS, seek;
 +            // file.Seek(entry.offset, fsSeekSet);
@@ -967,6 +999,13 @@ index 0000000..7888a1c
 +
 +        // Retrieve PFSC from decrypted pfs_image.
 +        pfsc_offset = GetPFSCOffset(pfs_decrypted);
++        if (pfsc_offset == static_cast<u32>(-1) || pfsc_offset >= length) {
++            failreason = use_rsa_keys
++                             ? "The game data could not be decrypted with the keys entered."
++                             : "This PKG was not made with the default passcode. It needs the "
++                               "Fake and PKG Derived Key3 keysets (a keys file).";
++            return false;
++        }
 +        std::memcpy(pfsc.data(), pfs_decrypted.data() + pfsc_offset, length - pfsc_offset);
 +
 +        PFSCHdr pfsChdr;
@@ -1165,10 +1204,10 @@ index 0000000..7888a1c
 +}
 diff --git a/src/core/file_format/pkg.h b/src/core/file_format/pkg.h
 new file mode 100644
-index 0000000..8faffe3
+index 0000000..7262fa2
 --- /dev/null
 +++ b/src/core/file_format/pkg.h
-@@ -0,0 +1,172 @@
+@@ -0,0 +1,177 @@
 +// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -1290,6 +1329,11 @@ index 0000000..8faffe3
 +
 +    std::string GetPkgFlags() {
 +        return pkgFlags;
++    }
++
++    std::string_view ContentId() const {
++        return std::string_view(reinterpret_cast<const char*>(pkgheader.pkg_content_id),
++                                sizeof(pkgheader.pkg_content_id));
 +    }
 +
 +    std::string_view GetTitleID() {
@@ -2607,14 +2651,15 @@ index fd69169..5f05771 100644
      void PlayBackgroundMusic();
 diff --git a/src/qt_gui/pkg_install.cpp b/src/qt_gui/pkg_install.cpp
 new file mode 100644
-index 0000000..d43e099
+index 0000000..057d71f
 --- /dev/null
 +++ b/src/qt_gui/pkg_install.cpp
-@@ -0,0 +1,227 @@
+@@ -0,0 +1,228 @@
 +// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
-+// PKG installation, brought back from shadPS4 v0.7.0. The keys come from the Crypto Key Manager.
++// PKG installation, brought back from shadPS4 v0.7.0. Fake PKGs made with the default passcode
++// need no keys; others use the keysets from Manage Cryptographic Keys.
 +
 +#include <numeric>
 +#include <QEventLoop>
@@ -2658,38 +2703,10 @@ index 0000000..d43e099
 +}
 +
 +void MainWindow::InstallPkg() {
-+    if (!Crypto::HasPkgKeys() && !ImportKeysNextToLauncher()) {
-+        QMessageBox box(this);
-+        box.setWindowTitle(tr("Install Packages (PKG)"));
-+        box.setIcon(QMessageBox::Information);
-+        box.setText(tr("Installing PKG files needs your keys file (Fake keyset and PKG Derived "
-+                       "Key3 keyset). It is not included with the program.\n\n"
-+                       "Choose it once and it is remembered. You can also put it next to "
-+                       "shadPS4QtLauncher.exe as keys.json."));
-+        QPushButton* choose = box.addButton(tr("Choose keys file..."), QMessageBox::AcceptRole);
-+        QPushButton* manage = box.addButton(tr("Enter keys by hand"), QMessageBox::ActionRole);
-+        box.addButton(QMessageBox::Cancel);
-+        box.exec();
-+        if (box.clickedButton() == choose) {
-+            const QString path = QFileDialog::getOpenFileName(this, tr("Choose keys file"),
-+                                                              QString(), tr("Keys file (*.json)"));
-+            if (!path.isEmpty() &&
-+                !KeyManager::GetInstance()->ImportFromFile(Common::FS::PathFromQString(path))) {
-+                QMessageBox::warning(this, tr("Install Packages (PKG)"),
-+                                     tr("No keys were found in that file."));
-+            }
-+        } else if (box.clickedButton() == manage) {
-+            auto keyDialog = new CryptoManagerDialog(this);
-+            keyDialog->exec();
-+        }
-+        if (!Crypto::HasPkgKeys()) {
-+            if (box.clickedButton() != box.button(QMessageBox::Cancel)) {
-+                QMessageBox::warning(this, tr("Install Packages (PKG)"),
-+                                     tr("The Fake keyset and the PKG Derived Key3 keyset are "
-+                                        "still missing."));
-+            }
-+            return;
-+        }
++    // Fake PKGs made with the default passcode install without keys. A keys file next to the
++    // launcher is picked up for the others.
++    if (!Crypto::HasPkgKeys()) {
++        ImportKeysNextToLauncher();
 +    }
 +
 +    const QStringList files = QFileDialog::getOpenFileNames(
@@ -2797,8 +2814,36 @@ index 0000000..d43e099
 +        }
 +    }
 +
++    const bool existed = std::filesystem::exists(extract_path);
 +    if (!pkg.Extract(file, extract_path, failreason)) {
-+        QMessageBox::critical(this, tr("PKG ERROR"), QString::fromStdString(failreason));
++        if (!existed) {
++            std::error_code ec;
++            std::filesystem::remove_all(extract_path, ec);
++        }
++        if (Crypto::HasPkgKeys()) {
++            QMessageBox::critical(this, tr("PKG ERROR"), QString::fromStdString(failreason));
++            return;
++        }
++        // Offer a keys file for PKGs that do not use the default passcode, then try again.
++        QMessageBox box(this);
++        box.setWindowTitle(tr("PKG ERROR"));
++        box.setIcon(QMessageBox::Warning);
++        box.setText(QString::fromStdString(failreason));
++        QPushButton* choose = box.addButton(tr("Choose keys file..."), QMessageBox::AcceptRole);
++        box.addButton(QMessageBox::Cancel);
++        box.exec();
++        if (box.clickedButton() != choose) {
++            return;
++        }
++        const QString path = QFileDialog::getOpenFileName(this, tr("Choose keys file"), QString(),
++                                                          tr("Keys file (*.json)"));
++        if (path.isEmpty() ||
++            !KeyManager::GetInstance()->ImportFromFile(Common::FS::PathFromQString(path)) ||
++            !Crypto::HasPkgKeys()) {
++            QMessageBox::warning(this, tr("PKG ERROR"), tr("No PKG keys were found in that file."));
++            return;
++        }
++        InstallPkgFile(file, install_dir, pkg_num, pkg_count);
 +        return;
 +    }
 +
