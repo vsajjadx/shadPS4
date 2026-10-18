@@ -43,28 +43,11 @@ The zip includes the latest official shadPS4 Qt launcher, with a few additions:
 - **Frame generation switch.** Turn on FSR 3.1 frame generation in **Settings → Graphics**.
 - **Compatibility list.** Shows the official list, plus the games this build runs that the
   official one doesn't.
-- **Install PKG files.** **File → Install Packages (PKG)** installs games, updates and DLC
-  (see below).
+- **Install PKG files.** **File → Install Packages (PKG)** installs games, updates and DLC,
+  like shadPS4 v0.7.
 
 > Already using the official launcher with a `user` folder next to it? Unzip into that same
 > folder and replace the files. Your games, saves and settings stay as they are.
-
-## Installing PKG files
-
-Works like shadPS4 v0.7: **File → Install Packages (PKG)**, pick your `.pkg` files, done.
-
-- **Fake PKGs made with the default passcode** (`00000000000000000000000000000000`, which almost
-  all of them use) install right away. **No keys needed.**
-- For a PKG made with another passcode, the launcher asks for a keys file once (Fake keyset and
-  PKG Derived Key3 keyset). It is not included with this program. You can also put it next to
-  `shadPS4QtLauncher.exe` as `keys.json`.
-
-Where things go:
-
-- **Games** go into your games folder (for example `CUSA00093`).
-- **Updates** go into a `-UPDATE` folder next to the game (for example `CUSA00093-UPDATE`) and
-  load automatically. Install the game first.
-- **DLC** goes into your DLC folder. Install the game first.
 
 ## Screenshots
 
@@ -96,7 +79,10 @@ Where things go:
 - **Better graphics.** Fixes for dark scenes, lighting and shadows, especially on NVIDIA cards.
 - **Faster.** Better use of your CPU and GPU.
 - **Frame generation (optional).** Press `1` in game to turn on FSR 3.1 frame generation, `2` to
-  turn it off. It is off by default.
+  turn it off, or use the switch in the launcher settings. It is off by default.
+- **More games run.** Games like DRIVECLUB, The Order: 1886 and The Grand Tour Game, which do
+  not run on the official version, work here.
+- **Launcher included.** One download, with automatic updates.
 - **Always up to date.** The latest changes from the official shadPS4 are included.
 
 ## Made with the help of Claude
