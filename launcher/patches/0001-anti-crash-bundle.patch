@@ -1,4 +1,4 @@
-From fbe1bacc10240b056137256202583e2535bbbfcd Mon Sep 17 00:00:00 2001
+From cbbe039a7884b6df8b5826d242ac55bf43d237f4 Mon Sep 17 00:00:00 2001
 From: vsajjadx <noreply@github.com>
 Date: Sun, 18 Oct 2026 14:12:10 +0330
 Subject: [PATCH] Bundle with shadPS4 Anti-Crash
@@ -8,6 +8,8 @@ folders first, compatibility overrides from the fork, About links to the fork, a
 installation from shadPS4 v0.7.0 with keys from the Crypto Key Manager.
 ---
  CMakeLists.txt                    |  49 ++-
+ src/common/key_manager.cpp        |  35 ++
+ src/common/key_manager.h          |   2 +
  src/common/path_util.cpp          |  37 +-
  src/core/crypto/crypto.cpp        | 177 +++++++++
  src/core/crypto/crypto.h          |  61 +++
@@ -25,10 +27,10 @@ installation from shadPS4 v0.7.0 with keys from the Crypto Key Manager.
  src/qt_gui/gui_settings.h         |  19 +-
  src/qt_gui/main_window.cpp        |  66 +++-
  src/qt_gui/main_window.h          |   5 +
- src/qt_gui/pkg_install.cpp        | 184 +++++++++
+ src/qt_gui/pkg_install.cpp        | 227 +++++++++++
  src/qt_gui/settings_dialog.cpp    |  78 +++-
  src/qt_gui/settings_dialog.h      |   7 +
- 21 files changed, 2388 insertions(+), 17 deletions(-)
+ 23 files changed, 2468 insertions(+), 17 deletions(-)
  create mode 100644 src/core/crypto/crypto.cpp
  create mode 100644 src/core/crypto/crypto.h
  create mode 100644 src/core/file_format/pfs.h
@@ -130,6 +132,62 @@ index 641fcc6..864c1ef 100644
  if (HIDE_VERSION_MANAGER)
      add_definitions(-DHIDE_VERSION_MANAGER)
  endif()
+diff --git a/src/common/key_manager.cpp b/src/common/key_manager.cpp
+index df2c954..9a163c8 100644
+--- a/src/common/key_manager.cpp
++++ b/src/common/key_manager.cpp
+@@ -169,3 +169,38 @@ std::string KeyManager::BytesToHexString(const std::vector<u8>& bytes) {
+     }
+     return hexStr;
+ }
++
++bool KeyManager::ImportFromFile(const std::filesystem::path& path) {
++    try {
++        std::ifstream file(path);
++        if (!file.is_open()) {
++            return false;
++        }
++        json j;
++        file >> j;
++        bool found = false;
++        if (j.contains("TrophyKeySet")) {
++            j.at("TrophyKeySet").get_to(m_keys.TrophyKeySet);
++            found = true;
++        }
++        if (j.contains("FakeKeyset")) {
++            j.at("FakeKeyset").get_to(m_keys.FakeKeyset);
++            found = true;
++        }
++        if (j.contains("DebugRifKeyset")) {
++            j.at("DebugRifKeyset").get_to(m_keys.DebugRifKeyset);
++            found = true;
++        }
++        if (j.contains("PkgDerivedKey3Keyset")) {
++            j.at("PkgDerivedKey3Keyset").get_to(m_keys.PkgDerivedKey3Keyset);
++            found = true;
++        }
++        if (found) {
++            SaveToFile();
++        }
++        return found;
++    } catch (const std::exception& e) {
++        LOG_ERROR(KeyManager, "Error importing keys from {}: {}", path.string(), e.what());
++        return false;
++    }
++}
+diff --git a/src/common/key_manager.h b/src/common/key_manager.h
+index 7f7dd20..b5e8f8e 100644
+--- a/src/common/key_manager.h
++++ b/src/common/key_manager.h
+@@ -54,6 +54,8 @@ public:
+     // ------------------- File operations -------------------
+     bool LoadFromFile();
+     bool SaveToFile();
++    /// Adds the keysets found in a keys file in the same format as keys.json and saves them.
++    bool ImportFromFile(const std::filesystem::path& path);
+ 
+     // ------------------- Key operations -------------------
+     void SetDefaultKeys();
 diff --git a/src/common/path_util.cpp b/src/common/path_util.cpp
 index 59e39b7..a5898a0 100644
 --- a/src/common/path_util.cpp
@@ -2549,10 +2607,10 @@ index fd69169..5f05771 100644
      void PlayBackgroundMusic();
 diff --git a/src/qt_gui/pkg_install.cpp b/src/qt_gui/pkg_install.cpp
 new file mode 100644
-index 0000000..d827c49
+index 0000000..d43e099
 --- /dev/null
 +++ b/src/qt_gui/pkg_install.cpp
-@@ -0,0 +1,184 @@
+@@ -0,0 +1,227 @@
 +// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -2567,6 +2625,12 @@ index 0000000..d827c49
 +#include <QProgressDialog>
 +#include <QtConcurrent>
 +
++#include <QCoreApplication>
++#include <QDir>
++#include <QFileInfo>
++#include <QPushButton>
++
++#include "common/key_manager.h"
 +#include "common/path_util.h"
 +#include "core/crypto/crypto.h"
 +#include "core/emulator_settings.h"
@@ -2575,18 +2639,55 @@ index 0000000..d827c49
 +#include "crypto_key_dialog.h"
 +#include "main_window.h"
 +
++// A keys file next to the launcher (or one picked once) is imported, so later PKG installs need
++// no setup. The keys are not part of the program.
++static bool ImportKeysNextToLauncher() {
++    const QStringList names{"keys.json", "pkg_keys.json"};
++    const QStringList dirs{QCoreApplication::applicationDirPath(), QDir::currentPath()};
++    for (const auto& dir : dirs) {
++        for (const auto& name : names) {
++            const QString path = QDir(dir).filePath(name);
++            if (QFileInfo::exists(path) &&
++                KeyManager::GetInstance()->ImportFromFile(Common::FS::PathFromQString(path)) &&
++                Crypto::HasPkgKeys()) {
++                return true;
++            }
++        }
++    }
++    return false;
++}
++
 +void MainWindow::InstallPkg() {
-+    if (!Crypto::HasPkgKeys()) {
-+        const auto answer = QMessageBox::question(
-+            this, tr("Install Packages (PKG)"),
-+            tr("Installing PKG files needs the Fake keyset and the PKG Derived Key3 keyset.\n"
-+               "They are not included with the program. Open Manage Cryptographic Keys to enter "
-+               "them?"));
-+        if (answer == QMessageBox::Yes) {
++    if (!Crypto::HasPkgKeys() && !ImportKeysNextToLauncher()) {
++        QMessageBox box(this);
++        box.setWindowTitle(tr("Install Packages (PKG)"));
++        box.setIcon(QMessageBox::Information);
++        box.setText(tr("Installing PKG files needs your keys file (Fake keyset and PKG Derived "
++                       "Key3 keyset). It is not included with the program.\n\n"
++                       "Choose it once and it is remembered. You can also put it next to "
++                       "shadPS4QtLauncher.exe as keys.json."));
++        QPushButton* choose = box.addButton(tr("Choose keys file..."), QMessageBox::AcceptRole);
++        QPushButton* manage = box.addButton(tr("Enter keys by hand"), QMessageBox::ActionRole);
++        box.addButton(QMessageBox::Cancel);
++        box.exec();
++        if (box.clickedButton() == choose) {
++            const QString path = QFileDialog::getOpenFileName(this, tr("Choose keys file"),
++                                                              QString(), tr("Keys file (*.json)"));
++            if (!path.isEmpty() &&
++                !KeyManager::GetInstance()->ImportFromFile(Common::FS::PathFromQString(path))) {
++                QMessageBox::warning(this, tr("Install Packages (PKG)"),
++                                     tr("No keys were found in that file."));
++            }
++        } else if (box.clickedButton() == manage) {
 +            auto keyDialog = new CryptoManagerDialog(this);
 +            keyDialog->exec();
 +        }
 +        if (!Crypto::HasPkgKeys()) {
++            if (box.clickedButton() != box.button(QMessageBox::Cancel)) {
++                QMessageBox::warning(this, tr("Install Packages (PKG)"),
++                                     tr("The Fake keyset and the PKG Derived Key3 keyset are "
++                                        "still missing."));
++            }
 +            return;
 +        }
 +    }
