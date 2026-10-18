@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <algorithm>
 #include <system_error>
 
 #include "common/aes.h"
@@ -230,18 +229,6 @@ bool TRP::ProcessEncryptedXmlEntry(Common::FS::IOFile& file, const TrpEntry& ent
 
     // Remove padding
     removePadding(XML);
-
-    // A wrong trophy key (such as the all-zero default) gives data that is not XML. Nothing is
-    // written then, and the trophies are skipped as when no key is set.
-    const auto first = std::find_if(XML.begin(), XML.end(), [](u8 c) {
-        return c != ' ' && c != '\t' && c != '\r' && c != '\n' && c != 0xEF && c != 0xBB &&
-               c != 0xBF;
-    });
-    if (first == XML.end() || *first != '<') {
-        LOG_WARNING(Common_Filesystem, "Trophy key does not decrypt {}, skipping the trophies",
-                    entry.entry_name);
-        return false;
-    }
 
     // Create output filename
     std::string xml_name(entry.entry_name);
