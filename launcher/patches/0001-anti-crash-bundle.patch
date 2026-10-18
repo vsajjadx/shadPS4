@@ -1,11 +1,11 @@
-From 97f237985db06d549315388d9a03daa7afd6ff00 Mon Sep 17 00:00:00 2001
+From b864da4f655b9d150c713746dd2be285ec6279a4 Mon Sep 17 00:00:00 2001
 From: vsajjadx <noreply@github.com>
 Date: Sun, 18 Oct 2026 14:12:10 +0330
 Subject: [PATCH] Bundle with shadPS4 Anti-Crash: fork updater, bundled
  emulator, resolution list, frame generation
 
 ---
- CMakeLists.txt                 |  10 ++
+ CMakeLists.txt                 |  13 +-
  src/common/path_util.cpp       |  37 +++++-
  src/core/emulator_settings.h   |   8 +-
  src/qt_gui/check_update.cpp    | 223 ++++++++++++++++++++++++++++++++-
@@ -15,13 +15,23 @@ Subject: [PATCH] Bundle with shadPS4 Anti-Crash: fork updater, bundled
  src/qt_gui/main_window.h       |   2 +
  src/qt_gui/settings_dialog.cpp |  78 +++++++++++-
  src/qt_gui/settings_dialog.h   |   7 ++
- 10 files changed, 423 insertions(+), 14 deletions(-)
+ 10 files changed, 425 insertions(+), 15 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 641fcc6..5055264 100644
+index 641fcc6..2b41eaa 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -411,6 +411,16 @@ target_link_libraries(shadPS4QtLauncher PRIVATE Qt6::Widgets Qt6::Concurrent Qt6
+@@ -181,7 +181,8 @@ set_source_files_properties(src/shadps4.rc PROPERTIES COMPILE_DEFINITIONS "APP_V
+ message("-- end git things, remote: ${GIT_REMOTE_NAME}, branch: ${GIT_BRANCH}, link: ${GIT_REMOTE_URL}")
+ 
+ string(TOLOWER "${GIT_REMOTE_URL}" GIT_REMOTE_URL_LOWER)
+-if(NOT GIT_REMOTE_URL_LOWER MATCHES "shadps4-emu/shadps4-qtlauncher" OR NOT GIT_BRANCH STREQUAL "main")
++# A launcher bundled with a fork updates from that fork's releases, whatever it was built from.
++if(NOT FORK_BUNDLE_REV AND (NOT GIT_REMOTE_URL_LOWER MATCHES "shadps4-emu/shadps4-qtlauncher" OR NOT GIT_BRANCH STREQUAL "main"))
+     message(STATUS "not main, disabling auto update")
+     set(ENABLE_UPDATER OFF)
+ endif()
+@@ -411,6 +412,16 @@ target_link_libraries(shadPS4QtLauncher PRIVATE Qt6::Widgets Qt6::Concurrent Qt6
  if (ENABLE_UPDATER)
      add_definitions(-DENABLE_UPDATER)
  endif()
