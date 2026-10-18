@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: 2026 shadPS4 Emulator Project
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+name: Publish release
+
+# Publishes the Windows package (emulator + launcher) of a finished "Build and Release" run as
+# a GitHub release of this repository. Start it from the Actions tab with the run's ID.
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "ID of the Build and Release run whose package should be published"
+        required: true
+      tag:
+        description: "Release tag, for example builds-2026-10-18b"
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUN_ID: ${{ inputs.run_id }}
+      TAG: ${{ inputs.tag }}
+    steps:
+    - name: Look up the run
+      run: |
+        sha=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID" --jq .head_sha)
+        conclusion=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID" --jq .conclusion)
+        echo "Run $RUN_ID: commit $sha, conclusion $conclusion"
+        echo "SHA=$sha" >> "$GITHUB_ENV"
+        echo "SHORT=${sha:0:7}" >> "$GITHUB_ENV"
+
+    - name: Download the package
+      uses: actions/download-artifact@v8
+      with:
+        run-id: ${{ inputs.run_id }}
+        github-token: ${{ github.token }}
+        repository: ${{ github.repository }}
+        pattern: shadPS4-AntiCrash-win64-*
+        merge-multiple: true
+        path: bundle
+
+    - name: Zip and publish
+      run: |
+        cd bundle
+        ls -la
+        zip -r -q "../shadPS4-anticrash-${SHORT}.zip" .
+        cd ..
+        gh release create "$TAG" "shadPS4-anticrash-${SHORT}.zip" \
+          --repo "${{ github.repository }}" \
+          --target "$SHA" \
+          --title "shadPS4 Anti-Crash ${TAG#builds-} (${SHORT})" \
+          --notes "Windows package with the emulator and the launcher. Commit: https://github.com/${{ github.repository }}/commit/${SHA}" \
+          --latest
