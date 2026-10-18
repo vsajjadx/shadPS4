@@ -1,15 +1,18 @@
 // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
 #include <limits>
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_semaphore.h"
 
 #include "common/assert.h"
+#include "common/logging/log.h"
 
 namespace Vulkan {
 
-constexpr u64 WAIT_TIMEOUT = std::numeric_limits<u64>::max();
+constexpr u64 WAIT_TIMEOUT = 1'000'000'000ULL;
+constexpr auto SLOW_WAIT_REPORT = std::chrono::seconds(5);
 
 Semaphore::Semaphore(const Instance& instance_) : instance{instance_} {
     const vk::StructureChain semaphore_chain = {
@@ -44,7 +47,7 @@ void Semaphore::Refresh() {
                                              std::memory_order_relaxed));
 }
 
-void Semaphore::Wait(u64 tick) {
+void Semaphore::Wait(u64 tick, std::source_location caller) {
     // No need to wait if the GPU is ahead of the tick
     if (IsFree(tick)) {
         return;
@@ -62,7 +65,19 @@ void Semaphore::Wait(u64 tick) {
         .pValues = &tick,
     };
 
+    const auto start = std::chrono::steady_clock::now();
+    auto next_report = start + SLOW_WAIT_REPORT;
     while (instance.GetDevice().waitSemaphores(&wait_info, WAIT_TIMEOUT) != vk::Result::eSuccess) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= next_report) {
+            Refresh();
+            LOG_CRITICAL(Render_Vulkan,
+                         "GPU wait for tick {} blocked for {}s (gpu tick {}, current tick {}) at "
+                         "{}:{}",
+                         tick, std::chrono::duration_cast<std::chrono::seconds>(now - start).count(),
+                         KnownGpuTick(), CurrentTick(), caller.file_name(), caller.line());
+            next_report = now + SLOW_WAIT_REPORT;
+        }
     }
     Refresh();
 }

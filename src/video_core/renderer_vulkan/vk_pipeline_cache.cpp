@@ -52,7 +52,7 @@ static u32 NumCompileWorkers() {
     // concurrency so a 16+ thread CPU doesn't throw that many compiles at the driver at once;
     // this only slows down cold cache warm-up, not steady-state play once the cache is warm.
     const u32 hw_threads = std::max(std::thread::hardware_concurrency(), 2u);
-    return std::clamp(hw_threads > 4 ? hw_threads - 4 : 2u, 2u, 8u);
+    return std::clamp(hw_threads / 4, 2u, 4u);
 }
 
 PipelineCompileWorkers::PipelineCompileWorkers(u32 num_threads) {
@@ -87,6 +87,7 @@ void PipelineCompileWorkers::WaitIdle() {
 
 void PipelineCompileWorkers::Run(std::stop_token stoken, u32 index) {
     Common::SetCurrentThreadName(fmt::format("shadPS4:PipelineCompile{}", index).c_str());
+    Common::SetCurrentThreadPriority(Common::ThreadPriority::Low);
     while (true) {
         std::function<void()> task;
         {

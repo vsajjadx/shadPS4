@@ -122,13 +122,13 @@ void Scheduler::Finish() {
     Wait(presubmit_tick);
 }
 
-void Scheduler::Wait(u64 tick) {
+void Scheduler::Wait(u64 tick, std::source_location caller) {
     if (tick >= work_semaphore.CurrentTick()) {
         // Make sure we are not waiting for the current tick without signalling
         SubmitInfo info{};
         Flush(info);
     }
-    work_semaphore.Wait(tick);
+    work_semaphore.Wait(tick, caller);
 }
 
 void Scheduler::PopPendingOperations() {

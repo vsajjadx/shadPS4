@@ -4,6 +4,7 @@
 #pragma once
 
 #include <condition_variable>
+#include <source_location>
 #include <mutex>
 #include <thread>
 #include <queue>
@@ -367,7 +368,7 @@ public:
     void Finish();
 
     /// Waits for the given tick to trigger on the GPU.
-    void Wait(u64 tick);
+    void Wait(u64 tick, std::source_location caller = std::source_location::current());
 
     /// Attempts to execute operations whose tick the GPU has caught up with.
     void PopPendingOperations();
