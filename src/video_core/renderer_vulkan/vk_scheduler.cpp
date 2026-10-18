@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <string>
 #include <fmt/format.h>
+#include <vk_mem_alloc.h>
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/thread.h"
