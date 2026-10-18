@@ -53,13 +53,13 @@ The zip includes the latest official shadPS4 Qt launcher, with a few additions:
 
 Works like shadPS4 v0.7: **File → Install Packages (PKG)**, pick your `.pkg` files, done.
 
-The only extra step is once, the first time: the launcher needs your keys file (Fake keyset
-and PKG Derived Key3 keyset). It is **not included** with this program. Either:
+- **Fake PKGs made with the default passcode** (`00000000000000000000000000000000`, which almost
+  all of them use) install right away. **No keys needed.**
+- For a PKG made with another passcode, the launcher asks for a keys file once (Fake keyset and
+  PKG Derived Key3 keyset). It is not included with this program. You can also put it next to
+  `shadPS4QtLauncher.exe` as `keys.json`.
 
-- put it next to `shadPS4QtLauncher.exe` as `keys.json` (it is picked up automatically), or
-- choose it when the launcher asks (**Choose keys file...**).
-
-After that the keys are remembered, also across updates.
+Where things go:
 
 - **Games** go into your games folder (for example `CUSA00093`).
 - **Updates** go into a `-UPDATE` folder next to the game (for example `CUSA00093-UPDATE`) and
