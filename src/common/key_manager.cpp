@@ -1,6 +1,7 @@
 ﻿// SPDX-FileCopyrightText: Copyright 2025-2026 shadLauncher4 Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -69,6 +70,14 @@ bool KeyManager::TransferTrophyKey() {
     return false;
 }
 
+// A trophy key of zeros is the default. It does not decrypt real trophy files, which are then
+// skipped as before, until the user enters the real key.
+static void EnsureDefaultTrophyKey(std::vector<u8>& key) {
+    if (key.size() != 16) {
+        key.assign(16, 0);
+    }
+}
+
 bool KeyManager::LoadFromFile() {
     try {
         const auto userDir = Common::FS::GetUserPath(Common::FS::PathType::UserDir);
@@ -77,6 +86,7 @@ bool KeyManager::LoadFromFile() {
         if (!std::filesystem::exists(keysPath)) {
             SetDefaultKeys();
             TransferTrophyKey();
+            EnsureDefaultTrophyKey(m_keys.TrophyKeySet.ReleaseTrophyKey);
             SaveToFile();
             return true;
         }
@@ -96,13 +106,15 @@ bool KeyManager::LoadFromFile() {
             j.at("TrophyKeySet").get_to(m_keys.TrophyKeySet);
         }
 
-        if (m_keys.TrophyKeySet.ReleaseTrophyKey.empty()) {
+        const auto& trophy_key = m_keys.TrophyKeySet.ReleaseTrophyKey;
+        if (std::ranges::all_of(trophy_key, [](u8 b) { return b == 0; })) {
             // No key, try to transfer it from the old configs
             if (TransferTrophyKey()) {
                 // If we did transfer something, make sure to save it.
                 SaveToFile();
             }
         }
+        EnsureDefaultTrophyKey(m_keys.TrophyKeySet.ReleaseTrophyKey);
         return true;
 
     } catch (const std::exception& e) {

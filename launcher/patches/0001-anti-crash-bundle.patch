@@ -1,4 +1,4 @@
-From cbbe039a7884b6df8b5826d242ac55bf43d237f4 Mon Sep 17 00:00:00 2001
+From 55a64c493468c91871dc532917dfd7dfecd0ef91 Mon Sep 17 00:00:00 2001
 From: vsajjadx <noreply@github.com>
 Date: Sun, 18 Oct 2026 14:12:10 +0330
 Subject: [PATCH] Bundle with shadPS4 Anti-Crash
@@ -8,7 +8,7 @@ folders first, compatibility overrides from the fork, About links to the fork, a
 installation from shadPS4 v0.7.0 with keys from the Crypto Key Manager.
 ---
  CMakeLists.txt                    |  49 ++-
- src/common/key_manager.cpp        |  35 ++
+ src/common/key_manager.cpp        |  45 +++
  src/common/key_manager.h          |   2 +
  src/common/path_util.cpp          |  37 +-
  src/core/crypto/crypto.cpp        | 177 +++++++++
@@ -19,6 +19,7 @@ installation from shadPS4 v0.7.0 with keys from the Crypto Key Manager.
  src/core/file_format/pkg.h        | 172 ++++++++
  src/core/file_format/pkg_type.cpp | 638 ++++++++++++++++++++++++++++++
  src/core/file_format/pkg_type.h   |  10 +
+ src/core/file_format/trp.cpp      |  13 +
  src/qt_gui/about_dialog.cpp       |  17 +
  src/qt_gui/check_update.cpp       | 223 ++++++++++-
  src/qt_gui/check_update.h         |   6 +
@@ -30,7 +31,7 @@ installation from shadPS4 v0.7.0 with keys from the Crypto Key Manager.
  src/qt_gui/pkg_install.cpp        | 227 +++++++++++
  src/qt_gui/settings_dialog.cpp    |  78 +++-
  src/qt_gui/settings_dialog.h      |   7 +
- 23 files changed, 2468 insertions(+), 17 deletions(-)
+ 24 files changed, 2491 insertions(+), 17 deletions(-)
  create mode 100644 src/core/crypto/crypto.cpp
  create mode 100644 src/core/crypto/crypto.h
  create mode 100644 src/core/file_format/pfs.h
@@ -133,10 +134,41 @@ index 641fcc6..864c1ef 100644
      add_definitions(-DHIDE_VERSION_MANAGER)
  endif()
 diff --git a/src/common/key_manager.cpp b/src/common/key_manager.cpp
-index df2c954..9a163c8 100644
+index df2c954..a10772c 100644
 --- a/src/common/key_manager.cpp
 +++ b/src/common/key_manager.cpp
-@@ -169,3 +169,38 @@ std::string KeyManager::BytesToHexString(const std::vector<u8>& bytes) {
+@@ -33,6 +33,14 @@ void KeyManager::SetInstance(std::shared_ptr<KeyManager> instance) {
+ }
+ 
+ // ------------------- Load / Save -------------------
++// A trophy key of zeros is the default. It does not decrypt real trophy files, which are then
++// skipped as before, until the user enters the real key.
++static void EnsureDefaultTrophyKey(std::vector<u8>& key) {
++    if (key.size() != 16) {
++        key.assign(16, 0);
++    }
++}
++
+ bool KeyManager::LoadFromFile() {
+     try {
+         const auto userDir = Common::FS::GetUserPath(Common::FS::PathType::UserDir);
+@@ -40,6 +48,7 @@ bool KeyManager::LoadFromFile() {
+ 
+         if (!std::filesystem::exists(keysPath)) {
+             SetDefaultKeys();
++            EnsureDefaultTrophyKey(m_keys.TrophyKeySet.ReleaseTrophyKey);
+             SaveToFile();
+             LOG_DEBUG(KeyManager, "Created default key file: {}", keysPath.string());
+             return true;
+@@ -68,6 +77,7 @@ bool KeyManager::LoadFromFile() {
+         if (j.contains("PkgDerivedKey3Keyset"))
+             j.at("PkgDerivedKey3Keyset").get_to(m_keys.PkgDerivedKey3Keyset);
+ 
++        EnsureDefaultTrophyKey(m_keys.TrophyKeySet.ReleaseTrophyKey);
+         LOG_DEBUG(KeyManager, "Successfully loaded keys from: {}", keysPath.string());
+         return true;
+ 
+@@ -169,3 +179,38 @@ std::string KeyManager::BytesToHexString(const std::vector<u8>& bytes) {
      }
      return hexStr;
  }
@@ -2001,6 +2033,37 @@ index 0000000..6b010e3
 +
 +/// Retrieves the PKG entry name from its type identifier.
 +std::string_view GetEntryNameByType(u32 type);
+diff --git a/src/core/file_format/trp.cpp b/src/core/file_format/trp.cpp
+index a257860..1b28459 100644
+--- a/src/core/file_format/trp.cpp
++++ b/src/core/file_format/trp.cpp
+@@ -1,6 +1,7 @@
+ // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <algorithm>
+ #include "common/aes.h"
+ #include "common/key_manager.h"
+ #include "common/logging/log.h"
+@@ -303,6 +304,18 @@ bool TRP::ProcessEncryptedXmlEntry(Common::FS::IOFile& file, const TrpEntry& ent
+     // Remove padding
+     removePadding(XML);
+ 
++    // A wrong trophy key (such as the all-zero default) gives data that is not XML. Nothing is
++    // written then, and the trophies are skipped as when no key is set.
++    const auto first = std::find_if(XML.begin(), XML.end(), [](u8 c) {
++        return c != ' ' && c != '\t' && c != '\r' && c != '\n' && c != 0xEF && c != 0xBB &&
++               c != 0xBF;
++    });
++    if (first == XML.end() || *first != '<') {
++        LOG_WARNING(Common_Filesystem, "Trophy key does not decrypt {}, skipping the trophies",
++                    entry.entry_name);
++        return false;
++    }
++
+     // Create output filename (replace ESFM with XML)
+     std::string xml_name(entry.entry_name);
+     size_t pos = xml_name.find("ESFM");
 diff --git a/src/qt_gui/about_dialog.cpp b/src/qt_gui/about_dialog.cpp
 index eb1cf95..fcc16d1 100644
 --- a/src/qt_gui/about_dialog.cpp
