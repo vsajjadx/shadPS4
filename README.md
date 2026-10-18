@@ -18,14 +18,32 @@ A PlayStation 4 emulator for Windows, built to crash less and run more games.
 ## Download and play
 
 1. Download the latest zip from [**Releases**](https://github.com/vsajjadx/shadPS4/releases).
-2. Unzip it and run `shadPS4.exe`.
-3. Pick your game and play.
+2. Unzip it and run `shadPS4QtLauncher.exe`.
+3. Add your games folder and play.
+
+**No separate launcher is needed.** The launcher and the emulator come together in one zip.
 
 **No extra settings are needed.** You don't have to change anything in the config or make
 per-game settings. The default settings work.
 
 > The first time you start a game it can be a little slower while shaders are built. After
 > that it runs normally.
+
+## The launcher
+
+The zip includes the latest official shadPS4 Qt launcher, with a few additions:
+
+- **Automatic updates.** When a new version is released here, the launcher tells you when it
+  starts. Press **Update** and it downloads the new version, replaces itself and the emulator,
+  and opens again.
+- **Your saves are safe.** The launcher uses the save and settings folders you already have.
+  It only makes new ones if none exist, and updates never touch them.
+- **Easy window size.** Pick the size from a list (720p, 1080p, 1440p, 4K and more) instead of
+  typing numbers.
+- **Frame generation switch.** Turn on FSR 3.1 frame generation in **Settings → Graphics**.
+
+> Already using the official launcher with a `user` folder next to it? Unzip into that same
+> folder and replace the files. Your games, saves and settings stay as they are.
 
 ## Screenshots
 
