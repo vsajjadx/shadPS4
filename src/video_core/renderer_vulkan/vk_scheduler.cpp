@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <chrono>
 #include <string>
 #include <fmt/format.h>
 #include "common/assert.h"
@@ -297,22 +298,34 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
     }
     ASSERT_MSG(submit_result != vk::Result::eErrorDeviceLost, "Device lost during submit");
 
-    const vk::SemaphoreWaitInfo wait_info = {
-        .semaphoreCount = 1,
-        .pSemaphores = &timeline,
-        .pValues = &signal_value,
-    };
-    const vk::Result wait_result =
-        instance.GetDevice().waitSemaphores(&wait_info, 4'000'000'000ULL);
-    if (wait_result == vk::Result::eErrorDeviceLost) {
-        LogSubmittedWork(submitted_work, "Device lost while this submit was executing");
-    } else if (wait_result == vk::Result::eTimeout) {
-        static u32 timeout_reports = 0;
-        if (timeout_reports++ < 3) {
-            LogSubmittedWork(submitted_work, "Submit still executing after 4s");
+    // Never let the driver queue grow without bound. With the submit queue unbounded the NVIDIA
+    // driver stalled the GPU thread with hundreds of submits pending and the device was lost
+    // minutes later. Waiting for every submit fixes that but serializes CPU and GPU (low FPS), so
+    // only wait for the submit MAX_SUBMITS_IN_FLIGHT submits ago.
+    constexpr u64 MAX_SUBMITS_IN_FLIGHT = 6;
+    if (signal_value > MAX_SUBMITS_IN_FLIGHT) {
+        const u64 wait_value = signal_value - MAX_SUBMITS_IN_FLIGHT;
+        const vk::SemaphoreWaitInfo wait_info = {
+            .semaphoreCount = 1,
+            .pSemaphores = &timeline,
+            .pValues = &wait_value,
+        };
+        vk::Result wait_result;
+        {
+            Common::SlowCallScope slow{"vkWaitSemaphores (in-flight limit)", std::chrono::milliseconds{500}};
+            wait_result = instance.GetDevice().waitSemaphores(&wait_info, 4'000'000'000ULL);
         }
+        if (wait_result == vk::Result::eErrorDeviceLost) {
+            LogSubmittedWork(submitted_work, "Device lost while an earlier submit was executing");
+        } else if (wait_result == vk::Result::eTimeout) {
+            static u32 timeout_reports = 0;
+            if (timeout_reports++ < 3) {
+                LogSubmittedWork(submitted_work, "Earlier submit still executing after 4s");
+            }
+        }
+        ASSERT_MSG(wait_result != vk::Result::eErrorDeviceLost,
+                   "Device lost while executing submit");
     }
-    ASSERT_MSG(wait_result != vk::Result::eErrorDeviceLost, "Device lost while executing submit");
 
     work_semaphore.Refresh();
     BeginSession();
