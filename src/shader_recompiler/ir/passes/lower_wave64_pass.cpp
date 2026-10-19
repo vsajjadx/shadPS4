@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include "common/elf_info.h"
 #include "common/logging/classes.h"
 #include "shader_recompiler/info.h"
 #include "shader_recompiler/ir/basic_block.h"
@@ -103,12 +102,8 @@ static std::vector<IR::Block*> FindUniformBlocks(const IR::Program& program) {
             conditionals.pop_back();
             break;
         case Type::Loop: {
-            // Only NHL 24 is known to need uniform loop bodies; other games keep treating every
-            // loop body as divergent, as before.
-            static const bool relax_uniform_loops =
-                Common::ElfInfo::Instance().GameSerial() == "CUSA37933";
-            const bool divergent = !relax_uniform_loops ||
-                                   std::ranges::contains(divergent_loops, node.data.loop.merge);
+            const bool divergent =
+                std::ranges::contains(divergent_loops, node.data.loop.merge);
             loops.push_back({node.data.loop.merge, divergent});
             divergence_depth += static_cast<u32>(divergent);
             break;

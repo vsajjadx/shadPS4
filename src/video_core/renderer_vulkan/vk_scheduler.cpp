@@ -1,67 +1,25 @@
 // SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <algorithm>
-#include <atomic>
-#include <mutex>
-#include <chrono>
-#include <string>
-#include <fmt/format.h>
 #include "common/assert.h"
 #include "common/debug.h"
-#include "common/slow_call.h"
 #include "common/thread.h"
 #include "imgui/renderer/texture_manager.h"
+#include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <thread>
+#include "common/diag_log.h"
+#include "video_core/perf_counters.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
-
-#include <vk_mem_alloc.h>
 
 namespace Vulkan {
 
 std::mutex Scheduler::submit_mutex;
 
-static std::mutex active_schedulers_mutex;
-static std::vector<Scheduler*> active_schedulers;
-
-void DumpWorkOnDeviceLost() {
-    static std::atomic_flag dumped = ATOMIC_FLAG_INIT;
-    if (dumped.test_and_set()) {
-        return;
-    }
-    std::vector<Scheduler*> schedulers;
-    {
-        std::scoped_lock lk{active_schedulers_mutex};
-        schedulers = active_schedulers;
-    }
-    LOG_CRITICAL(Render_Vulkan, "Device lost: dumping {} scheduler(s)", schedulers.size());
-    for (auto* scheduler : schedulers) {
-        scheduler->DumpRecentWork();
-    }
-}
-
-void Scheduler::DumpRecentWork() {
-    std::vector<std::vector<WorkRecord>> submits;
-    std::vector<WorkRecord> pending;
-    {
-        std::scoped_lock lk{work_records_mutex};
-        submits.assign(recent_submits.begin(), recent_submits.end());
-        pending = work_records;
-    }
-    for (size_t i = 0; i < submits.size(); ++i) {
-        LogSubmittedWork(submits[i], fmt::format("Device lost: submit {} of {} (oldest first)",
-                                                 i + 1, submits.size())
-                                         .c_str());
-    }
-    LogSubmittedWork(pending, "Device lost: work recorded but not yet submitted");
-}
-
 Scheduler::Scheduler(const Instance& instance)
     : instance{instance}, work_semaphore{instance}, command_pool{instance, &work_semaphore} {
-    {
-        std::scoped_lock lk{active_schedulers_mutex};
-        active_schedulers.push_back(this);
-    }
 #if TRACY_GPU_ENABLED
     profiler_scope = reinterpret_cast<tracy::VkCtxScope*>(std::malloc(sizeof(tracy::VkCtxScope)));
 #endif
@@ -71,10 +29,6 @@ Scheduler::Scheduler(const Instance& instance)
 }
 
 Scheduler::~Scheduler() {
-    {
-        std::scoped_lock lk{active_schedulers_mutex};
-        std::erase(active_schedulers, this);
-    }
 #if TRACY_GPU_ENABLED
     std::free(profiler_scope);
 #endif
@@ -167,6 +121,7 @@ void Scheduler::Flush() {
 }
 
 void Scheduler::Finish() {
+    VideoCore::Perf::gpu_waits.fetch_add(1, std::memory_order_relaxed);
     // When finishing, we need to wait for the submission to have executed on the device.
     const u64 presubmit_tick = CurrentTick();
     SubmitInfo info{};
@@ -174,56 +129,30 @@ void Scheduler::Finish() {
     Wait(presubmit_tick);
 }
 
-void Scheduler::Wait(u64 tick, std::source_location caller) {
+void Scheduler::Wait(u64 tick) {
     if (tick >= work_semaphore.CurrentTick()) {
         // Make sure we are not waiting for the current tick without signalling
         SubmitInfo info{};
         Flush(info);
     }
-    work_semaphore.Wait(tick, caller);
-}
-
-void Scheduler::RecordWork(char kind, std::span<const u64> shader_hashes) {
-    WorkRecord record;
-    record.kind = kind;
-    record.num_hashes = static_cast<u32>(std::min(shader_hashes.size(), record.hashes.size()));
-    std::copy_n(shader_hashes.begin(), record.num_hashes, record.hashes.begin());
-    std::scoped_lock lk{work_records_mutex};
-    record.first_use = seen_work.insert(record.hashes).second;
-    if (work_records.size() < 16384) {
-        work_records.push_back(record);
-    }
-}
-
-void Scheduler::LogSubmittedWork(const std::vector<WorkRecord>& records,
-                                 const char* reason) const {
-    const auto& memory_properties = instance.GetMemoryProperties();
-    std::array<VmaBudget, VK_MAX_MEMORY_HEAPS> budgets{};
-    vmaGetHeapBudgets(instance.GetAllocator(), budgets.data());
-    for (u32 i = 0; i < memory_properties.memoryHeapCount; ++i) {
-        LOG_CRITICAL(Render_Vulkan, "Memory heap {}: {} MB used of {} MB budget", i,
-                     budgets[i].usage >> 20, budgets[i].budget >> 20);
-    }
-    LOG_CRITICAL(Render_Vulkan, "{}: submit holds {} draws/dispatches", reason, records.size());
-    for (size_t i = 0; i < records.size();) {
-        size_t run = 1;
-        while (i + run < records.size() && records[i + run].kind == records[i].kind &&
-               records[i + run].hashes == records[i].hashes) {
-            ++run;
-        }
-        std::string shaders;
-        for (u32 j = 0; j < records[i].num_hashes; ++j) {
-            shaders += fmt::format(" {:#x}", records[i].hashes[j]);
-        }
-        LOG_CRITICAL(Render_Vulkan, "  {}{} x{}:{}", records[i].first_use ? "NEW " : "",
-                     records[i].kind, run, shaders);
-        i += run;
-    }
+    const auto start = std::chrono::steady_clock::now();
+    work_semaphore.Wait(tick);
+    VideoCore::Perf::gpu_stall_ns.fetch_add(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start)
+            .count(),
+        std::memory_order_relaxed);
 }
 
 void Scheduler::PopPendingOperations() {
     std::unique_lock lk(pending_ops_mutex);
-    work_semaphore.Refresh();
+    if (pending_ops.empty()) {
+        return;
+    }
+    // nhlport: this runs before every draw; only query the timeline semaphore when the oldest
+    // pending operation is not already known to be free.
+    if (!work_semaphore.IsFree(pending_ops.front().gpu_tick)) {
+        work_semaphore.Refresh();
+    }
     while (!pending_ops.empty() && work_semaphore.IsFree(pending_ops.front().gpu_tick)) {
         pending_ops.front().callback();
         pending_ops.pop();
@@ -273,7 +202,8 @@ void Scheduler::EndSession() {
 }
 
 void Scheduler::SubmitExecution(SubmitInfo& info) {
-    std::unique_lock lk{submit_mutex};
+    VideoCore::Perf::sched_submits.fetch_add(1, std::memory_order_relaxed);
+    std::scoped_lock lk{submit_mutex};
     const u64 signal_value = work_semaphore.NextTick();
 
 #if TRACY_GPU_ENABLED
@@ -327,47 +257,10 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
     };
 
     ImGui::Core::TextureManager::Submit();
-    vk::Result submit_result;
-    {
-        Common::SlowCallScope slow{"vkQueueSubmit"};
-        submit_result = instance.GetGraphicsQueue().submit(submit_info, info.fence);
-    }
-    std::vector<WorkRecord> submitted_work;
-    {
-        std::scoped_lock work_lk{work_records_mutex};
-        submitted_work = std::move(work_records);
-        work_records.clear();
-    }
-    std::vector<std::vector<WorkRecord>> earlier_submits;
-    {
-        std::scoped_lock work_lk{work_records_mutex};
-        earlier_submits.assign(recent_submits.begin(), recent_submits.end());
-        recent_submits.push_back(submitted_work);
-        if (recent_submits.size() > 8) {
-            recent_submits.pop_front();
-        }
-    }
-    if (submit_result == vk::Result::eErrorDeviceLost) {
-        // The GPU fault may come from any of the submits still in flight, not just this one.
-        for (size_t i = 0; i < earlier_submits.size(); ++i) {
-            LogSubmittedWork(earlier_submits[i],
-                             fmt::format("Earlier submit {} of {} before the device was lost",
-                                         i + 1, earlier_submits.size())
-                                 .c_str());
-        }
-        LogSubmittedWork(submitted_work, "Device lost while submitting");
-    }
-    ASSERT_MSG(submit_result == vk::Result::eSuccess, "Queue submission failed: {}",
-               vk::to_string(submit_result));
-    lk.unlock();
-
-    // Never let the driver queue grow without bound. With the submit queue unbounded the NVIDIA
-    // driver stalled the GPU thread with hundreds of submits pending and the device was lost
-    // minutes later. Waiting for every submit fixes that but serializes CPU and GPU (low FPS), so
-    // only wait for the submit MAX_SUBMITS_IN_FLIGHT submits ago.
-    constexpr u64 MAX_SUBMITS_IN_FLIGHT = 6;
-    if (signal_value > MAX_SUBMITS_IN_FLIGHT) {
-        work_semaphore.Wait(signal_value - MAX_SUBMITS_IN_FLIGHT);
+    auto submit_result = instance.GetGraphicsQueue().submit(submit_info, info.fence);
+    ASSERT_MSG(submit_result != vk::Result::eErrorDeviceLost, "Device lost during submit");
+    if (diag_timeline) {
+        Diag::OnGpuSubmit(signal_value);
     }
 
     work_semaphore.Refresh();
@@ -394,7 +287,26 @@ void Scheduler::PriorityPendingOpsThread(std::stop_token stoken) {
             priority_pending_ops.pop();
         }
 
-        work_semaphore.Wait(op.gpu_tick);
+        // nhlport: the driver's semaphore wait spins on the CPU; these operations (readback copies,
+        // screenshots) are not latency critical, so poll the GPU tick with short sleeps instead.
+        // NHLPORT_PENDING_POLL_US=0 restores the plain wait.
+        static const u32 poll_us = [] {
+            if (const char* v = std::getenv("NHLPORT_PENDING_POLL_US"); v && *v) {
+                return static_cast<u32>(std::clamp(std::atoi(v), 0, 20000));
+            }
+            return 500u;
+        }();
+        if (poll_us == 0) {
+            work_semaphore.Wait(op.gpu_tick);
+        } else {
+            while (!stoken.stop_requested() && !work_semaphore.IsFree(op.gpu_tick)) {
+                work_semaphore.Refresh();
+                if (work_semaphore.IsFree(op.gpu_tick)) {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::microseconds(poll_us));
+            }
+        }
         if (stoken.stop_requested()) {
             break;
         }

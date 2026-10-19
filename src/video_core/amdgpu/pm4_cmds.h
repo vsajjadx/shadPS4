@@ -3,6 +3,9 @@
 
 #pragma once
 
+#include <algorithm>
+#include <cstdlib>
+#include <string_view>
 #include <cstring>
 #include "common/assert.h"
 #include "common/bit_field.h"
@@ -11,6 +14,7 @@
 #include "core/libraries/gnmdriver/gnmdriver.h"
 #include "core/libraries/kernel/time.h"
 #include "video_core/amdgpu/pm4_opcodes.h"
+#include "video_core/perf_counters.h"
 
 namespace AmdGpu {
 
@@ -342,6 +346,37 @@ static u64 GetGpuClock64() {
     auto now = std::chrono::high_resolution_clock::now();
     auto duration = now.time_since_epoch();
     auto ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
+    // nhlport: with NHLPORT_GPU_CLOCK=stall the GPU timestamps exclude time the GPU thread
+    // spent in emulator-only stalls (readback drains, pipeline compiles). NHL 24's dynamic
+    // resolution reacts to those stalls as if the GPU were slow and starts hunting between
+    // resolutions every couple of frames, which rebuilds the texture cache and causes glitches.
+    // NHLPORT_GPU_CLOCK=flat goes further: inside one frame every timestamp is only 2 us after
+    // the previous one, so the GPU frame time the game computes is near zero and its dynamic
+    // resolution settles at the maximum instead of hunting (a PC-class GPU has the headroom).
+    // Across frames the clock still follows wall time, so latency bookkeeping stays sane.
+    // Default for the port: flat (NHLPORT_GPU_CLOCK=real / stall / flat overrides).
+    static const int mode = [] {
+        const char* env = std::getenv("NHLPORT_GPU_CLOCK");
+        if (!env) {
+            return 2;
+        }
+        const std::string_view value{env};
+        return value == "flat" ? 2 : value == "stall" ? 1 : 0;
+    }();
+    if (mode == 1) {
+        ticks -= static_cast<s64>(VideoCore::Perf::gpu_stall_ns.load(std::memory_order_relaxed));
+    } else if (mode == 2) {
+        thread_local u64 frame = ~u64{0};
+        thread_local u64 last = 0;
+        const u64 current_frame = VideoCore::Perf::gpu_frame.load(std::memory_order_relaxed);
+        if (current_frame != frame) {
+            frame = current_frame;
+            last = std::max<u64>(static_cast<u64>(ticks), last + 2000);
+        } else {
+            last += 2000;
+        }
+        return last;
+    }
     return static_cast<u64>(ticks);
 }
 
@@ -489,8 +524,7 @@ struct PM4CmdEventWriteEop {
             break;
         }
         default: {
-            LOG_ERROR(Render, "Ignoring unknown PM4 selector in a command packet");
-            break;
+            UNREACHABLE();
         }
         }
 
@@ -507,8 +541,7 @@ struct PM4CmdEventWriteEop {
             break;
         }
         default: {
-            LOG_ERROR(Render, "Ignoring unknown PM4 selector in a command packet");
-            break;
+            UNREACHABLE();
         }
         }
     }
@@ -726,8 +759,7 @@ struct PM4CmdWaitRegMem {
         case Function::Reserved:
             [[fallthrough]];
         default: {
-            // A reserved or garbage compare function must not hang the GPU thread forever.
-            return true;
+            UNREACHABLE();
         }
         }
     }
@@ -811,8 +843,7 @@ struct PM4CmdEventWriteEos {
             break;
         }
         default: {
-            LOG_ERROR(Render, "Ignoring unknown fence command {}", u32(cmd));
-            break;
+            UNREACHABLE_MSG("Unknown command {}", u32(cmd));
         }
         }
     }
@@ -954,6 +985,9 @@ struct PM4CmdReleaseMem {
         return data_lo | u64(data_hi) << 32;
     }
 
+    // nhlport: the fence value goes through write_mem(address, value, num_bytes) so the caller
+    // can write it via the backing view instead of faulting on a GPU-tracked page (see
+    // Liverpool's ReleaseMem handler; NHL 24 issues these on its compute queue every frame).
     void SignalFence(auto&& write_mem, auto&& signal_irq, auto&& gds_to_mem) const {
         switch (data_sel.Value()) {
         case DataSelect::Data32Low: {
@@ -981,8 +1015,7 @@ struct PM4CmdReleaseMem {
             break;
         }
         default: {
-            LOG_ERROR(Render, "Ignoring unknown PM4 selector in a command packet");
-            break;
+            UNREACHABLE();
         }
         }
 
@@ -998,8 +1031,7 @@ struct PM4CmdReleaseMem {
             break;
         }
         default: {
-            LOG_ERROR(Render, "Ignoring unknown PM4 selector in a command packet");
-            break;
+            UNREACHABLE();
         }
         }
     }
@@ -1074,33 +1106,6 @@ struct PM4CmdDrawIndirect {
         BitField<0, 16, u32> start_inst_loc; ///< Offset where the CP will write the
                                              ///< StartInstanceLocation it fetched from memory
     };
-    u32 draw_initiator; ///< Draw Initiator Register
-};
-
-struct PM4CmdDrawIndirectCountMulti {
-    PM4Type3Header header; ///< header
-    u32 data_offset;       ///< Byte aligned offset where the required data structure starts
-    union {
-        u32 dw2;
-        BitField<0, 16, u32> base_vtx_loc; ///< Offset where the CP will write the
-                                           ///< BaseVertexLocation it fetched from memory
-    };
-    union {
-        u32 dw3;
-        BitField<0, 16, u32> start_inst_loc; ///< Offset where the CP will write the
-                                             ///< StartInstanceLocation it fetched from memory
-    };
-    union {
-        u32 dw4;
-        BitField<0, 16, u32> draw_index_loc; ///< register offset to write the Draw Index count
-        BitField<30, 1, u32>
-            count_indirect_enable; ///< Indicates the data structure count is in memory
-        BitField<31, 1, u32>
-            draw_index_enable; ///< Enables writing of Draw Index count to DRAW_INDEX_LOC
-    };
-    u32 count;          ///< Count of data structures to loop through before going to next packet
-    u64 count_addr;     ///< DWord aligned Address[31:2]; Valid if countIndirectEnable is set
-    u32 stride;         ///< Stride in memory from one data structure to the next
     u32 draw_initiator; ///< Draw Initiator Register
 };
 
@@ -1248,9 +1253,7 @@ struct PM4CmdMemSemaphore {
             *ptr = 1;
             break;
         default:
-            LOG_ERROR(Render, "Ignoring unknown signal type {}",
-                      static_cast<u32>(signal_type.Value()));
-            break;
+            UNREACHABLE_MSG("Unknown signal type {}", static_cast<u32>(signal_type.Value()));
         }
     }
 };

@@ -18,6 +18,7 @@
 #include <vector>
 #include <magic_enum/magic_enum.hpp>
 
+#include "common/diag_log.h"
 #include "common/assert.h"
 #include "common/error.h"
 #include "common/logging/log.h"
@@ -164,6 +165,7 @@ s32 PS4_SYSV_ABI open(const char* raw_path, s32 flags, u16 mode) {
         g_io_stats.AddOpen(IoStats::Clock::now() - open_start);
     };
     LOG_INFO(Kernel_Fs, "path = {} flags = {:#x} mode = {:#o}", raw_path, flags, mode);
+    Diag::C::file_opens.fetch_add(1, std::memory_order_relaxed);
 
     // EA games (NHL 24 and other Frostbite titles) write a "_hang" error report from their
     // heartbeat thread when the game stops responding; dump what every thread is doing then.
@@ -462,6 +464,8 @@ s64 ReadFile(Core::FileSys::File* file, void* buf, u64 nbytes) {
     if (bytes < 0) {
         return bytes;
     }
+    Diag::C::file_reads.fetch_add(1, std::memory_order_relaxed);
+    Diag::C::file_read_bytes.fetch_add(static_cast<u64>(bytes), std::memory_order_relaxed);
     std::memcpy(buf, file_buf.data(), bytes);
     return bytes;
 }

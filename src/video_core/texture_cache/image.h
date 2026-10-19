@@ -12,7 +12,6 @@
 #include "common/small_vector.h"
 #include "common/types.h"
 #include "video_core/renderer_vulkan/vk_common.h"
-#include "video_core/texture_cache/host_compatibility.h"
 #include "video_core/texture_cache/image_info.h"
 #include "video_core/texture_cache/image_view.h"
 
@@ -30,12 +29,10 @@ enum ImageFlagBits : u32 {
     Empty = 0,
     MaybeCpuDirty = 1 << 0, ///< The page this image is in was touched before the image address
     CpuDirty = 1 << 1,      ///< Contents have been modified from the CPU
-    GpuDirty =
-        1 << 2, ///< Image contents have been modified from the GPU (valid data in buffer cache)
+    GpuDirty = 1 << 2, ///< Contents have been modified from the GPU (valid data in buffer cache)
     Dirty = MaybeCpuDirty | CpuDirty | GpuDirty,
-    GpuModified = 1 << 3,   ///< Contents have been modified from the GPU
-    MaybeGpuDirty = 1 << 4, ///< Image contents may have been modified in the buffer cache
-    Registered = 1 << 6,    ///< True when the image is registered
+    GpuModified = 1 << 3, ///< Contents have been modified from the GPU
+    Registered = 1 << 6,  ///< True when the image is registered
 };
 DECLARE_ENUM_FLAG_OPERATORS(ImageFlagBits)
 
@@ -51,14 +48,12 @@ struct UniqueImage {
     UniqueImage(UniqueImage&& other)
         : allocator{std::exchange(other.allocator, VK_NULL_HANDLE)},
           allocation{std::exchange(other.allocation, VK_NULL_HANDLE)},
-          image{std::exchange(other.image, VK_NULL_HANDLE)}, image_ci{std::move(other.image_ci)},
-          size_bytes{std::exchange(other.size_bytes, 0)} {}
+          image{std::exchange(other.image, VK_NULL_HANDLE)}, image_ci{std::move(other.image_ci)} {}
     UniqueImage& operator=(UniqueImage&& other) {
         image = std::exchange(other.image, VK_NULL_HANDLE);
         allocator = std::exchange(other.allocator, VK_NULL_HANDLE);
         allocation = std::exchange(other.allocation, VK_NULL_HANDLE);
         image_ci = std::move(other.image_ci);
-        size_bytes = std::exchange(other.size_bytes, 0);
         return *this;
     }
 
@@ -106,13 +101,8 @@ struct Image : public Common::LRUNode<> {
         return track_addr == 0 || track_addr_end == 0;
     }
 
-    bool HasGpuValidData() const {
+    bool SafeToDownload() const {
         return True(flags & ImageFlagBits::GpuModified) && False(flags & ImageFlagBits::Dirty);
-    }
-
-    bool CanBeDownloaded() {
-        return HasGpuValidData() && info.num_samples == 1 && !info.props.has_stencil &&
-               IsVulkanFormatCompatible(info.pixel_format, backing->image.image_ci.format);
     }
 
     void AssociateDepth(ImageId depth_image_id, u64 depth_image_uid) {
@@ -123,12 +113,6 @@ struct Image : public Common::LRUNode<> {
     void DisassociateDepth() {
         depth_id = {};
         depth_uid = {};
-    }
-
-    vk::DeviceSize SizeBytes() const {
-        return std::accumulate(
-            backing_images.begin(), backing_images.end(), vk::DeviceSize(0),
-            [](vk::DeviceSize sum, const BackingImage& bi) { return sum + bi.image.size_bytes; });
     }
 
     ImageView& FindView(const ImageViewInfo& view_info, bool ensure_guest_samples = true);
@@ -162,29 +146,24 @@ public:
         UniqueImage image;
         State state;
         std::vector<State> subresource_states;
-        struct SettledRequest {
-            u64 generation = ~0ULL;
-            vk::ImageLayout layout;
-            vk::AccessFlags2 access_mask;
-            vk::PipelineStageFlags2 pl_stage;
-            bool has_range;
-            SubresourceRange range;
-        };
-        std::array<SettledRequest, 4> settled_requests{};
-        u32 next_settled_request = 0;
-        u64 state_generation = 0;
         SmallVector<ImageViewInfo, 2> image_view_infos;
         SmallVector<ImageViewId, 2> image_view_ids;
         u32 num_samples;
     };
     SmallVector<BackingImage, 2> backing_images;
     BackingImage* backing{};
-    u64* memory_usage_counter{};
     u64 image_uid{};
     u64 lru_id{};
     u64 tick_accessed_last{};
-    u64 cpu_hash{};
-    u64 gpu_hash{};
+    u64 hash{};
+    /// nhlport: CPU write faults seen on this image; after a few the image is treated as a
+    /// CPU-streamed texture: never re-protected, uploaded once per frame instead.
+    u32 cpu_fault_count{};
+    u64 last_fault_frame{~u64{0}}; ///< gpu frame of the last CPU write fault
+    u32 fault_frames{};             ///< distinct gpu frames with CPU write faults
+    bool cp_written{};              ///< filled by WRITE_DATA inside the command stream
+    bool streamed{};
+    u64 streamed_refresh_frame{~u64{0}};
 
     struct {
         u32 texture : 1;
@@ -200,6 +179,16 @@ public:
         u32 needs_rebind : 1;
         u32 force_general : 1;
     } binding{};
+
+    /// nhlport: metadata surfaces this image holds a reference on in TextureCache::surface_metas
+    /// (see TextureCache::LinkMeta). Kept apart from info.meta_info: that is copied from the
+    /// colour / depth buffer registers when the image is created, before it is ever bound, so
+    /// comparing it with the requested address cannot tell a first link from a repeated one.
+    struct {
+        VAddr cmask = 0;
+        VAddr fmask = 0;
+        VAddr htile = 0;
+    } meta_links{};
 
 private:
     static Common::IncrementalIdProvider<u64> global_image_uid;

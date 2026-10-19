@@ -4,20 +4,16 @@
 #pragma once
 
 #include <mutex>
-#include <optional>
-#include <thread>
-#include <unordered_set>
+#include <vector>
 #include <absl/container/flat_hash_map.h>
 #include <absl/container/flat_hash_set.h>
-#include <boost/container/small_vector.hpp>
-#include <queue>
-#include <tsl/robin_map.h>
 
 #include "common/lru_cache.h"
 #include "common/multi_level_page_table.h"
 #include "common/slot_vector.h"
 #include "shader_recompiler/resource.h"
 #include "video_core/texture_cache/blit_helper.h"
+#include "video_core/perf_counters.h"
 #include "video_core/texture_cache/image.h"
 #include "video_core/texture_cache/image_view.h"
 #include "video_core/texture_cache/sampler.h"
@@ -79,13 +75,6 @@ public:
         VideoOut,
     };
 
-    enum class DownloadMemoryFlags : u32 {
-        None = 0,
-        Sync = 1 << 0,
-        Priority = 1 << 1,
-        DiscardBufferCache = 1 << 2,
-    };
-
     struct ImageDesc {
         ImageInfo info;
         ImageViewInfo view_info;
@@ -110,7 +99,7 @@ public:
 public:
     TextureCache(const Vulkan::Instance& instance, Vulkan::Scheduler& scheduler,
                  Vulkan::Runtime& runtime, AmdGpu::Liverpool* liverpool, BufferCache& buffer_cache,
-                 PageManager& page_manager);
+                 PageManager& tracker);
     ~TextureCache();
 
     TileManager& GetTileManager() noexcept {
@@ -118,13 +107,18 @@ public:
     }
 
     /// Invalidates any image in the logical page range.
+    /// from_cp: the write comes from the command processor (WRITE_DATA executed by the GPU
+    /// thread between draws, e.g. glyph cache pages); such images are re-uploaded at their
+    /// next use like any CPU write, but are never promoted to the per-frame streamed upload.
     void InvalidateMemory(VAddr addr, size_t size, bool from_cp = false);
+
+    /// nhlport: (host bytes held by images, live image count) for the diagnostic log.
+    std::pair<u64, u64> GetDiagUsage() const {
+        return {total_used_memory, VideoCore::Perf::tc_images.load(std::memory_order_relaxed)};
+    }
 
     /// Marks an image as dirty if it exists at the provided address.
     void InvalidateMemoryFromGPU(VAddr address, size_t max_size);
-
-    /// Marks all images as maybe GPU dirty within the provided range.
-    void MarkAsMaybeGpuDirty(VAddr addr, size_t size);
 
     /// Evicts any images that overlap the unmapped range.
     void UnmapMemory(VAddr cpu_addr, size_t size);
@@ -147,14 +141,25 @@ public:
     /// Retrieves the depth target with specified properties
     [[nodiscard]] ImageView& FindDepthTarget(ImageId image_id, const ImageDesc& desc);
 
-    /// Links the stencil plane of a depth surface to its depth image.
-    void AssociateStencil(ImageId depth_id, const ImageInfo& depth_info);
-
     /// Updates image contents if it was modified by CPU.
+    /// nhlport: write mip 0 / layer 0 of a colour image to captures/img_<addr>_<w>x<h>_<fmt>_f<frame>.raw
+    void DumpImage(ImageId image_id);
+
     void UpdateImage(ImageId image_id) {
         Image& image = slot_images[image_id];
         TouchImage(image);
-        TrackImage(image_id);
+        if (image.streamed) {
+            // nhlport: CPU-streamed texture (e.g. a software-decoded 960x540 R8 plane written by
+            // several Job threads every frame): re-protecting it after every write fault cost
+            // ~40 page faults per frame. Upload it once per frame unconditionally instead.
+            const u64 frame = VideoCore::Perf::gpu_frame.load(std::memory_order_relaxed);
+            if (image.streamed_refresh_frame != frame) {
+                image.streamed_refresh_frame = frame;
+                image.flags |= ImageFlagBits::CpuDirty;
+            }
+        } else {
+            TrackImage(image_id);
+        }
         RefreshImage(image);
     }
 
@@ -214,32 +219,6 @@ public:
         HTile,
     };
 
-    struct MetaDataInfo {
-        MetaType type;
-        ImageId owner_id{};
-        u64 owner_uid{};
-        u32 num_samples = 1;
-        s32 clear_mask = -1;
-        bool htile_stencil{}; ///< HTILE words also carry stencil state.
-    };
-
-    /// Returns metadata information if the specified address belongs to a live image.
-    std::optional<MetaDataInfo> GetMetaInfo(VAddr address) const {
-        const auto it = surface_metas.find(address);
-        if (it == surface_metas.end()) {
-            return std::nullopt;
-        }
-        const auto& meta = it->second;
-        if (!meta.owner_id || !slot_images.IsAllocated(meta.owner_id)) {
-            return std::nullopt;
-        }
-        const auto& owner = slot_images[meta.owner_id];
-        if (owner.image_uid != meta.owner_uid || False(owner.flags & ImageFlagBits::Registered)) {
-            return std::nullopt;
-        }
-        return meta;
-    }
-
     /// Returns meta type if the specified address is a metadata surface.
     std::optional<MetaType> IsMeta(VAddr address) const {
         auto it = surface_metas.find(address);
@@ -247,6 +226,36 @@ public:
             return it->second.type;
         }
         return std::nullopt;
+    }
+
+    /// nhlport: human-readable description of a metadata surface for the diagnostic log.
+    std::string DescribeMeta(VAddr address) const {
+        const auto it = surface_metas.find(address);
+        if (it == surface_metas.end()) {
+            return "unknown metadata";
+        }
+        const auto& m = it->second;
+        return fmt::format("{} of {} (refs {}, clear mask {:#x}, read by shaders {})",
+                           m.type == MetaType::CMask   ? "CMASK"
+                           : m.type == MetaType::HTile ? "HTILE"
+                                                       : "FMASK",
+                           m.owner.empty() ? "unknown image" : m.owner, m.refs,
+                           static_cast<u32>(m.clear_mask), m.shader_read);
+    }
+
+    /// nhlport: a shader read this metadata surface as a buffer (NHL 24 derives its UI coverage
+    /// mask from the CMASK of the UI target; the emulator hands out "fully expanded" instead of
+    /// the per-tile "written since the fast clear" state). Kept for the diagnostic log and
+    /// Rasterizer::ColorClearValue; the address is remembered outside the entry so it survives
+    /// the entry being erased with its last owner and recreated later.
+    void MarkMetaShaderRead(VAddr address) {
+        meta_shader_read.insert(address);
+        if (auto it = surface_metas.find(address); it != surface_metas.end()) {
+            it->second.shader_read = true;
+        }
+    }
+    bool IsMetaShaderRead(VAddr address) const {
+        return address != 0 && meta_shader_read.contains(address);
     }
 
     /// Returns true if a slice of the specified metadata surface has been cleared.
@@ -340,7 +349,7 @@ private:
     /// Iterate over all page indices in a range
     template <typename Func>
     static void ForEachPage(PAddr addr, size_t size, Func&& func) {
-        static constexpr bool RETURNS_BOOL = std::is_same_v<std::invoke_result_t<Func, u64>, bool>;
+        static constexpr bool RETURNS_BOOL = std::is_same_v<std::invoke_result<Func, u64>, bool>;
         const u64 page_end = (addr + size - 1) >> Traits::PAGE_BITS;
         for (u64 page = addr >> Traits::PAGE_BITS; page <= page_end; ++page) {
             if constexpr (RETURNS_BOOL) {
@@ -354,8 +363,7 @@ private:
     }
 
     /// Copies image memory back to CPU.
-    void DownloadImageMemory(ImageId image_id,
-                             DownloadMemoryFlags flags = DownloadMemoryFlags::None);
+    void DownloadImageMemory(ImageId image_id, bool sync = false);
 
     /// Register image in the page table
     void RegisterImage(ImageId image);
@@ -373,14 +381,13 @@ private:
 
     void MarkAsMaybeDirty(ImageId image_id, Image& image);
 
-    void RegisterMeta(VAddr address, MetaDataInfo info);
-    void UnregisterMeta(VAddr address, u64 owner_uid);
-
     /// Removes the image and any views/surface metas that reference it.
     void DeleteImage(ImageId image_id);
 
     /// Touch the image in the LRU cache.
-    void TouchImage(Image& image);
+    void TouchImage(Image& image) {
+        image_lru_cache.Touch(image, gc_tick);
+    }
 
     /// Removes image from the cache and schedules it for deletion.
     void FreeImage(ImageId image_id) {
@@ -401,7 +408,7 @@ private:
     Vulkan::Runtime& runtime;
     AmdGpu::Liverpool* liverpool;
     BufferCache& buffer_cache;
-    PageManager& page_manager;
+    PageManager& tracker;
     PageTable page_table;
     Common::SlotVector<Image> slot_images;
     Common::SlotVector<ImageView> slot_image_views;
@@ -410,18 +417,6 @@ private:
     TileManager tile_manager;
     absl::flat_hash_map<u64, SamplerId> samplers;
     absl::flat_hash_set<ImageId> download_images;
-    struct FoundImage {
-        u64 generation = 0;
-        VAddr guest_address = 0;
-        u32 guest_size = 0;
-        Extent3D size{};
-        vk::Format pixel_format{};
-        AmdGpu::ImageType type{};
-        bool exact_fmt = false;
-        ImageId image_id{};
-    };
-    std::array<FoundImage, 2048> found_images{};
-    u64 image_set_generation = 1;
     u64 total_used_memory = 0;
     u64 trigger_gc_memory = 0;
     u64 pressure_gc_memory = 0;
@@ -435,8 +430,45 @@ private:
     Common::LRUCache<Sampler> sampler_lru_cache;
     const bool readback_linear_images;
     std::mutex download_images_mutex;
+    struct MetaDataInfo {
+        MetaType type;
+        s32 clear_mask = -1;
+        u32 refs = 0; ///< nhlport: images linked to this metadata surface
+        bool shader_read = false; ///< nhlport: a shader reads this surface (coverage masks)
+        std::string owner;        ///< nhlport: last image linked (diagnostics)
+    };
+
+    /// nhlport: link an image to a metadata surface. The entry is created on first use (all
+    /// slices cleared, like upstream) and shared by every image that names the same address;
+    /// its clear state survives the deletion of any one of them. Every image counts once per
+    /// metadata type (image.meta_links), so refs == number of live images linked to the entry
+    /// and the entry goes away with the last of them (NHLPORT_META_ERASE=1: with the first).
+    void LinkMeta(Image& image, MetaType type, VAddr address, s32 initial_clear_mask = -1);
+    void UnlinkMeta(Image& image, MetaType type);
+    void UnlinkMeta(VAddr address);
+    static VAddr& MetaLink(Image& image, MetaType type);
     absl::flat_hash_map<VAddr, MetaDataInfo> surface_metas;
+    absl::flat_hash_set<VAddr> meta_shader_read; ///< nhlport: see MarkMetaShaderRead
+
+    /// nhlport: NHL 24 builds its mip chains level by level (each downsample pass binds the
+    /// texture with one more mip), which upstream handles by re-creating the image for every
+    /// level. Remember the deepest chain seen per (address, mip-0 size, format) and create the
+    /// image with that depth straight away.
+    struct MipMemoKey {
+        VAddr address;
+        u32 width;
+        u32 height;
+        vk::Format format;
+        bool operator==(const MipMemoKey&) const = default;
+        template <typename H>
+        friend H AbslHashValue(H h, const MipMemoKey& k) {
+            return H::combine(std::move(h), k.address, k.width, k.height, static_cast<u32>(k.format));
+        }
+    };
+    absl::flat_hash_map<MipMemoKey, u32> mip_memo;
+
+    void RememberMips(const ImageInfo& info);
+    void ApplyRememberedMips(ImageInfo& info) const;
 };
-DECLARE_ENUM_FLAG_OPERATORS(TextureCache::DownloadMemoryFlags)
 
 } // namespace VideoCore

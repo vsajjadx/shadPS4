@@ -75,6 +75,8 @@ public:
     void InlineData(VAddr address, const void* data, u32 num_bytes);
     void FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gds);
     void CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, bool src_gds);
+    /// nhlport: PM4 WRITE_DATA into guest memory without faulting on GPU-tracked pages.
+    void InlineData(VAddr address, const void* data, u32 num_bytes);
     u32 ReadDataFromGds(u32 gsd_offset);
     bool InvalidateMemory(VAddr addr, u64 size, bool assume_locks = false);
     bool ReadMemory(VAddr addr, u64 size, bool assume_locks = false);
@@ -87,7 +89,6 @@ public:
     void Finish();
     void OnSubmit();
     void OnFence();
-
     PipelineCache& GetPipelineCache() {
         return pipeline_cache;
     }
@@ -112,6 +113,9 @@ private:
     void Resolve();
     void DepthStencilCopy(bool is_depth, bool is_stencil);
     void EliminateFastClear();
+    /// nhlport: fast-clear value of a colour buffer, with diagnostics for targets whose CMASK a
+    /// shader reads (see TextureCache::MarkMetaShaderRead).
+    vk::ClearValue ColorClearValue(const AmdGpu::ColorBuffer& col_buf) const;
 
     void UpdateDynamicState(const GraphicsPipeline* pipeline, bool is_indexed) const;
     void UpdateViewportScissorState() const;
@@ -134,7 +138,15 @@ private:
     void BindVertexBuffers(const GraphicsPipeline* pipeline);
     void BindIndexBuffer(u32 index_offset = 0, bool is_indirect = false);
 
+    void LogDrawTrace(const char* kind, const void* pipeline, const Shader::Info* cs_info = nullptr);
+    void DumpBoundImages();
+    void DumpAllBoundImages();
+    void TraceGdsAfter(u64 pgm_hash);
+    void DumpBuffers();
+    u32 trace_clear_mask{}; ///< bit cb = colour attachment cleared, bit 8 depth, bit 9 stencil (trace)
+    u32 trace_mrt_mask{};   ///< colour slots written by the current graphics pipeline (trace)
     void ResetBindings(bool is_compute);
+    u64 last_dispatch_hash{}; ///< nhlport: shader hash of the dispatch being bound
 
     bool IsComputeMetaClear(const Pipeline* pipeline);
     bool IsComputeImageCopy(const Pipeline* pipeline);

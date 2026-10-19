@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <boost/container/small_vector.hpp>
 #include "common/alignment.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
@@ -147,7 +148,17 @@ void Runtime::FillBuffer(const VideoCore::Buffer* dst, u64 offset, u64 size, u32
 }
 
 void Runtime::InlineData(VideoCore::Buffer* dst, u64 offset, u32 value) {
-    InlineData(dst, offset, &value, sizeof(value));
+    scheduler.EndRendering();
+
+    if (IsBufferAccessed(dst, offset, sizeof(value), true)) {
+        FlushBarriers();
+    }
+
+    const auto cmdbuf = scheduler.CommandBuffer();
+    cmdbuf.updateBuffer(dst->Handle(), offset, sizeof(value), &value);
+
+    AccessBuffer(dst, offset, sizeof(value), vk::PipelineStageFlagBits2::eCopy,
+                 vk::AccessFlagBits2::eTransferWrite);
 }
 
 void Runtime::InlineData(const VideoCore::Buffer* dst, u64 offset, const void* data, u32 size) {
@@ -330,37 +341,42 @@ void Runtime::CopyImageWithBuffer(VideoCore::Image* src, VideoCore::Image* dst,
                                   const VideoCore::Buffer* buffer, u64 offset) {
     const u32 num_mips = std::min(src->info.resources.levels, dst->info.resources.levels);
     const u32 num_layers = std::min(src->info.resources.layers, dst->info.resources.layers);
+    // nhlport: NHL 24 (Frostbite) aliases a depth buffer with a colour image that carries a full
+    // mip chain (and sometimes a different layer count). Copy every common mip level through the
+    // staging buffer instead of only level 0: the lower levels feed depth-of-field / blur chains in
+    // the pre-game cutscenes and were left uninitialised (noise) before.
+    if (src->info.resources.layers != dst->info.resources.layers) {
+        LOG_WARNING(Render_Vulkan,
+                    "Image copy through buffer with different layer counts: src {} dst {}, copying {}",
+                    src->info.resources.layers, dst->info.resources.layers, num_layers);
+    }
 
     SetBackingSamples(dst, dst->info.num_samples, false);
     SetBackingSamples(src, src->info.num_samples);
 
-    vk::BufferImageCopy buffer_copy = {
-        .bufferOffset = offset,
-        .bufferRowLength = 0,
-        .bufferImageHeight = 0,
-        .imageSubresource{
-            .aspectMask = src->aspect_mask & ~vk::ImageAspectFlagBits::eStencil,
-            .mipLevel = 0u,
-            .baseArrayLayer = 0,
-            .layerCount = num_layers,
-        },
-        .imageOffset = {0, 0, 0},
-        .imageExtent = {src->info.size.width, src->info.size.height, src->info.size.depth},
-    };
-    u64 copy_size = BufferImageCopySize(buffer_copy, src->info.pixel_format);
-    SmallVector<vk::BufferImageCopy, 8> buffer_copies;
-    buffer_copies.push_back(buffer_copy);
-    for (u32 mip = 1; mip < num_mips; ++mip) {
-        auto mip_copy = buffer_copy;
-        mip_copy.bufferOffset = Common::AlignUp(offset + copy_size, 16);
-        mip_copy.imageSubresource.mipLevel = mip;
-        mip_copy.imageExtent = vk::Extent3D{std::max(src->info.size.width >> mip, 1u),
-                                            std::max(src->info.size.height >> mip, 1u),
-                                            std::max(src->info.size.depth >> mip, 1u)};
-        copy_size =
-            mip_copy.bufferOffset - offset + BufferImageCopySize(mip_copy, src->info.pixel_format);
-        buffer_copies.push_back(mip_copy);
+    boost::container::small_vector<vk::BufferImageCopy, 16> copies;
+    u64 running_offset = offset;
+    for (u32 mip = 0; mip < num_mips; ++mip) {
+        vk::BufferImageCopy buffer_copy = {
+            .bufferOffset = running_offset,
+            .bufferRowLength = 0,
+            .bufferImageHeight = 0,
+            .imageSubresource{
+                .aspectMask = src->aspect_mask & ~vk::ImageAspectFlagBits::eStencil,
+                .mipLevel = mip,
+                .baseArrayLayer = 0,
+                .layerCount = num_layers,
+            },
+            .imageOffset = {0, 0, 0},
+            .imageExtent = {std::max(src->info.size.width >> mip, 1u),
+                            std::max(src->info.size.height >> mip, 1u),
+                            std::max(src->info.size.depth >> mip, 1u)},
+        };
+        const auto level_size = BufferImageCopySize(buffer_copy, src->info.pixel_format);
+        running_offset = Common::AlignUp(running_offset + level_size, 16);
+        copies.push_back(buffer_copy);
     }
+    const u64 copy_size = running_offset - offset;
 
     scheduler.EndRendering();
 
@@ -376,7 +392,7 @@ void Runtime::CopyImageWithBuffer(VideoCore::Image* src, VideoCore::Image* dst,
 
     auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.copyImageToBuffer(src->GetImage(), vk::ImageLayout::eTransferSrcOptimal,
-                             buffer->Handle(), buffer_copies);
+                             buffer->Handle(), copies);
 
     const vk::MemoryBarrier2 post_copy_barrier = {
         .srcStageMask = vk::PipelineStageFlagBits2::eCopy,
@@ -390,11 +406,11 @@ void Runtime::CopyImageWithBuffer(VideoCore::Image* src, VideoCore::Image* dst,
         .pMemoryBarriers = &post_copy_barrier,
     });
 
-    for (auto& copy : buffer_copies) {
+    for (auto& copy : copies) {
         copy.imageSubresource.aspectMask = dst->aspect_mask & ~vk::ImageAspectFlagBits::eStencil;
     }
     cmdbuf.copyBufferToImage(buffer->Handle(), dst->GetImage(),
-                             vk::ImageLayout::eTransferDstOptimal, buffer_copies);
+                             vk::ImageLayout::eTransferDstOptimal, copies);
 
     dst->flags |= (src->flags & VideoCore::ImageFlagBits::GpuModified);
     dst->flags &= ~VideoCore::ImageFlagBits::Dirty;
@@ -482,29 +498,8 @@ void Runtime::CopyColorAndDepth(VideoCore::Image* src, VideoCore::Image* dst) {
         blit_helper->ReinterpretColorAsMsDepth(
             dst->info.size.width, dst->info.size.height, dst->info.num_samples,
             src->info.pixel_format, dst->info.pixel_format, src->GetImage(), dst->GetImage());
-    } else if (src->info.num_samples > 1 && src->info.props.is_depth &&
-               dst->info.num_samples == 1 && !dst->info.props.is_depth) {
-        // MSAA depth sampled as a 1x color texture. Without this the new image stayed
-        // uninitialized and every depth-based effect read garbage (Driveclub night tracks went
-        // black). From akitaonrails/shadPS4 a108ad9.
-        bool needs_flush =
-            Transit(src, vk::ImageLayout::eShaderReadOnlyOptimal,
-                    vk::PipelineStageFlagBits2::eFragmentShader, vk::AccessFlagBits2::eShaderRead);
-        needs_flush |= Transit(dst, vk::ImageLayout::eColorAttachmentOptimal,
-                               vk::PipelineStageFlagBits2::eColorAttachmentOutput,
-                               vk::AccessFlagBits2::eColorAttachmentWrite);
-        if (needs_flush) {
-            FlushBarriers();
-        }
-        blit_helper->ReinterpretMsDepthAsColor(
-            dst->info.size.width, dst->info.size.height, src->info.num_samples,
-            src->info.pixel_format, dst->info.pixel_format, src->GetImage(), dst->GetImage());
-        dst->flags |= VideoCore::ImageFlagBits::GpuModified;
-        dst->flags &= ~VideoCore::ImageFlagBits::Dirty;
     } else {
-        LOG_WARNING(Render_Vulkan, "Unimplemented depth overlap copy: {} {}x -> {} {}x",
-                    vk::to_string(src->info.pixel_format), src->info.num_samples,
-                    vk::to_string(dst->info.pixel_format), dst->info.num_samples);
+        LOG_WARNING(Render_Vulkan, "Unimplemented depth overlap copy");
     }
 }
 
@@ -653,7 +648,6 @@ void Runtime::SetBackingSamples(VideoCore::Image* image, u32 num_samples, bool c
     auto it = std::ranges::find(backing_images, num_samples,
                                 &VideoCore::Image::BackingImage::num_samples);
     if (it == backing_images.end()) {
-        const auto previous_size = Common::AlignUp(image->SizeBytes(), 1024);
         auto new_image_ci = backing->image.image_ci;
         new_image_ci.samples = LiverpoolToVK::NumSamples(num_samples, image->supported_samples);
 
@@ -661,10 +655,6 @@ void Runtime::SetBackingSamples(VideoCore::Image* image, u32 num_samples, bool c
         new_backing->num_samples = num_samples;
         new_backing->image = VideoCore::UniqueImage{instance.GetDevice(), instance.GetAllocator()};
         new_backing->image.Create(new_image_ci);
-        if (image->memory_usage_counter) {
-            *image->memory_usage_counter +=
-                Common::AlignUp(image->SizeBytes(), 1024) - previous_size;
-        }
 
         Vulkan::SetObjectName(instance.GetDevice(), new_backing->image.image,
                               "Image {}x{}x{} {} {} {:#x}:{:#x} L:{} M:{} S:{} (backing)",
@@ -718,7 +708,6 @@ void Runtime::SetBackingSamples(VideoCore::Image* image, u32 num_samples, bool c
         new_backing->state.layout = dst_layout;
         new_backing->state.access_mask = dst_access;
         new_backing->state.pl_stage = dst_stage;
-        ++new_backing->state_generation;
     }
 
     backing = new_backing;

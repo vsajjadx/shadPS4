@@ -3,16 +3,12 @@
 
 #pragma once
 
-#include <atomic>
-#include <chrono>
 #include <condition_variable>
-#include <memory>
 
 #include "core/libraries/videoout/buffer.h"
 #include "imgui/imgui_texture.h"
 #include "video_core/renderer_vulkan/host_passes/fsr_pass.h"
 #include "video_core/renderer_vulkan/host_passes/pp_pass.h"
-#include "video_core/renderer_vulkan/vk_frame_generation.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -42,12 +38,6 @@ struct Frame {
     u8 id{};
 
     ImTextureID imgui_texture;
-
-    VmaAllocation generated_allocation{};
-    vk::Image generated_image{};
-    vk::ImageView generated_image_view{};
-    ImTextureID generated_imgui_texture{};
-    bool has_generated{false};
 };
 
 enum SchedulerType {
@@ -114,12 +104,6 @@ public:
 private:
     Frame* GetRenderFrame();
 
-    void PresentImage(Frame* frame, bool is_reusing_frame, bool is_game_frame, bool generated);
-    float GetDisplayRefreshRate();
-    bool UpdateGenerationPacing();
-    void CreateGeneratedImage(Frame* frame, vk::Format format);
-    void DestroyGeneratedImage(Frame* frame);
-
     void RecreateFrame(Frame* frame, u32 width, u32 height);
 
     void SetExpectedGameSize(s32 width, s32 height);
@@ -146,20 +130,12 @@ private:
     vk::UniqueCommandPool command_pool;
     std::vector<Frame> present_frames;
     std::queue<Frame*> free_queue;
-    Frame* last_submit_frame{nullptr}; ///< Frame on screen, reserved until the next present
+    Frame* last_submit_frame{nullptr}; ///< frame on screen (reserved until the next present)
     std::mutex free_mutex;
     std::condition_variable free_cv;
     std::condition_variable_any frame_cv;
     std::optional<ImGui::RefCountedTexture> splash_img;
     std::vector<VAddr> vo_buffers_addr;
-#ifdef ENABLE_FSR_FRAMEGEN
-    std::unique_ptr<FrameGenerator> frame_generator;
-#endif
-    std::chrono::steady_clock::time_point last_real_present{};
-    std::chrono::nanoseconds flip_interval{};
-    std::atomic_bool generation_wanted{false};
-    std::chrono::steady_clock::time_point last_refresh_query{};
-    float refresh_rate{60.0f};
 };
 
 } // namespace Vulkan

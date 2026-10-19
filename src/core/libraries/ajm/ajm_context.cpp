@@ -11,7 +11,6 @@
 #include "core/libraries/ajm/ajm_instance.h"
 #include "core/libraries/ajm/ajm_instance_statistics.h"
 #include "core/libraries/ajm/ajm_mp3.h"
-#include "core/libraries/ajm/ajm_result.h"
 #include "core/libraries/error_codes.h"
 
 #include <span>
@@ -65,16 +64,12 @@ void AjmContext::WorkerThread(std::stop_token stop) {
     Common::SetCurrentThreadName("shadPS4:AjmWorker");
     while (!stop.stop_requested()) {
         auto batch = batch_queue.PopWait(stop);
-        if (batch == nullptr) {
-            continue;
-        }
-        if (!batch->canceled) {
+        if (batch != nullptr && !batch->canceled) {
             bool expected = false;
             batch->processed.compare_exchange_strong(expected, true);
             ProcessBatch(batch->id, batch->jobs);
+            batch->finished.release();
         }
-        // Always signal completion so BatchWait doesn't block forever on canceled batches.
-        batch->finished.release();
     }
 }
 
@@ -91,24 +86,15 @@ void AjmContext::ProcessBatch(u32 id, std::span<AjmJob> jobs) {
             {
                 std::shared_lock lock(instances_mutex);
                 auto* p_instance = instances.Get(job.instance_id & INSTANCE_ID_MASK);
-                if (p_instance != nullptr) {
-                    instance = *p_instance;
+                if (p_instance == nullptr) {
+                    // nhlport: NHL 24 destroys MP3 decoder instances while a batch that references
+                    // them is still queued; real hardware just fails that job. Skip it instead of
+                    // taking the whole emulator down.
+                    LOG_WARNING(Lib_Ajm, "Batch {} references destroyed instance {}, job skipped",
+                                id, job.instance_id);
+                    continue;
                 }
-            }
-
-            if (instance == nullptr) {
-                // The guest may destroy an instance while a batch referencing it is still
-                // queued. Fail the job instead of bringing down the emulator.
-                LOG_WARNING(Lib_Ajm, "Batch {} references destroyed instance {}, skipping job", id,
-                            job.instance_id);
-                if (job.output.p_result != nullptr) {
-                    job.output.p_result->result = ORBIS_AJM_RESULT_FATAL;
-                    job.output.p_result->internal_result = ORBIS_AJM_ERROR_INVALID_INSTANCE;
-                }
-                if (job.output.p_stream != nullptr) {
-                    *job.output.p_stream = AjmSidebandStream{};
-                }
-                continue;
+                instance = *p_instance;
             }
 
             instance->ExecuteJob(job);
@@ -200,7 +186,7 @@ s32 AjmContext::InstanceCreate(AjmCodecType codec_type, AjmInstanceFlags flags, 
     }
     *out_instance = opt_index.value() | (static_cast<u32>(codec_type) << 14);
 
-    LOG_DEBUG(Lib_Ajm, "instance = {}", *out_instance);
+    LOG_INFO(Lib_Ajm, "instance = {}", *out_instance);
     return ORBIS_OK;
 }
 

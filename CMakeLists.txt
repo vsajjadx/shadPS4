@@ -217,7 +217,14 @@ set(EMULATOR_VERSION_MAJOR "0")
 set(EMULATOR_VERSION_MINOR "20")
 set(EMULATOR_VERSION_PATCH "1")
 
-set_source_files_properties(src/dist/shadps4.rc PROPERTIES COMPILE_DEFINITIONS "EMULATOR_VERSION_MAJOR=${EMULATOR_VERSION_MAJOR};EMULATOR_VERSION_MINOR=${EMULATOR_VERSION_MINOR};EMULATOR_VERSION_PATCH=${EMULATOR_VERSION_PATCH}")
+# nhlport: the executable carries the port version (src/common/port_version.h), not the emulator one
+file(STRINGS src/common/port_version.h NHLPORT_VERSION_LINE REGEX "#define NHLPORT_VERSION \"")
+string(REGEX MATCH "\"([0-9]+)\\.([0-9]+)\\.([0-9]+)\"" NHLPORT_VERSION_MATCH "${NHLPORT_VERSION_LINE}")
+set(NHLPORT_VERSION_MAJOR ${CMAKE_MATCH_1})
+set(NHLPORT_VERSION_MINOR ${CMAKE_MATCH_2})
+set(NHLPORT_VERSION_PATCH ${CMAKE_MATCH_3})
+message(STATUS "nhlport version ${NHLPORT_VERSION_MAJOR}.${NHLPORT_VERSION_MINOR}.${NHLPORT_VERSION_PATCH}")
+set_source_files_properties(src/dist/shadps4.rc PROPERTIES COMPILE_DEFINITIONS "NHLPORT_VERSION_MAJOR=${NHLPORT_VERSION_MAJOR};NHLPORT_VERSION_MINOR=${NHLPORT_VERSION_MINOR};NHLPORT_VERSION_PATCH=${NHLPORT_VERSION_PATCH}")
 
 set(APP_VERSION_NUM "${EMULATOR_VERSION_MAJOR}.${EMULATOR_VERSION_MINOR}.${EMULATOR_VERSION_PATCH}")
 set(APP_VERSION "${APP_VERSION_NUM} WIP")
@@ -616,6 +623,10 @@ set(RANDOM_LIB src/core/libraries/random/random.cpp
                src/core/libraries/random/random_error.h
 )
 
+set(JSON_LIB src/core/libraries/json/json.cpp
+             src/core/libraries/json/json.h
+)
+
 set(USBD_LIB src/core/libraries/usbd/usbd.cpp
              src/core/libraries/usbd/usbd.h
              src/core/libraries/usbd/usb_backend.h
@@ -815,6 +826,8 @@ set(COMMON src/common/logging/classes.cpp
            src/common/logging/log.cpp
            src/common/logging/log.h
            src/common/logging/log_file_sink.h
+           src/common/diag_log.cpp
+           src/common/diag_log.h
            src/common/aes.h
            src/common/alignment.h
            src/common/arch.h
@@ -960,7 +973,16 @@ set(CORE src/core/aerolib/stubs.cpp
          src/core/file_sys/directories/normal_directory.h
          src/core/file_sys/directories/pfs_directory.cpp
          src/core/file_sys/directories/pfs_directory.h
+         src/core/crypto/crypto.cpp
+         src/core/crypto/crypto.h
+         src/core/crypto/keys.h
          src/core/file_format/pfs.h
+         src/core/file_format/pkg.cpp
+         src/core/file_format/pkg.h
+         src/core/file_format/pkg_extract.cpp
+         src/core/file_format/pkg_extract.h
+         src/core/file_format/pkg_type.cpp
+         src/core/file_format/pkg_type.h
          src/core/file_format/psf.cpp
          src/core/file_format/psf.h
          src/core/file_format/playgo_chunk.cpp
@@ -1005,6 +1027,7 @@ set(CORE src/core/aerolib/stubs.cpp
          ${JPEG_LIB}
          ${PLAYGO_LIB}
          ${RANDOM_LIB}
+         ${JSON_LIB}
          ${USBD_LIB}
          ${MUSIC_LIB}
          ${ZLIB_LIB}
@@ -1368,6 +1391,8 @@ add_executable(shadps4
 
 create_target_directory_groups(shadps4)
 
+# nhlport: the binary is the game's PC build, not a generic emulator.
+set_target_properties(shadps4 PROPERTIES OUTPUT_NAME nhl24)
 target_link_libraries(shadps4 PRIVATE spdlog::spdlog)
 target_link_libraries(shadps4 PRIVATE magic_enum::magic_enum fmt::fmt toml11::toml11 tsl::robin_map xbyak::xbyak Tracy::TracyClient RenderDoc::API FFmpeg::ffmpeg Dear_ImGui ImGuiFileDialog gcn half::half ZLIB::ZLIB PNG::PNG minimp3 dr_flac)
 target_link_libraries(shadps4 PRIVATE Boost::headers GPUOpen::VulkanMemoryAllocator LibAtrac9 Opus::opus sirit Vulkan::Headers xxHash::xxhash Zydis::Zydis SDL3::SDL3 pugixml::pugixml)
@@ -1491,6 +1516,13 @@ if (WIN32)
     else()
         target_link_options(shadps4 PRIVATE -Wl,--image-base=0x700000000000)
     endif()
+
+    # nhlport: GUI subsystem so no console window opens with the game; main() stays the entry point
+    if (MSVC)
+        target_link_options(shadps4 PRIVATE /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup)
+    else()
+        target_link_options(shadps4 PRIVATE -Wl,--subsystem,windows -Wl,-e,mainCRTStartup)
+    endif()
 endif()
 
 if (WIN32)
@@ -1518,6 +1550,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/CMakeRC.cmake")
 cmrc_add_resource_library(embedded-resources
         ALIAS res::embedded
         NAMESPACE res
+        src/resources/nhl24.png
         src/resources/big_picture/controller.png
         src/resources/big_picture/experimental.png
         src/resources/big_picture/folder.png

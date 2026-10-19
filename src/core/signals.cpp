@@ -1,35 +1,25 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <algorithm>
-#include <array>
-#include <atomic>
-#include <chrono>
-#include <exception>
-#include <string>
 #include <fmt/format.h>
 #include "common/arch.h"
 #include "common/assert.h"
 #include "common/decoder.h"
-#include "common/elf_info.h"
-#include "common/path_util.h"
-#include "common/scope_exit.h"
 #include "common/signal_context.h"
 #include "core/cpu_patches.h" // Windows static guest red-zone protection
-#include "core/guest_fault_recovery.h"
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/kernel/threads/exception.h"
-#include "core/libraries/kernel/threads/pthread.h"
 #include "core/signals.h"
 #include "emulator.h"
 
 #ifdef _WIN32
 #include <windows.h>
+#include <dbghelp.h>
+#include <chrono>
+#include "common/path_util.h"
 static constexpr DWORD MS_VC_EXCEPTION = 0x406D1388;
-static constexpr DWORD MSVC_CPP_EXCEPTION = 0xE06D7363;
 #else
 #include <csignal>
-#include <dlfcn.h>
 #include <pthread.h>
 #ifdef ARCH_X86_64
 #include <Zydis/Formatter.h>
@@ -40,332 +30,38 @@ namespace Core {
 
 #if defined(_WIN32)
 
-static constexpr u64 GuestUserAddressLimit = 0x800000000000ull;
-
-static bool WindowsIsAccessible(u64 address, u64 size, bool write, void*) {
-    const u64 last = address + (size ? size : 1) - 1;
-    if (address < 0x10000 || last < address || last >= GuestUserAddressLimit) {
-        return false;
-    }
-    u64 page = address & ~0xFFFull;
-    while (page <= last) {
-        MEMORY_BASIC_INFORMATION mbi{};
-        if (VirtualQuery(reinterpret_cast<void*>(page), &mbi, sizeof(mbi)) == 0 ||
-            mbi.State != MEM_COMMIT || (mbi.Protect & PAGE_GUARD)) {
-            return false;
-        }
-        const DWORD prot = mbi.Protect & 0xFF;
-        if (prot == PAGE_NOACCESS) {
-            return false;
-        }
-        if (write && !(prot & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE |
-                               PAGE_EXECUTE_WRITECOPY))) {
-            return false;
-        }
-        page = reinterpret_cast<u64>(mbi.BaseAddress) + mbi.RegionSize;
-    }
-    return true;
-}
-
-static bool WindowsIsExecutable(u64 address, void*) {
-    if (address < 0x10000 || address >= GuestUserAddressLimit) {
-        return false;
-    }
-    MEMORY_BASIC_INFORMATION mbi{};
-    if (VirtualQuery(reinterpret_cast<void*>(address), &mbi, sizeof(mbi)) == 0 ||
-        mbi.State != MEM_COMMIT) {
-        return false;
-    }
-    return (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
-                           PAGE_EXECUTE_WRITECOPY)) != 0;
-}
-
-static bool IsHostModuleCode(u64 address) {
-    HMODULE module{};
-    return GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                                  GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                              reinterpret_cast<LPCWSTR>(address), &module) != 0;
-}
-
-static bool TryRecoverGuestFault(EXCEPTION_POINTERS* pExp) {
-    using namespace Libraries::Kernel;
-    if (!GuestFaultRecovery::IsEnabled() || pExp == nullptr || pExp->ExceptionRecord == nullptr ||
-        pExp->ContextRecord == nullptr || g_curthread == nullptr) {
-        return false;
-    }
-    auto* cr = pExp->ContextRecord;
-    const auto* er = pExp->ExceptionRecord;
-    if (IsHostModuleCode(cr->Rip)) {
-        return false;
-    }
-    const u64 access_kind = er->NumberParameters > 0 ? er->ExceptionInformation[0] : 0;
-    const u64 fault_address = er->NumberParameters > 1 ? er->ExceptionInformation[1] : 0;
-
-    u64 rflags = cr->EFlags;
-    GuestFaultRecovery::RegisterFile regs{};
-    regs.gpr = {&cr->Rax, &cr->Rcx, &cr->Rdx, &cr->Rbx, &cr->Rsp, &cr->Rbp, &cr->Rsi, &cr->Rdi,
-                &cr->R8,  &cr->R9,  &cr->R10, &cr->R11, &cr->R12, &cr->R13, &cr->R14, &cr->R15};
-    regs.rip = &cr->Rip;
-    regs.rflags = &rflags;
-    M128A* xmm = &cr->Xmm0;
-    for (size_t i = 0; i < regs.xmm.size(); i++) {
-        regs.xmm[i] = reinterpret_cast<u8*>(&xmm[i]);
-    }
-    const GuestFaultRecovery::MemoryProbe probe{WindowsIsAccessible, WindowsIsExecutable, nullptr};
-    if (!GuestFaultRecovery::TryRecover(regs, fault_address, access_kind == 8, probe,
-                                        g_curthread->name.c_str())) {
-        return false;
-    }
-    cr->EFlags = static_cast<DWORD>(rflags);
-    return true;
-}
-
-// A handler that claims a fault without removing its cause makes the thread re-run the faulting
-// instruction forever. Hand such a fault on once it has repeated far more often than any real
-// page-tracking fault does.
-static bool IsRepeatingFault(EXCEPTION_POINTERS* pExp) {
-    static constexpr u32 RepeatLimit = 100000;
-    thread_local u64 last_rip = 0;
-    thread_local u64 last_address = 0;
-    thread_local u32 repeats = 0;
-    thread_local std::chrono::steady_clock::time_point first_seen{};
-    const u64 rip = pExp->ContextRecord->Rip;
-    const u64 address = pExp->ExceptionRecord->NumberParameters > 1
-                            ? pExp->ExceptionRecord->ExceptionInformation[1]
-                            : 0;
-    const auto now = std::chrono::steady_clock::now();
-    if (rip != last_rip || address != last_address || now - first_seen > std::chrono::seconds(2)) {
-        last_rip = rip;
-        last_address = address;
-        first_seen = now;
-        repeats = 0;
-        return false;
-    }
-    if (++repeats < RepeatLimit) {
-        return false;
-    }
-    repeats = 0;
-    LOG_ERROR(Core, "Access violation at {:#x} (address {:#x}) keeps repeating after being handled",
-              rip, address);
-    return true;
-}
-
-static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept;
-
-#endif
-
-void WriteCrashDump(void* exception_pointers) {
-#if defined(_WIN32)
-    static std::atomic_flag written{};
-    if (written.test_and_set()) {
-        return;
-    }
-    struct DumpExceptionInfo {
-        DWORD thread_id;
-        EXCEPTION_POINTERS* pointers;
-        BOOL client_pointers;
-    };
-    using MiniDumpWriteDumpFn = BOOL(WINAPI*)(HANDLE, DWORD, HANDLE, int, void*, void*, void*);
-    const HMODULE dbghelp = LoadLibraryW(L"dbghelp.dll");
-    const auto write_dump =
-        dbghelp
-            ? reinterpret_cast<MiniDumpWriteDumpFn>(GetProcAddress(dbghelp, "MiniDumpWriteDump"))
-            : nullptr;
+// nhlport: write a small minidump (all thread stacks, referenced memory) next to the log.
+static void WriteCrashDump(EXCEPTION_POINTERS* pExp) noexcept {
+    using MiniDumpWriteDumpFn = BOOL(WINAPI*)(HANDLE, DWORD, HANDLE, MINIDUMP_TYPE,
+                                              PMINIDUMP_EXCEPTION_INFORMATION,
+                                              PMINIDUMP_USER_STREAM_INFORMATION,
+                                              PMINIDUMP_CALLBACK_INFORMATION);
+    static const auto write_dump = reinterpret_cast<MiniDumpWriteDumpFn>(
+        GetProcAddress(LoadLibraryA("dbghelp.dll"), "MiniDumpWriteDump"));
     if (!write_dump) {
-        LOG_ERROR(Debug, "dbghelp.dll is not available, no crash dump written");
         return;
     }
-    const auto& serial = Common::ElfInfo::Instance().GameSerial();
+    const auto stamp = std::chrono::duration_cast<std::chrono::seconds>(
+                           std::chrono::system_clock::now().time_since_epoch())
+                           .count();
     const auto path = Common::FS::GetUserPath(Common::FS::PathType::LogDir) /
-                      fmt::format("{}_crash.dmp", serial.empty() ? "shadps4" : serial);
-    const HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                                    FILE_ATTRIBUTE_NORMAL, nullptr);
+                      fmt::format("crash_{}.dmp", stamp);
+    const HANDLE file = CreateFileW(path.wstring().c_str(), GENERIC_WRITE, 0, nullptr,
+                                    CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) {
-        LOG_ERROR(Debug, "Could not create crash dump {}", path.string());
         return;
     }
-    // Thread stacks, registers and the memory they point at; the whole guest address space
-    // would be gigabytes.
-    static constexpr int DumpType = 0x00000001 /* MiniDumpWithDataSegs */ |
-                                    0x00000040 /* MiniDumpWithIndirectlyReferencedMemory */ |
-                                    0x00000020 /* MiniDumpWithUnloadedModules */ |
-                                    0x00001000 /* MiniDumpWithThreadInfo */;
-    // Written from a helper thread, as dbghelp recommends: dumping the faulting thread from its
-    // own exception handler can hang. Give up after a while rather than keep the game frozen.
-    struct DumpJob {
-        MiniDumpWriteDumpFn write;
-        HANDLE file;
-        DumpExceptionInfo info;
-        bool has_exception;
-        BOOL ok;
-        DWORD error;
-    } job{write_dump,
-          file,
-          DumpExceptionInfo{GetCurrentThreadId(),
-                            static_cast<EXCEPTION_POINTERS*>(exception_pointers), FALSE},
-          exception_pointers != nullptr,
-          FALSE,
-          0};
-    const HANDLE worker = CreateThread(
-        nullptr, 0,
-        [](LPVOID param) -> DWORD {
-            auto* dump = static_cast<DumpJob*>(param);
-            dump->ok = dump->write(GetCurrentProcess(), GetCurrentProcessId(), dump->file, DumpType,
-                                   dump->has_exception ? &dump->info : nullptr, nullptr, nullptr);
-            dump->error = dump->ok ? 0 : GetLastError();
-            return 0;
-        },
-        &job, 0, nullptr);
-    if (worker == nullptr) {
-        CloseHandle(file);
-        LOG_ERROR(Debug, "Could not start the crash dump writer: {}", GetLastError());
-        return;
-    }
-    if (WaitForSingleObject(worker, 20000) != WAIT_OBJECT_0) {
-        LOG_ERROR(Debug, "Writing crash dump timed out");
-        return;
-    }
-    CloseHandle(worker);
+    MINIDUMP_EXCEPTION_INFORMATION info{};
+    info.ThreadId = GetCurrentThreadId();
+    info.ExceptionPointers = pExp;
+    info.ClientPointers = FALSE;
+    const auto type = static_cast<MINIDUMP_TYPE>(MiniDumpWithIndirectlyReferencedMemory |
+                                                 MiniDumpWithThreadInfo |
+                                                 MiniDumpWithHandleData);
+    const BOOL ok = write_dump(GetCurrentProcess(), GetCurrentProcessId(), file, type, &info,
+                               nullptr, nullptr);
     CloseHandle(file);
-    if (job.ok) {
-        LOG_CRITICAL(Debug, "Crash dump written to {}", path.string());
-    } else {
-        LOG_ERROR(Debug, "Writing crash dump failed: {}", job.error);
-    }
-#else
-    static_cast<void>(exception_pointers);
-#endif
-}
-
-#if defined(_WIN32)
-
-/// Number of readable bytes from address to the end of its memory region, 0 if not readable.
-static size_t ReadableBytes(const void* address) noexcept {
-    MEMORY_BASIC_INFORMATION info{};
-    if (address == nullptr || VirtualQuery(address, &info, sizeof(info)) == 0) {
-        return 0;
-    }
-    if (info.State != MEM_COMMIT || (info.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
-        return 0;
-    }
-    return reinterpret_cast<uintptr_t>(info.BaseAddress) + info.RegionSize -
-           reinterpret_cast<uintptr_t>(address);
-}
-
-static bool IsReadable(const void* address, size_t size) noexcept {
-    return ReadableBytes(address) >= size;
-}
-
-static std::string DescribeHostAddress(u64 address) {
-    HMODULE module = nullptr;
-    if (address != 0 &&
-        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           reinterpret_cast<LPCSTR>(address), &module) &&
-        module != nullptr) {
-        std::array<char, MAX_PATH> path{};
-        const DWORD length =
-            GetModuleFileNameA(module, path.data(), static_cast<DWORD>(path.size()));
-        const char* name = path.data();
-        for (DWORD i = 0; i < length && i < path.size(); ++i) {
-            if (path[i] == '\\' || path[i] == '/') {
-                name = path.data() + i + 1;
-            }
-        }
-        return fmt::format("{}+{:#x}", name, address - reinterpret_cast<u64>(module));
-    }
-    return fmt::format("{:#x}", address);
-}
-
-/// Logs the call stack from a context by unwinding host code with its unwind data. Stops at the
-/// first frame without unwind data after the first one (guest or generated code).
-static void LogBacktrace(const char* label, const CONTEXT& start) {
-    CONTEXT context = start;
-    ULONG_PTR stack_low = 0;
-    ULONG_PTR stack_high = 0;
-    GetCurrentThreadStackLimits(&stack_low, &stack_high);
-    const bool known_stack = context.Rsp >= stack_low && context.Rsp < stack_high;
-    for (u32 frame = 0; frame < 40; ++frame) {
-        const u64 pc = context.Rip;
-        if (pc == 0) {
-            break;
-        }
-        LOG_CRITICAL(Debug, "CrashDiag v2 {} stack #{}: {}", label, frame, DescribeHostAddress(pc));
-        DWORD64 image_base = 0;
-        const PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(pc, &image_base, nullptr);
-        if (function != nullptr) {
-            PVOID handler_data = nullptr;
-            DWORD64 establisher_frame = 0;
-            RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, pc, function, &context, &handler_data,
-                             &establisher_frame, nullptr);
-        } else {
-            if (frame != 0 || !IsReadable(reinterpret_cast<const void*>(context.Rsp), 8)) {
-                break;
-            }
-            // Leaf function: the return address is on the top of the stack.
-            context.Rip = *reinterpret_cast<const u64*>(context.Rsp);
-            context.Rsp += 8;
-        }
-        if (known_stack && (context.Rsp < stack_low || context.Rsp >= stack_high)) {
-            break;
-        }
-    }
-}
-
-/// Logs a C++ exception: where it was thrown, the module that threw it, its type, its message
-/// and the call stack. Logged a limited number of times, libraries may throw and catch
-/// exceptions routinely.
-static void LogCppException(const EXCEPTION_POINTERS& exception) {
-    static std::atomic<u32> num_logged{0};
-    static thread_local bool logging = false;
-    if (logging || num_logged.fetch_add(1, std::memory_order_relaxed) >= 16) {
-        return;
-    }
-    logging = true;
-    SCOPE_EXIT {
-        logging = false;
-    };
-    const EXCEPTION_RECORD& record = *exception.ExceptionRecord;
-    LOG_CRITICAL(Debug, "CrashDiag v2: C++ exception at {}",
-                 DescribeHostAddress(reinterpret_cast<u64>(record.ExceptionAddress)));
-    if (record.NumberParameters >= 4) {
-        const u64 object = record.ExceptionInformation[1];
-        const u64 throw_info = record.ExceptionInformation[2];
-        const u64 image_base = record.ExceptionInformation[3];
-        LOG_CRITICAL(Debug, "CrashDiag v2: thrown by module {}", DescribeHostAddress(image_base));
-        // x64 ThrowInfo: attributes, unwind, forward compat, catchable type array (image RVAs).
-        const auto* info = reinterpret_cast<const s32*>(throw_info);
-        if (image_base != 0 && IsReadable(info, 4 * sizeof(s32)) && info[3] != 0) {
-            const auto* types =
-                reinterpret_cast<const s32*>(image_base + static_cast<u32>(info[3]));
-            const s32 num_types = IsReadable(types, sizeof(s32)) ? std::min<s32>(types[0], 8) : 0;
-            for (s32 i = 0; i < num_types && IsReadable(types + 1 + i, sizeof(s32)); ++i) {
-                // CatchableType: properties, type descriptor, PMD (mdisp, pdisp, vdisp), size.
-                const auto* catchable =
-                    reinterpret_cast<const s32*>(image_base + static_cast<u32>(types[1 + i]));
-                if (!IsReadable(catchable, 6 * sizeof(s32))) {
-                    break;
-                }
-                // TypeDescriptor: vftable, spare, decorated name.
-                const char* name = reinterpret_cast<const char*>(
-                    image_base + static_cast<u32>(catchable[1]) + 2 * sizeof(void*));
-                const size_t max_length = std::min<size_t>(ReadableBytes(name), 160);
-                std::string type_name;
-                for (size_t c = 0; c < max_length && name[c] != '\0'; ++c) {
-                    type_name.push_back(name[c]);
-                }
-                LOG_CRITICAL(Debug, "CrashDiag v2: exception type {}", type_name);
-                if (type_name == ".?AVexception@std@@" && catchable[3] == -1 && object != 0) {
-                    const auto* error =
-                        reinterpret_cast<const std::exception*>(object + catchable[2]);
-                    if (IsReadable(error, 2 * sizeof(void*))) {
-                        LOG_CRITICAL(Debug, "CrashDiag v2: what(): {}", error->what());
-                    }
-                }
-            }
-        }
-    }
-    LogBacktrace("C++ exception", *exception.ContextRecord);
+    LOG_CRITICAL(Debug, "crash dump {}: {}", ok ? "written" : "FAILED", path.string());
 }
 
 static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
@@ -464,24 +160,11 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
     case MS_VC_EXCEPTION:
         LOG_DEBUG(Debug, "Pass MS_VC_EXCEPTION at {} to handler", address);
         return EXCEPTION_EXECUTE_HANDLER;
-    case MSVC_CPP_EXCEPTION:
-        // A C++ throw before any catch: the thrower may catch it itself. It keeps its course and
-        // is logged, so an uncaught one that terminates the emulator leaves its origin behind.
-        LogCppException(*pExp);
-        return EXCEPTION_CONTINUE_SEARCH;
     default:
         break;
     }
 
-    if (handled && code == EXCEPTION_ACCESS_VIOLATION && IsRepeatingFault(pExp)) {
-        handled = false;
-    }
-
     if (handled) {
-        return EXCEPTION_CONTINUE_EXECUTION;
-    }
-
-    if (code == EXCEPTION_ACCESS_VIOLATION && TryRecoverGuestFault(pExp)) {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
 
@@ -496,72 +179,6 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
         use_static_windows_guest_red_zone_protection ? static_protection_exception : true;
     if (report_unhandled) {
         LOG_CRITICAL(Debug, "Unhandled Exception code {:#x} at {}", code, address);
-        if (pExp != nullptr && pExp->ExceptionRecord != nullptr && pExp->ContextRecord != nullptr) {
-            // Extended crash diagnostics: access type, fault address, registers, code bytes and
-            // the protection of the faulting page.
-            const auto* er = pExp->ExceptionRecord;
-            const auto* cr = pExp->ContextRecord;
-            const u64 access_kind = er->NumberParameters > 0 ? er->ExceptionInformation[0] : ~0ull;
-            const u64 fault_addr = er->NumberParameters > 1 ? er->ExceptionInformation[1] : 0;
-            LOG_CRITICAL(Debug, "Fault: access={} ({}) fault_address={:#x} rip={:#x} thread={}",
-                         access_kind,
-                         access_kind == 0   ? "read"
-                         : access_kind == 1 ? "write"
-                         : access_kind == 8 ? "execute"
-                                            : "other",
-                         fault_addr, cr->Rip, g_curthread ? g_curthread->name : "<none>");
-            LOG_CRITICAL(Debug,
-                         "Regs: rax={:#x} rbx={:#x} rcx={:#x} rdx={:#x} rsi={:#x} rdi={:#x} "
-                         "rbp={:#x} rsp={:#x}",
-                         cr->Rax, cr->Rbx, cr->Rcx, cr->Rdx, cr->Rsi, cr->Rdi, cr->Rbp, cr->Rsp);
-            LOG_CRITICAL(Debug,
-                         "Regs: r8={:#x} r9={:#x} r10={:#x} r11={:#x} r12={:#x} r13={:#x} "
-                         "r14={:#x} r15={:#x} eflags={:#x}",
-                         cr->R8, cr->R9, cr->R10, cr->R11, cr->R12, cr->R13, cr->R14, cr->R15,
-                         cr->EFlags);
-            MEMORY_BASIC_INFORMATION mbi{};
-            if (VirtualQuery(reinterpret_cast<void*>(fault_addr), &mbi, sizeof(mbi)) != 0) {
-                LOG_CRITICAL(Debug,
-                             "FaultPage: base={:#x} alloc_base={:#x} size={:#x} state={:#x} "
-                             "protect={:#x} alloc_protect={:#x} type={:#x}",
-                             reinterpret_cast<u64>(mbi.BaseAddress),
-                             reinterpret_cast<u64>(mbi.AllocationBase), mbi.RegionSize, mbi.State,
-                             mbi.Protect, mbi.AllocationProtect, mbi.Type);
-            }
-            MEMORY_BASIC_INFORMATION cbi{};
-            if (VirtualQuery(reinterpret_cast<void*>(cr->Rip), &cbi, sizeof(cbi)) != 0 &&
-                cbi.State == MEM_COMMIT) {
-                std::string bytes;
-                const u8* code_ptr = reinterpret_cast<const u8*>(cr->Rip);
-                const u64 avail = reinterpret_cast<u64>(cbi.BaseAddress) + cbi.RegionSize - cr->Rip;
-                for (u64 i = 0; i < std::min<u64>(32, avail); i++) {
-                    bytes += fmt::format("{:02x} ", code_ptr[i]);
-                }
-                LOG_CRITICAL(Debug, "CodeBytes@rip: {}", bytes);
-            }
-            // Poor man's backtrace: every stack slot that points into guest code (eboot text is
-            // mapped at 0x5790000..0xa3e8000 in the logs seen so far; log raw values in range).
-            {
-                std::string frames;
-                int found = 0;
-                const u64 rsp = cr->Rsp;
-                for (u64 i = 0; i < 2048 && found < 40; i++) {
-                    MEMORY_BASIC_INFORMATION sbi{};
-                    const u64 slot_addr = rsp + i * 8;
-                    if (VirtualQuery(reinterpret_cast<void*>(slot_addr), &sbi, sizeof(sbi)) == 0 ||
-                        sbi.State != MEM_COMMIT || (sbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
-                        break;
-                    }
-                    const u64 v = *reinterpret_cast<const u64*>(slot_addr);
-                    if (v >= 0x5790000ull && v < 0xa3e8000ull) {
-                        frames += fmt::format("{:#x}(+{:#x}) ", v, v - 0x5790000ull);
-                        found++;
-                    }
-                }
-                LOG_CRITICAL(Debug, "StackCodeRefs: {}", frames);
-            }
-            LogBacktrace("unhandled", *pExp->ContextRecord);
-        }
         WriteCrashDump(pExp);
         Common::Singleton<Core::Emulator>::Instance()->Shutdown();
     }
@@ -667,61 +284,6 @@ static s32 NativeSiCodeToGuest(s32 sig, s32 code) {
     }
 }
 
-#if defined(__linux__) && defined(ARCH_X86_64)
-struct LinuxFaultInfo {
-    u64 fault_page;
-};
-
-static bool LinuxIsAccessible(u64 address, u64 size, bool, void* user) {
-    const auto* info = static_cast<const LinuxFaultInfo*>(user);
-    const u64 last = address + (size ? size : 1) - 1;
-    if (address < 0x10000 || last < address || last >= 0x800000000000ull) {
-        return false;
-    }
-    return (address & ~0xFFFull) != info->fault_page && (last & ~0xFFFull) != info->fault_page;
-}
-
-static bool LinuxIsExecutable(u64 address, void* user) {
-    const auto* info = static_cast<const LinuxFaultInfo*>(user);
-    return address >= 0x10000 && address < 0x800000000000ull &&
-           (address & ~0xFFFull) != info->fault_page;
-}
-
-static bool TryRecoverGuestFault(siginfo_t* info, void* raw_context) {
-    using namespace Libraries::Kernel;
-    if (!GuestFaultRecovery::IsEnabled() || info == nullptr || raw_context == nullptr ||
-        g_curthread == nullptr) {
-        return false;
-    }
-    auto* uc = reinterpret_cast<ucontext_t*>(raw_context);
-    auto& gregs = uc->uc_mcontext.gregs;
-    const u64 rip = static_cast<u64>(gregs[REG_RIP]);
-    Dl_info dl{};
-    if (dladdr(reinterpret_cast<void*>(rip), &dl) != 0 && dl.dli_fname != nullptr) {
-        return false;
-    }
-    const u64 fault_address = reinterpret_cast<u64>(info->si_addr);
-    LinuxFaultInfo fault{fault_address & ~0xFFFull};
-
-    GuestFaultRecovery::RegisterFile regs{};
-    const int order[16] = {REG_RAX, REG_RCX, REG_RDX, REG_RBX, REG_RSP, REG_RBP, REG_RSI, REG_RDI,
-                           REG_R8,  REG_R9,  REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15};
-    for (size_t i = 0; i < regs.gpr.size(); i++) {
-        regs.gpr[i] = reinterpret_cast<u64*>(&gregs[order[i]]);
-    }
-    regs.rip = reinterpret_cast<u64*>(&gregs[REG_RIP]);
-    regs.rflags = reinterpret_cast<u64*>(&gregs[REG_EFL]);
-    if (uc->uc_mcontext.fpregs != nullptr) {
-        for (size_t i = 0; i < regs.xmm.size(); i++) {
-            regs.xmm[i] = reinterpret_cast<u8*>(&uc->uc_mcontext.fpregs->_xmm[i]);
-        }
-    }
-    const GuestFaultRecovery::MemoryProbe probe{LinuxIsAccessible, LinuxIsExecutable, &fault};
-    return GuestFaultRecovery::TryRecover(regs, fault_address, Common::IsExecuteError(raw_context),
-                                          probe, g_curthread->name.c_str());
-}
-#endif
-
 void SignalHandler(int sig, siginfo_t* info, void* raw_context) {
     using namespace Libraries::Kernel;
     auto* thread = g_curthread;
@@ -747,11 +309,6 @@ void SignalHandler(int sig, siginfo_t* info, void* raw_context) {
         const bool is_write = Common::IsWriteError(raw_context);
         const bool is_exec = Common::IsExecuteError(raw_context);
         if (!signals->DispatchAccessViolation(raw_context, info->si_addr)) {
-#if defined(__linux__) && defined(ARCH_X86_64)
-            if (TryRecoverGuestFault(info, raw_context)) {
-                return;
-            }
-#endif
             if (thread && thread->DispatchSignal(NativeToOrbisSignal(sig), info_p, context_p)) {
                 return;
             }
@@ -770,7 +327,6 @@ void SignalHandler(int sig, siginfo_t* info, void* raw_context) {
         }
     case SIGFPE:
     case SIGTRAP:
-    case SIGABRT:
     case SIGSYS: {
         if (thread && thread->DispatchSignal(NativeToOrbisSignal(sig), info_p, context_p)) {
             return;
@@ -779,18 +335,11 @@ void SignalHandler(int sig, siginfo_t* info, void* raw_context) {
         UNREACHABLE_MSG("Unhandled signal {} at code address {}", sig, fmt::ptr(code_address));
     }
     case SIGSLEEP: {
-        if (thread) {
-            thread->suspended_context = context.uc_mcontext;
-            thread->is_suspended_in_signal = true;
-        }
         // Sleep thread until signal is received again
         sigset_t sigset;
         sigemptyset(&sigset);
         sigaddset(&sigset, SIGSLEEP);
         sigwait(&sigset, &sig);
-        if (thread) {
-            thread->is_suspended_in_signal = false;
-        }
         break;
     }
     case SIGUSR1:
@@ -810,17 +359,16 @@ SignalDispatch::SignalDispatch() {
     ASSERT_MSG(handle = AddVectoredExceptionHandler(0, SignalHandler),
                "Failed to register exception handler.");
 #else
-    struct sigaction action {};
+    struct sigaction action{};
     action.sa_sigaction = SignalHandler;
     action.sa_flags = SA_SIGINFO | SA_ONSTACK;
     sigemptyset(&action.sa_mask);
 
     ASSERT_MSG(
         sigaction(SIGSEGV, &action, nullptr) == 0 && sigaction(SIGBUS, &action, nullptr) == 0 &&
-            sigaction(SIGILL, &action, nullptr) == 0 && sigaction(SIGABRT, &action, nullptr) == 0 &&
+            sigaction(SIGILL, &action, nullptr) == 0 && sigaction(SIGFPE, &action, nullptr) == 0 &&
             sigaction(SIGTRAP, &action, nullptr) == 0 && sigaction(SIGSYS, &action, nullptr) == 0 &&
-            sigaction(SIGUSR1, &action, nullptr) == 0 && sigaction(SIGFPE, &action, nullptr) == 0 &&
-            sigaction(SIGSLEEP, &action, nullptr) == 0,
+            sigaction(SIGUSR1, &action, nullptr) == 0 && sigaction(SIGSLEEP, &action, nullptr) == 0,
         "Failed to register signal handlers.");
 #endif
 }
@@ -834,7 +382,7 @@ void SignalDispatch::RemoveHandlers() {
         std::quick_exit(1);
     }
 #else
-    struct sigaction action {};
+    struct sigaction action{};
     action.sa_handler = SIG_DFL;
     action.sa_flags = 0;
     sigemptyset(&action.sa_mask);
@@ -842,7 +390,7 @@ void SignalDispatch::RemoveHandlers() {
     if (!(sigaction(SIGSEGV, &action, nullptr) == 0 && sigaction(SIGBUS, &action, nullptr) == 0 &&
           sigaction(SIGILL, &action, nullptr) == 0 && sigaction(SIGFPE, &action, nullptr) == 0 &&
           sigaction(SIGTRAP, &action, nullptr) == 0 && sigaction(SIGSYS, &action, nullptr) == 0 &&
-          sigaction(SIGUSR1, &action, nullptr) == 0 && sigaction(SIGABRT, &action, nullptr) == 0 &&
+          sigaction(SIGUSR1, &action, nullptr) == 0 &&
           sigaction(SIGSLEEP, &action, nullptr) == 0)) {
         LOG_CRITICAL(Core, "Failed to remove signal handlers.");
         std::quick_exit(1);

@@ -1,13 +1,14 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <SDL3/SDL_video.h>
+#include <utility>
+#include "common/diag_log.h"
 #include "common/debug.h"
+#include "common/thread.h"
 #include "common/elf_info.h"
 #include "common/io_file.h"
 #include "common/path_util.h"
 #include "common/singleton.h"
-#include "common/thread.h"
 #include "core/debug_state.h"
 #include "core/devtools/layer.h"
 #include "core/emulator_settings.h"
@@ -43,7 +44,6 @@
 #include <span>
 #include <sstream>
 #include <system_error>
-#include <utility>
 #include <vector>
 #include <imgui.h>
 #include <stb_image_write.h>
@@ -494,15 +494,21 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
 
     fsr_pass.Create(device, instance.GetAllocator(), num_images);
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
-#ifdef ENABLE_FSR_FRAMEGEN
-    frame_generator = std::make_unique<FrameGenerator>(instance, draw_scheduler);
-    FrameGeneration::SetEnabled(EmulatorSettings.IsFrameGenerationEnabled());
-#endif
 
     ImGui::Layer::AddLayer(Common::Singleton<Core::Devtools::Layer>::Instance());
     ImGui::Friends::Register();
     ImGui::ShadNetNotify::Register();
     ImGui::InvitationPrompt::Register();
+
+    // nhlport: diagnostic log probes (GPU timeline of the draw queue, VRAM, window, texture cache).
+    draw_scheduler.EnableDiagTimeline();
+    Diag::SetVramProbe([this] { return instance.QueryMemoryUsage(); });
+    Diag::SetWindowProbe([this] {
+        return std::pair<u32, u32>{static_cast<u32>(window.GetWidth()),
+                                   static_cast<u32>(window.GetHeight())};
+    });
+    Diag::SetHostCacheProbe([this] { return texture_cache.GetDiagUsage(); });
+    Diag::SetGpuRefreshProbe([this] { draw_scheduler.GetWorkSemaphore()->Refresh(); });
 }
 
 Presenter::~Presenter() {
@@ -518,83 +524,12 @@ Presenter::~Presenter() {
     Check(present_scheduler.CommandBuffer().reset());
     Check(flip_scheduler.CommandBuffer().reset());
 
-#ifdef ENABLE_FSR_FRAMEGEN
-    frame_generator.reset();
-#endif
     const vk::Device device = instance.GetDevice();
     for (auto& frame : present_frames) {
-        DestroyGeneratedImage(&frame);
         vmaDestroyImage(instance.GetAllocator(), frame.image, frame.allocation);
         device.destroyImageView(frame.image_view);
         device.destroyFence(frame.present_done);
     }
-}
-
-void Presenter::DestroyGeneratedImage(Frame* frame) {
-    if (frame->generated_imgui_texture) {
-        ImGui::Vulkan::RemoveTexture(frame->generated_imgui_texture);
-    }
-    if (frame->generated_image_view) {
-        instance.GetDevice().destroyImageView(frame->generated_image_view);
-    }
-    if (frame->generated_image) {
-        vmaDestroyImage(instance.GetAllocator(), frame->generated_image,
-                        frame->generated_allocation);
-    }
-    frame->generated_imgui_texture = {};
-    frame->generated_image_view = vk::ImageView{};
-    frame->generated_image = vk::Image{};
-    frame->generated_allocation = {};
-    frame->has_generated = false;
-}
-
-void Presenter::CreateGeneratedImage(Frame* frame, vk::Format format) {
-#ifdef ENABLE_FSR_FRAMEGEN
-    if (!FrameGeneration::IsAvailable() || frame->is_hdr) {
-        return;
-    }
-    const VkImageCreateInfo image_info = static_cast<VkImageCreateInfo>(vk::ImageCreateInfo{
-        .imageType = vk::ImageType::e2D,
-        .format = format,
-        .extent = {frame->width, frame->height, 1},
-        .mipLevels = 1,
-        .arrayLayers = 1,
-        .samples = vk::SampleCountFlagBits::e1,
-        .usage = vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
-    });
-    const VmaAllocationCreateInfo alloc_info = {
-        .flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT,
-        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-    };
-    VkImage image{};
-    if (vmaCreateImage(instance.GetAllocator(), &image_info, &alloc_info, &image,
-                       &frame->generated_allocation, nullptr) != VK_SUCCESS) {
-        frame->generated_allocation = {};
-        return;
-    }
-    frame->generated_image = vk::Image{image};
-    SetObjectName(instance.GetDevice(), frame->generated_image, "Generated frame image #{}",
-                  frame->id);
-    const vk::ImageViewCreateInfo view_info = {
-        .image = frame->generated_image,
-        .viewType = vk::ImageViewType::e2D,
-        .format = format,
-        .subresourceRange{
-            .aspectMask = vk::ImageAspectFlagBits::eColor,
-            .baseMipLevel = 0,
-            .levelCount = 1,
-            .baseArrayLayer = 0,
-            .layerCount = 1,
-        },
-    };
-    frame->generated_image_view =
-        Check<"create generated frame image view">(instance.GetDevice().createImageView(view_info));
-    frame->generated_imgui_texture = ImGui::Vulkan::AddTexture(
-        frame->generated_image_view, vk::ImageLayout::eShaderReadOnlyOptimal);
-#else
-    (void)frame;
-    (void)format;
-#endif
 }
 
 bool Presenter::IsVideoOutSurface(const AmdGpu::ColorBuffer& color_buffer) const {
@@ -603,7 +538,6 @@ bool Presenter::IsVideoOutSurface(const AmdGpu::ColorBuffer& color_buffer) const
 
 void Presenter::RecreateFrame(Frame* frame, u32 width, u32 height) {
     const vk::Device device = instance.GetDevice();
-    DestroyGeneratedImage(frame);
     if (frame->imgui_texture) {
         ImGui::Vulkan::RemoveTexture(frame->imgui_texture);
     }
@@ -668,7 +602,6 @@ void Presenter::RecreateFrame(Frame* frame, u32 width, u32 height) {
 
     frame->imgui_texture = ImGui::Vulkan::AddTexture(view, vk::ImageLayout::eShaderReadOnlyOptimal);
     frame->is_hdr = swapchain.GetHDR();
-    CreateGeneratedImage(frame, format);
 }
 
 Frame* Presenter::PrepareLastFrame() {
@@ -719,7 +652,6 @@ Frame* Presenter::PrepareLastFrame() {
     });
 
     // Flush frame creation commands.
-    frame->has_generated = false;
     frame->ready_semaphore = scheduler.GetWorkSemaphore()->Handle();
     frame->ready_tick = scheduler.CurrentTick();
     SubmitInfo info{};
@@ -830,17 +762,6 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
         attribute.attrib.pixel_format == Libraries::VideoOut::PixelFormat::A2R10G10B10Srgb;
     pp_pass.Render(cmdbuf, image_view, image_size, *frame, pp_settings);
 
-    frame->has_generated = false;
-#ifdef ENABLE_FSR_FRAMEGEN
-    if (FrameGeneration::IsEnabled() && generation_wanted && frame->generated_image &&
-        !frame->is_hdr) {
-        frame->has_generated = frame_generator->Generate(
-            cmdbuf, frame->image, frame->generated_image, frame->width, frame->height);
-    } else {
-        frame_generator->Reset();
-    }
-#endif
-
     DebugState.game_resolution = {image_size.width, image_size.height};
     DebugState.output_resolution = {frame->width, frame->height};
 
@@ -925,7 +846,6 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
     });
 
     // Flush frame creation commands.
-    frame->has_generated = false;
     frame->ready_semaphore = scheduler.GetWorkSemaphore()->Handle();
     frame->ready_tick = scheduler.CurrentTick();
     SubmitInfo info{};
@@ -933,86 +853,13 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
     return frame;
 }
 
-float Presenter::GetDisplayRefreshRate() {
-    const auto now = std::chrono::steady_clock::now();
-    if (now - last_refresh_query < std::chrono::seconds(1)) {
-        return refresh_rate;
-    }
-    last_refresh_query = now;
-    if (const SDL_DisplayID display = SDL_GetDisplayForWindow(window.GetSDLWindow())) {
-        if (const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(display);
-            mode && mode->refresh_rate > 0.0f) {
-            refresh_rate = mode->refresh_rate;
-        }
-    }
-    return refresh_rate;
-}
-
-bool Presenter::UpdateGenerationPacing() {
-    using namespace std::chrono_literals;
-    bool paceable = false;
-    if (FrameGeneration::IsEnabled()) {
-        const auto half_interval = flip_interval / 2;
-        if (half_interval >= 2ms && half_interval <= 40ms) {
-            // The generated and the real image each stay on screen for the same whole number of
-            // refreshes only when half a game frame is a whole multiple of the refresh period.
-            const double ratio = std::chrono::duration<double>(half_interval).count() *
-                                 static_cast<double>(GetDisplayRefreshRate());
-            const double nearest = std::max(1.0, std::round(ratio));
-            const double tolerance = (generation_wanted ? 0.15 : 0.08) * nearest;
-            paceable = ratio >= 0.92 && std::abs(ratio - nearest) <= tolerance;
-        }
-    }
-    generation_wanted = paceable;
-    return paceable;
-}
-
 void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame) {
-    if (is_reusing_frame || !is_game_frame) {
-        PresentImage(frame, is_reusing_frame, is_game_frame, false);
-        return;
-    }
-    const auto now = std::chrono::steady_clock::now();
-    bool steady_cadence = false;
-    if (last_real_present.time_since_epoch().count() != 0) {
-        const auto interval = now - last_real_present;
-        steady_cadence = flip_interval.count() != 0 &&
-                         std::chrono::abs(interval - flip_interval) * 5 <= flip_interval;
-        flip_interval = flip_interval.count() == 0 || interval > flip_interval * 3
-                            ? std::chrono::duration_cast<std::chrono::nanoseconds>(interval)
-                            : (flip_interval * 7 + interval) / 8;
-    }
-    last_real_present = now;
-
-    const bool paceable = UpdateGenerationPacing();
-    if (frame->has_generated) {
-        frame->has_generated = false;
-        if (paceable && steady_cadence) {
-            const auto generated_shown = std::chrono::steady_clock::now();
-            PresentImage(frame, false, is_game_frame, true);
-            // The real frame follows halfway to the next one.
-            const auto real_due = generated_shown + flip_interval / 2;
-            const auto wait = real_due - std::chrono::steady_clock::now();
-            if (wait > std::chrono::nanoseconds::zero()) {
-                Common::AccurateSleep(std::chrono::duration_cast<std::chrono::nanoseconds>(wait),
-                                      nullptr, false);
-            }
-        }
-    }
-    PresentImage(frame, false, is_game_frame, false);
-}
-
-void Presenter::PresentImage(Frame* frame, bool is_reusing_frame, bool is_game_frame,
-                             bool generated) {
-    // Free the frame for reuse.
-    // The frame that was just presented stays reserved, because DrawLastFrame re-presents it while
-    // no new flip arrives; the previously presented frame is released to the GPU thread instead.
-    // Releasing the shown frame let the GPU thread render into it, recreate it or overwrite its
-    // ready semaphore/tick while the present thread was re-presenting it and resetting its fence,
-    // which could leave the present fence unsignalled forever and freeze the GPU thread in
-    // GetRenderFrame.
+    // Free the frame for reuse
+    // nhlport: the frame that was just presented stays reserved (DrawLastFrame re-presents it
+    // while nothing new arrives); the previously presented frame is released to the GPU thread
+    // instead, so no frame is ever re-rendered or has its fence reset while it is being shown.
     const auto free_frame = [&] {
-        if (!is_reusing_frame && !generated) {
+        if (!is_reusing_frame) {
             Frame* const previous = std::exchange(last_submit_frame, frame);
             if (previous != nullptr && previous != frame) {
                 std::scoped_lock fl{free_mutex};
@@ -1040,22 +887,18 @@ void Presenter::PresentImage(Frame* frame, bool is_reusing_frame, bool is_game_f
     // Reset fence for queue submission. Do it here instead of GetRenderFrame() because we may
     // skip frame because of slow swapchain recreation. If a frame skip occurs, we skip signal
     // the frame's present fence and future GetRenderFrame() call will hang waiting for this frame.
-    if (!generated) {
-        const auto reset_result = instance.GetDevice().resetFences(frame->present_done);
-        ASSERT_MSG(reset_result == vk::Result::eSuccess,
-                   "Unexpected error resetting present done fence: {}",
-                   vk::to_string(reset_result));
-    }
+    const auto reset_result = instance.GetDevice().resetFences(frame->present_done);
+    ASSERT_MSG(reset_result == vk::Result::eSuccess,
+               "Unexpected error resetting present done fence: {}", vk::to_string(reset_result));
 
-    ImGuiID dockId = ImGui::Core::NewFrame(is_reusing_frame || generated);
+    ImGuiID dockId = ImGui::Core::NewFrame(is_reusing_frame);
 
     const vk::Image swapchain_image = swapchain.Image();
     const vk::ImageView swapchain_image_view = swapchain.ImageView();
 
     auto& scheduler = present_scheduler;
     const auto cmdbuf = scheduler.CommandBuffer();
-    const u32 capture_with_overlays_count =
-        generated ? 0 : VideoCore::ConsumeWithOverlaysScreenshotRequests();
+    const u32 capture_with_overlays_count = VideoCore::ConsumeWithOverlaysScreenshotRequests();
     std::optional<ScreenshotReadback> pending_screenshot;
 
     if (EmulatorSettings.IsVkHostMarkersEnabled()) {
@@ -1090,12 +933,11 @@ void Presenter::PresentImage(Frame* frame, bool is_reusing_frame, bool is_game_f
             vk::ImageMemoryBarrier{
                 .srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
                 .dstAccessMask = vk::AccessFlagBits::eShaderRead,
-                .oldLayout =
-                    generated ? vk::ImageLayout::eShaderReadOnlyOptimal : vk::ImageLayout::eGeneral,
+                .oldLayout = vk::ImageLayout::eGeneral,
                 .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .image = generated ? frame->generated_image : frame->image,
+                .image = frame->image,
                 .subresourceRange{
                     .aspectMask = vk::ImageAspectFlagBits::eColor,
                     .baseMipLevel = 0,
@@ -1120,8 +962,7 @@ void Presenter::PresentImage(Frame* frame, bool is_reusing_frame, bool is_game_f
             ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
             ImGui::SetNextWindowDockID(dockId, ImGuiCond_Once);
             if (ImGui::Begin("Display##game_display", nullptr, ImGuiWindowFlags_NoNav)) {
-                auto game_texture =
-                    generated ? frame->generated_imgui_texture : frame->imgui_texture;
+                auto game_texture = frame->imgui_texture;
                 auto game_width = frame->width;
                 auto game_height = frame->height;
 
@@ -1247,9 +1088,7 @@ void Presenter::PresentImage(Frame* frame, bool is_reusing_frame, bool is_game_f
     info.AddWait(swapchain.GetImageAcquiredSemaphore());
     info.AddWait(frame->ready_semaphore, frame->ready_tick);
     info.AddSignal(swapchain.GetPresentReadySemaphore());
-    if (!generated) {
-        info.AddSignal(frame->present_done);
-    }
+    info.AddSignal(frame->present_done);
     scheduler.Flush(info);
 
     // Present to swapchain.
@@ -1261,7 +1100,7 @@ void Presenter::PresentImage(Frame* frame, bool is_reusing_frame, bool is_game_f
     }
 
     free_frame();
-    if (!is_reusing_frame && !generated && is_game_frame) {
+    if (!is_reusing_frame && is_game_frame) {
         DebugState.IncFlipFrameNum();
     }
 }
@@ -1272,11 +1111,10 @@ Frame* Presenter::GetRenderFrame() {
     {
         std::unique_lock lock{free_mutex};
         u32 waited_s = 0;
-        while (!free_cv.wait_for(lock, std::chrono::seconds(5),
-                                 [this] { return !free_queue.empty(); })) {
+        while (!free_cv.wait_for(lock, std::chrono::seconds(5), [this] { return !free_queue.empty(); })) {
             waited_s += 5;
-            LOG_WARNING(Render_Vulkan, "GetRenderFrame: waited {}s for a free frame (thread {})",
-                        waited_s, Common::GetCurrentThreadName());
+            LOG_WARNING(Render_Vulkan, "GetRenderFrame: waited {}s for a free frame (thread {})", waited_s,
+                        Common::GetCurrentThreadName());
         }
         LOG_DEBUG(Render_Vulkan, "Got render frame, remaining {}", free_queue.size() - 1);
 
@@ -1290,12 +1128,11 @@ Frame* Presenter::GetRenderFrame() {
 
     u32 fence_waited_s = 0;
     const auto wait = [&]() {
-        result = device.waitForFences(frame->present_done, false, 2'000'000'000ULL);
+        result = device.waitForFences(frame->present_done, false, 2000000000ULL);
         if (result == vk::Result::eTimeout) {
             fence_waited_s += 2;
-            LOG_WARNING(Render_Vulkan,
-                        "GetRenderFrame: waited {}s for the present fence of frame {} (thread {})",
-                        fence_waited_s, frame->id, Common::GetCurrentThreadName());
+            LOG_WARNING(Render_Vulkan, "GetRenderFrame: waited {}s for the present fence (thread {})",
+                        fence_waited_s, Common::GetCurrentThreadName());
         }
         return result;
     };
