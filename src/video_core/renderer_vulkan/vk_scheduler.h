@@ -9,6 +9,7 @@
 #include <span>
 #include <vector>
 #include <array>
+#include <deque>
 #include <mutex>
 #include <thread>
 #include <queue>
@@ -472,6 +473,7 @@ private:
     };
     std::mutex work_records_mutex;
     std::vector<WorkRecord> work_records;
+    std::deque<std::vector<WorkRecord>> recent_submits;
     std::set<std::array<u64, 5>> seen_work;
     void LogSubmittedWork(const std::vector<WorkRecord>& records, const char* reason) const;
 

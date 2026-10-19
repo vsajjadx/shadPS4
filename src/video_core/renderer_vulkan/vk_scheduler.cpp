@@ -293,7 +293,23 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
         submitted_work = std::move(work_records);
         work_records.clear();
     }
+    std::vector<std::vector<WorkRecord>> earlier_submits;
+    {
+        std::scoped_lock work_lk{work_records_mutex};
+        earlier_submits.assign(recent_submits.begin(), recent_submits.end());
+        recent_submits.push_back(submitted_work);
+        if (recent_submits.size() > 8) {
+            recent_submits.pop_front();
+        }
+    }
     if (submit_result == vk::Result::eErrorDeviceLost) {
+        // The GPU fault may come from any of the submits still in flight, not just this one.
+        for (size_t i = 0; i < earlier_submits.size(); ++i) {
+            LogSubmittedWork(earlier_submits[i],
+                             fmt::format("Earlier submit {} of {} before the device was lost",
+                                         i + 1, earlier_submits.size())
+                                 .c_str());
+        }
         LogSubmittedWork(submitted_work, "Device lost while submitting");
     }
     ASSERT_MSG(submit_result != vk::Result::eErrorDeviceLost, "Device lost during submit");

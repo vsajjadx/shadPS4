@@ -448,6 +448,13 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     game_info.initialized = true;
     game_info.game_serial = id;
     Common::HackFeatures::Init(id);
+    // Device-lost investigation (NHL 24): crash diagnostics and markers are cheap compared to
+    // validation, and name the command that was executing when the GPU died.
+    if (id == "CUSA37933") {
+        EmulatorSettings.SetVkCrashDiagnosticEnabled(true, true);
+        EmulatorSettings.SetVkHostMarkersEnabled(true, true);
+        EmulatorSettings.SetVkGuestMarkersEnabled(true, true);
+    }
     // Compile every shader seen in earlier sessions before the game starts, for every game.
     if (!EmulatorSettings.IsPipelineCacheEnabled()) {
         EmulatorSettings.SetPipelineCacheEnabled(true, true);
