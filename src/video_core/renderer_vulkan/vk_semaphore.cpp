@@ -62,7 +62,16 @@ void Semaphore::Wait(u64 tick) {
         .pValues = &tick,
     };
 
-    while (instance.GetDevice().waitSemaphores(&wait_info, WAIT_TIMEOUT) != vk::Result::eSuccess) {
+    // Only a timeout is worth retrying. Any other result (most importantly a lost device after a
+    // GPU reset) will never turn into success, so retrying it spins the calling thread forever
+    // and freezes the game instead of failing.
+    for (;;) {
+        const vk::Result result = instance.GetDevice().waitSemaphores(&wait_info, WAIT_TIMEOUT);
+        if (result == vk::Result::eSuccess) {
+            break;
+        }
+        ASSERT_MSG(result == vk::Result::eTimeout, "Failed to wait for the GPU: vk::Result={}",
+                   vk::to_string(result));
     }
     Refresh();
 }
