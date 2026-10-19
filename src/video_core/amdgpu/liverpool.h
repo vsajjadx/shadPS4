@@ -5,7 +5,6 @@
 
 #include <chrono>
 #include <condition_variable>
-#include <string>
 #include <coroutine>
 #include <exception>
 #include <mutex>
@@ -64,7 +63,6 @@ struct Liverpool {
     };
 
     Regs regs{};
-    u32 index_buffer_num_indices{};
     std::array<CbDbExtent, NUM_COLOR_BUFFERS> last_cb_extent{};
     CbDbExtent last_db_extent{};
 
@@ -80,7 +78,7 @@ public:
         mapped_queues[GfxQueueId].ccb_buffer_offset = 0;
         mapped_queues[GfxQueueId].dcb_buffer_offset = 0;
         submit_done = true;
-        submit_cv.notify_all();
+        submit_cv.notify_one();
     }
 
     void WaitGpuIdle() noexcept {
@@ -91,9 +89,6 @@ public:
     bool IsGpuIdle() const {
         return num_submits == 0;
     }
-
-    // One-line snapshot of the command processor state for hang dumps.
-    std::string DescribeState() const;
 
     void SetVoPort(Libraries::VideoOut::VideoOutPort* port) {
         vo_port = port;
@@ -114,7 +109,7 @@ public:
                     sem.release();
                 });
                 ++num_commands;
-                submit_cv.notify_all();
+                submit_cv.notify_one();
             }
             u32 waited_s = 0;
             while (!sem.try_acquire_for(std::chrono::seconds(5))) {
@@ -126,7 +121,7 @@ public:
             std::scoped_lock lk{submit_mutex};
             command_queue.emplace(std::move(func));
             ++num_commands;
-            submit_cv.notify_all();
+            submit_cv.notify_one();
         }
     }
 
@@ -247,7 +242,6 @@ private:
     std::atomic<u32> num_submits{};
     std::atomic<u32> num_commands{};
     std::atomic<bool> submit_done{};
-    std::atomic<s64> last_progress_ms{};
     std::mutex submit_mutex;
     std::condition_variable_any submit_cv;
     std::queue<Common::UniqueFunction<void>> command_queue{};

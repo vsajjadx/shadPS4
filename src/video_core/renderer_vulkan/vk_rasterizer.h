@@ -3,9 +3,6 @@
 
 #pragma once
 
-#include <atomic>
-#include <unordered_map>
-
 #include "common/recursive_lock.h"
 #include "common/shared_first_mutex.h"
 #include "video_core/buffer_cache/buffer_cache.h"
@@ -72,7 +69,6 @@ public:
     void ScopedMarkerInsertColor(const std::string_view& str, const u32 color,
                                  bool from_guest = false);
 
-    void InlineData(VAddr address, const void* data, u32 num_bytes);
     void FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gds);
     void CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, bool src_gds);
     /// nhlport: PM4 WRITE_DATA into guest memory without faulting on GPU-tracked pages.
@@ -129,14 +125,10 @@ private:
     void BindBuffers(const Shader::Info& stage, Shader::Backend::Bindings& binding,
                      Shader::PushData& push_data);
     void BindTextures(const Shader::Info& stage, Shader::Backend::Bindings& binding);
-    void ClampImageLevels(VideoCore::TextureCache::ImageDesc& desc);
-    bool ClampImageLayers(VideoCore::TextureCache::ImageDesc& desc, const AmdGpu::Image& tsharp,
-                          const Shader::ImageResource& image_desc);
-    bool IsImageInfoUsable(const VideoCore::ImageInfo& info);
     bool BindResources(const Pipeline* pipeline);
 
     void BindVertexBuffers(const GraphicsPipeline* pipeline);
-    void BindIndexBuffer(u32 index_offset = 0, bool is_indirect = false);
+    void BindIndexBuffer(u32 index_offset = 0);
 
     void LogDrawTrace(const char* kind, const void* pipeline, const Shader::Info* cs_info = nullptr);
     void DumpBoundImages();
@@ -165,11 +157,6 @@ private:
     Core::MemoryManager* memory;
     boost::icl::interval_set<VAddr> mapped_ranges;
     Common::SharedFirstMutex mapped_ranges_mutex;
-    // Guest ranges already found mapped by IsImageInfoUsable, dropped whenever the GPU mappings
-    // change. Saves a memory manager lock per bound texture.
-    std::atomic<u64> gpu_mappings_generation{};
-    u64 checked_ranges_generation{};
-    std::unordered_map<VAddr, u64> checked_mapped_ranges;
     PipelineCache pipeline_cache;
     const bool host_markers_enabled;
     const bool guest_markers_enabled;
@@ -182,12 +169,8 @@ private:
     std::array<ImageBinding, AmdGpu::NUM_COLOR_BUFFERS> cb_descs;
     ImageBinding db_desc;
 
-    // Filled for every stage of a pipeline, with the samplers next to the images.
-    static constexpr u32 MaxPipelineImageInfos =
-        (Shader::NUM_IMAGES + Shader::NUM_SAMPLERS) * Shader::MaxStageTypes;
-    static constexpr u32 MaxPipelineBufferInfos = Shader::NUM_BUFFERS * Shader::MaxStageTypes;
-    boost::container::static_vector<vk::DescriptorImageInfo, MaxPipelineImageInfos> image_infos;
-    boost::container::static_vector<vk::DescriptorBufferInfo, MaxPipelineBufferInfos> buffer_infos;
+    boost::container::static_vector<vk::DescriptorImageInfo, Shader::NUM_IMAGES> image_infos;
+    boost::container::static_vector<vk::DescriptorBufferInfo, Shader::NUM_BUFFERS> buffer_infos;
 
     struct BoundBuffer {
         const VideoCore::Buffer* buffer;

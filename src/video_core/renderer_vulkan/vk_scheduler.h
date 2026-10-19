@@ -4,12 +4,6 @@
 #pragma once
 
 #include <condition_variable>
-#include <source_location>
-#include <set>
-#include <span>
-#include <vector>
-#include <array>
-#include <deque>
 #include <mutex>
 #include <thread>
 #include <queue>
@@ -372,11 +366,8 @@ public:
     /// Sends the current execution context to the GPU and waits for it to complete.
     void Finish();
 
-    /// Remembers the shaders of the most recent draw or dispatch for device lost reports.
-    void RecordWork(char kind, std::span<const u64> shader_hashes);
-
     /// Waits for the given tick to trigger on the GPU.
-    void Wait(u64 tick, std::source_location caller = std::source_location::current());
+    void Wait(u64 tick);
 
     /// Attempts to execute operations whose tick the GPU has caught up with.
     void PopPendingOperations();
@@ -471,22 +462,6 @@ private:
 
 private:
     const Instance& instance;
-    struct WorkRecord {
-        char kind{};
-        bool first_use{};
-        u32 num_hashes{};
-        std::array<u64, 5> hashes{};
-    };
-    std::mutex work_records_mutex;
-    std::vector<WorkRecord> work_records;
-    std::deque<std::vector<WorkRecord>> recent_submits;
-    std::set<std::array<u64, 5>> seen_work;
-    void LogSubmittedWork(const std::vector<WorkRecord>& records, const char* reason) const;
-
-public:
-    /// Logs the shaders of the most recent submits. Called when the device is lost anywhere.
-    void DumpRecentWork();
-
     Semaphore work_semaphore;
     CommandPool command_pool;
     DynamicState dynamic_state;
@@ -513,9 +488,5 @@ public:
     bool is_rendering = false;
     tracy::VkCtxScope* profiler_scope{};
 };
-
-/// Dumps the recent GPU work of the active scheduler once, if there is one. Safe to call from any
-/// thread at the point where VK_ERROR_DEVICE_LOST is detected.
-void DumpWorkOnDeviceLost();
 
 } // namespace Vulkan
