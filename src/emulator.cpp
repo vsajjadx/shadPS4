@@ -448,6 +448,17 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     game_info.initialized = true;
     game_info.game_serial = id;
     Common::HackFeatures::Init(id);
+    // Freeze/device-lost investigation (NHL 24): force every diagnostic the renderer has.
+    // Validation is limited to the core layer; sync and GPU-assisted validation make the game
+    // unplayably slow and change timing.
+    if (id == "CUSA37933") {
+        EmulatorSettings.SetVkCrashDiagnosticEnabled(true, true);
+        EmulatorSettings.SetVkHostMarkersEnabled(true, true);
+        EmulatorSettings.SetVkGuestMarkersEnabled(true, true);
+        EmulatorSettings.SetVkValidationEnabled(true, true);
+        EmulatorSettings.SetVkValidationCoreEnabled(true, true);
+        LOG_INFO(Config, "NHL 24: crash diagnostics, host/guest markers and core validation forced on");
+    }
     // Compile every shader seen in earlier sessions before the game starts, for every game.
     if (!EmulatorSettings.IsPipelineCacheEnabled()) {
         EmulatorSettings.SetPipelineCacheEnabled(true, true);
