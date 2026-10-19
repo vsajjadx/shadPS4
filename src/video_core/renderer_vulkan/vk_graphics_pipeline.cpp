@@ -434,13 +434,10 @@ void GraphicsPipeline::Build() {
         .layout = *pipeline_layout,
     };
 
-    vk::Result pipeline_result;
-    vk::UniquePipeline pipe;
-    {
+    auto [pipeline_result, pipe] = [&] {
         Common::SlowCallScope slow{"vkCreateGraphicsPipelines"};
-        std::tie(pipeline_result, pipe) =
-            device.createGraphicsPipelineUnique(pipeline_cache_handle, pipeline_info);
-    }
+        return device.createGraphicsPipelineUnique(pipeline_cache_handle, pipeline_info);
+    }();
     ASSERT_MSG(pipeline_result == vk::Result::eSuccess, "Failed to create graphics pipeline: {}",
                vk::to_string(pipeline_result));
     pipeline = std::move(pipe);
