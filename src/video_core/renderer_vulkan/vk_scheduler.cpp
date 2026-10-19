@@ -273,7 +273,7 @@ void Scheduler::EndSession() {
 }
 
 void Scheduler::SubmitExecution(SubmitInfo& info) {
-    std::scoped_lock lk{submit_mutex};
+    std::unique_lock lk{submit_mutex};
     const u64 signal_value = work_semaphore.NextTick();
 
 #if TRACY_GPU_ENABLED
@@ -357,7 +357,9 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
         }
         LogSubmittedWork(submitted_work, "Device lost while submitting");
     }
-    ASSERT_MSG(submit_result != vk::Result::eErrorDeviceLost, "Device lost during submit");
+    ASSERT_MSG(submit_result == vk::Result::eSuccess, "Queue submission failed: {}",
+               vk::to_string(submit_result));
+    lk.unlock();
 
     // Never let the driver queue grow without bound. With the submit queue unbounded the NVIDIA
     // driver stalled the GPU thread with hundreds of submits pending and the device was lost
@@ -365,27 +367,7 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
     // only wait for the submit MAX_SUBMITS_IN_FLIGHT submits ago.
     constexpr u64 MAX_SUBMITS_IN_FLIGHT = 6;
     if (signal_value > MAX_SUBMITS_IN_FLIGHT) {
-        const u64 wait_value = signal_value - MAX_SUBMITS_IN_FLIGHT;
-        const vk::SemaphoreWaitInfo wait_info = {
-            .semaphoreCount = 1,
-            .pSemaphores = &timeline,
-            .pValues = &wait_value,
-        };
-        vk::Result wait_result;
-        {
-            Common::SlowCallScope slow{"vkWaitSemaphores (in-flight limit)", std::chrono::milliseconds{500}};
-            wait_result = instance.GetDevice().waitSemaphores(&wait_info, 4'000'000'000ULL);
-        }
-        if (wait_result == vk::Result::eErrorDeviceLost) {
-            LogSubmittedWork(submitted_work, "Device lost while an earlier submit was executing");
-        } else if (wait_result == vk::Result::eTimeout) {
-            static u32 timeout_reports = 0;
-            if (timeout_reports++ < 3) {
-                LogSubmittedWork(submitted_work, "Earlier submit still executing after 4s");
-            }
-        }
-        ASSERT_MSG(wait_result != vk::Result::eErrorDeviceLost,
-                   "Device lost while executing submit");
+        work_semaphore.Wait(signal_value - MAX_SUBMITS_IN_FLIGHT);
     }
 
     work_semaphore.Refresh();

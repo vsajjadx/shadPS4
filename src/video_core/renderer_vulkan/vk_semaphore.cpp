@@ -71,7 +71,16 @@ void Semaphore::Wait(u64 tick, std::source_location caller) {
 
     const auto start = std::chrono::steady_clock::now();
     auto next_report = start + SLOW_WAIT_REPORT;
-    while (instance.GetDevice().waitSemaphores(&wait_info, WAIT_TIMEOUT) != vk::Result::eSuccess) {
+    while (true) {
+        const auto result = instance.GetDevice().waitSemaphores(&wait_info, WAIT_TIMEOUT);
+        if (result == vk::Result::eSuccess) {
+            break;
+        }
+        if (result == vk::Result::eErrorDeviceLost) {
+            DumpWorkOnDeviceLost();
+        }
+        ASSERT_MSG(result == vk::Result::eTimeout, "Timeline semaphore wait failed: {}",
+                   vk::to_string(result));
         const auto now = std::chrono::steady_clock::now();
         if (now >= next_report) {
             Refresh();

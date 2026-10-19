@@ -73,9 +73,18 @@ static void EmitBarrierAtBlockStart(IR::Block* block) {
 
 static bool IsDivergent(const IR::U1& cond) {
     return IR::BreadthFirstSearch(cond, [](IR::Inst* inst) -> std::optional<bool> {
-               if (inst->GetOpcode() == IR::Opcode::GetAttributeU32 &&
-                   inst->Arg(0).Attribute() == IR::Attribute::LocalInvocationId) {
+               if (inst->GetOpcode() == IR::Opcode::LaneId) {
                    return true;
+               }
+               if (inst->GetOpcode() == IR::Opcode::GetAttributeU32) {
+                   switch (inst->Arg(0).Attribute()) {
+                   case IR::Attribute::LocalInvocationId:
+                   case IR::Attribute::LocalInvocationIndex:
+                   case IR::Attribute::GlobalInvocationId:
+                       return true;
+                   default:
+                       break;
+                   }
                }
                return std::nullopt;
            }) == true;
@@ -199,11 +208,8 @@ void SharedMemoryBarrierPass(IR::Program& program, const RuntimeInfo& runtime_in
     if (shared_memory_size == 0) {
         return;
     }
-    // The compiler can only omit barriers when the local workgroup size is the same as the HW
-    // subgroup. Larger groups get them too for the LDS reductions that their games do within one
-    // wave (sun and exposure on NVIDIA, from the shadPS4-sotc fork).
-    const bool large_group = threadgroup_size > GcnSubgroupSize && profile.needs_lds_barriers;
-    if ((threadgroup_size != GcnSubgroupSize && !large_group) || !profile.needs_lds_barriers) {
+    // Implicit GCN wave synchronization must not become a rendezvous between independent waves.
+    if (threadgroup_size != GcnSubgroupSize || !profile.needs_lds_barriers) {
         // GCN waves can use shared memory between invocations without explicit barriers because
         // they run in lockstep. Host compilers can reorder these accesses, so keep their order
         // with subgroup memory barriers.
@@ -243,14 +249,8 @@ void SharedMemoryBarrierPass(IR::Program& program, const RuntimeInfo& runtime_in
             }
             continue;
         }
-        if (node.type == Type::Block) {
-            if (large_group) {
-                // Workgroup barriers in blocks would stall other waves; order the accesses of
-                // this wave only.
-                EmitBarrierInBlock(node.data.block, true);
-            } else if (divergence_depth == 0) {
-                EmitBarrierInBlock(node.data.block);
-            }
+        if (node.type == Type::Block && divergence_depth == 0) {
+            EmitBarrierInBlock(node.data.block);
         }
     }
 }
