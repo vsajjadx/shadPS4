@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <string>
 #include <fmt/format.h>
@@ -19,8 +20,37 @@ namespace Vulkan {
 
 std::mutex Scheduler::submit_mutex;
 
+static std::atomic<Scheduler*> active_scheduler{nullptr};
+
+void DumpWorkOnDeviceLost() {
+    static std::atomic_flag dumped = ATOMIC_FLAG_INIT;
+    if (dumped.test_and_set()) {
+        return;
+    }
+    if (auto* scheduler = active_scheduler.load()) {
+        scheduler->DumpRecentWork();
+    }
+}
+
+void Scheduler::DumpRecentWork() {
+    std::vector<std::vector<WorkRecord>> submits;
+    std::vector<WorkRecord> pending;
+    {
+        std::scoped_lock lk{work_records_mutex};
+        submits.assign(recent_submits.begin(), recent_submits.end());
+        pending = work_records;
+    }
+    for (size_t i = 0; i < submits.size(); ++i) {
+        LogSubmittedWork(submits[i], fmt::format("Device lost: submit {} of {} (oldest first)",
+                                                 i + 1, submits.size())
+                                         .c_str());
+    }
+    LogSubmittedWork(pending, "Device lost: work recorded but not yet submitted");
+}
+
 Scheduler::Scheduler(const Instance& instance)
     : instance{instance}, work_semaphore{instance}, command_pool{instance, &work_semaphore} {
+    active_scheduler.store(this);
 #if TRACY_GPU_ENABLED
     profiler_scope = reinterpret_cast<tracy::VkCtxScope*>(std::malloc(sizeof(tracy::VkCtxScope)));
 #endif
@@ -30,6 +60,7 @@ Scheduler::Scheduler(const Instance& instance)
 }
 
 Scheduler::~Scheduler() {
+    active_scheduler.store(nullptr);
 #if TRACY_GPU_ENABLED
     std::free(profiler_scope);
 #endif

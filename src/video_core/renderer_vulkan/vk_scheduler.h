@@ -477,6 +477,10 @@ private:
     std::set<std::array<u64, 5>> seen_work;
     void LogSubmittedWork(const std::vector<WorkRecord>& records, const char* reason) const;
 
+public:
+    /// Logs the shaders of the most recent submits. Called when the device is lost anywhere.
+    void DumpRecentWork();
+
     Semaphore work_semaphore;
     CommandPool command_pool;
     DynamicState dynamic_state;
@@ -502,5 +506,9 @@ private:
     bool is_rendering = false;
     tracy::VkCtxScope* profiler_scope{};
 };
+
+/// Dumps the recent GPU work of the active scheduler once, if there is one. Safe to call from any
+/// thread at the point where VK_ERROR_DEVICE_LOST is detected.
+void DumpWorkOnDeviceLost();
 
 } // namespace Vulkan
