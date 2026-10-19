@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <mutex>
 #include <chrono>
 #include <string>
 #include <fmt/format.h>
@@ -20,14 +21,21 @@ namespace Vulkan {
 
 std::mutex Scheduler::submit_mutex;
 
-static std::atomic<Scheduler*> active_scheduler{nullptr};
+static std::mutex active_schedulers_mutex;
+static std::vector<Scheduler*> active_schedulers;
 
 void DumpWorkOnDeviceLost() {
     static std::atomic_flag dumped = ATOMIC_FLAG_INIT;
     if (dumped.test_and_set()) {
         return;
     }
-    if (auto* scheduler = active_scheduler.load()) {
+    std::vector<Scheduler*> schedulers;
+    {
+        std::scoped_lock lk{active_schedulers_mutex};
+        schedulers = active_schedulers;
+    }
+    LOG_CRITICAL(Render_Vulkan, "Device lost: dumping {} scheduler(s)", schedulers.size());
+    for (auto* scheduler : schedulers) {
         scheduler->DumpRecentWork();
     }
 }
@@ -50,7 +58,10 @@ void Scheduler::DumpRecentWork() {
 
 Scheduler::Scheduler(const Instance& instance)
     : instance{instance}, work_semaphore{instance}, command_pool{instance, &work_semaphore} {
-    active_scheduler.store(this);
+    {
+        std::scoped_lock lk{active_schedulers_mutex};
+        active_schedulers.push_back(this);
+    }
 #if TRACY_GPU_ENABLED
     profiler_scope = reinterpret_cast<tracy::VkCtxScope*>(std::malloc(sizeof(tracy::VkCtxScope)));
 #endif
@@ -60,7 +71,10 @@ Scheduler::Scheduler(const Instance& instance)
 }
 
 Scheduler::~Scheduler() {
-    active_scheduler.store(nullptr);
+    {
+        std::scoped_lock lk{active_schedulers_mutex};
+        std::erase(active_schedulers, this);
+    }
 #if TRACY_GPU_ENABLED
     std::free(profiler_scope);
 #endif
