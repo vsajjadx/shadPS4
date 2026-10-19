@@ -363,6 +363,8 @@ bool Instance::CreateDevice() {
                 .pageableDeviceLocalMemory;
         LOG_INFO(Render_Vulkan, "- pageableDeviceLocalMemory: {}", pageable_device_local_memory);
     }
+    // Lets the scheduler tell which command the GPU was executing if the device is lost.
+    nv_checkpoints = add_extension(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
     shader_clock = add_extension(VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
     if (shader_clock) {
         shader_clock_features = feature_chain.get<vk::PhysicalDeviceShaderClockFeaturesKHR>();

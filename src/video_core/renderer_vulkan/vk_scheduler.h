@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <array>
+#include <atomic>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -409,6 +411,21 @@ public:
         return sessions.back().primary;
     }
 
+    enum class CheckpointKind : u32 {
+        Draw,
+        DrawIndirect,
+        Dispatch,
+        DispatchIndirect,
+    };
+
+    /// Marks the command stream before a draw or dispatch so that, if the device is lost, the
+    /// command the GPU was executing can be identified. Does nothing without
+    /// VK_NV_device_diagnostic_checkpoints.
+    void Checkpoint(CheckpointKind kind, u64 a, u64 b, u64 c);
+
+    /// Reports the commands the GPU reached when the device was lost.
+    void ReportDeviceLost() const;
+
     /// Returns the current command buffer tick.
     [[nodiscard]] u64 CurrentTick() const noexcept {
         return work_semaphore.CurrentTick();
@@ -466,6 +483,19 @@ private:
         vk::CommandBuffer primary{};
     };
     std::vector<Session> sessions;
+    struct CheckpointRecord {
+        u64 id{};
+        u64 tick{};
+        u32 kind{};
+        u64 a{};
+        u64 b{};
+        u64 c{};
+    };
+    static constexpr size_t CheckpointRingSize = 8192;
+    // Shared by every scheduler: they all submit to the same queue, so the GPU's checkpoint
+    // markers have to resolve no matter which scheduler notices the lost device.
+    static inline std::array<CheckpointRecord, CheckpointRingSize> checkpoint_ring{};
+    static inline std::atomic<u64> checkpoint_counter{0};
     std::condition_variable_any event_cv;
     struct PendingOp {
         Common::UniqueFunction<void> callback;

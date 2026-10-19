@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdint>
+#include <fmt/format.h>
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/thread.h"
@@ -182,6 +184,52 @@ void Scheduler::EndSession() {
     Check(session.primary.end());
 }
 
+void Scheduler::Checkpoint(CheckpointKind kind, u64 a, u64 b, u64 c) {
+    if (!instance.HasNvCheckpoints()) {
+        return;
+    }
+    const u64 id = checkpoint_counter.fetch_add(1, std::memory_order_relaxed) + 1;
+    checkpoint_ring[id % CheckpointRingSize] = {id, CurrentTick(), static_cast<u32>(kind), a, b, c};
+    CommandBuffer().setCheckpointNV(reinterpret_cast<const void*>(static_cast<uintptr_t>(id)));
+}
+
+void Scheduler::ReportDeviceLost() const {
+    static constexpr std::array<const char*, 4> kind_names = {"draw", "draw-indirect", "dispatch",
+                                                              "dispatch-indirect"};
+    if (!instance.HasNvCheckpoints()) {
+        LOG_CRITICAL(Render_Vulkan, "Device lost; checkpoints are not supported by this GPU");
+        return;
+    }
+    const u64 recorded = checkpoint_counter.load(std::memory_order_relaxed);
+    const auto entries = instance.GetGraphicsQueue().getCheckpointDataNV();
+    LOG_CRITICAL(Render_Vulkan,
+                 "Device lost: {} commands were marked, the GPU reported {} checkpoint entries",
+                 recorded, entries.size());
+    const auto describe = [&](u64 id) {
+        const auto& rec = checkpoint_ring[id % CheckpointRingSize];
+        if (rec.id != id) {
+            return fmt::format("#{} (overwritten)", id);
+        }
+        const char* name = rec.kind < kind_names.size() ? kind_names[rec.kind] : "unknown";
+        if (rec.kind == static_cast<u32>(CheckpointKind::Dispatch) ||
+            rec.kind == static_cast<u32>(CheckpointKind::DispatchIndirect)) {
+            return fmt::format("#{} {} submit-tick={} cs={:#x} dims={}x{}x{}", id, name, rec.tick,
+                               rec.a, rec.b >> 32, rec.b & 0xffffffffu, rec.c);
+        }
+        return fmt::format("#{} {} submit-tick={} vs={:#x} ps={:#x} indices={} instances={}", id,
+                           name, rec.tick, rec.a, rec.b, rec.c & 0xffffffffu, rec.c >> 32);
+    };
+    for (const auto& entry : entries) {
+        const u64 id = reinterpret_cast<uintptr_t>(entry.pCheckpointMarker);
+        LOG_CRITICAL(Render_Vulkan, "  stage {}: last reached {}", vk::to_string(entry.stage),
+                     describe(id));
+        if (id < recorded) {
+            LOG_CRITICAL(Render_Vulkan, "    next command (suspect if this stage never left): {}",
+                         describe(id + 1));
+        }
+    }
+}
+
 void Scheduler::SubmitExecution(SubmitInfo& info) {
     std::scoped_lock lk{submit_mutex};
     const u64 signal_value = work_semaphore.NextTick();
@@ -238,6 +286,9 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
 
     ImGui::Core::TextureManager::Submit();
     auto submit_result = instance.GetGraphicsQueue().submit(submit_info, info.fence);
+    if (submit_result == vk::Result::eErrorDeviceLost) {
+        ReportDeviceLost();
+    }
     ASSERT_MSG(submit_result != vk::Result::eErrorDeviceLost, "Device lost during submit");
 
     work_semaphore.Refresh();

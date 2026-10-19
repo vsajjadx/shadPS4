@@ -183,6 +183,15 @@ void Rasterizer::EliminateFastClear() {
     ScopeMarkerEnd();
 }
 
+static u64 StageHash(const Pipeline& pipeline, Shader::SwStage stage) {
+    for (const auto* info : pipeline.GetStages()) {
+        if (info && info->sw_stage == stage) {
+            return info->pgm_hash;
+        }
+    }
+    return 0;
+}
+
 void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     RENDERER_TRACE;
 
@@ -223,6 +232,9 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
 
     const auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline->Handle());
+    scheduler.Checkpoint(Scheduler::CheckpointKind::Draw, StageHash(*pipeline, Shader::SwStage::Vertex),
+                         StageHash(*pipeline, Shader::SwStage::Fragment),
+                         u64(regs.num_indices) | (u64(regs.num_instances.NumInstances()) << 32));
 
     if (is_indexed) {
         cmdbuf.drawIndexed(regs.num_indices, regs.num_instances.NumInstances(), 0,
@@ -292,6 +304,9 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
 
     const auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline->Handle());
+    scheduler.Checkpoint(Scheduler::CheckpointKind::DrawIndirect,
+                         StageHash(*pipeline, Shader::SwStage::Vertex),
+                         StageHash(*pipeline, Shader::SwStage::Fragment), max_count);
 
     if (is_indexed) {
         ASSERT(sizeof(VkDrawIndexedIndirectCommand) == stride);
@@ -347,6 +362,9 @@ void Rasterizer::DispatchDirect() {
 
     const auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline->Handle());
+    scheduler.Checkpoint(Scheduler::CheckpointKind::Dispatch,
+                         StageHash(*pipeline, Shader::SwStage::Compute),
+                         (u64(cs_program.dim_x) << 32) | cs_program.dim_y, cs_program.dim_z);
     cmdbuf.dispatch(cs_program.dim_x, cs_program.dim_y, cs_program.dim_z);
     DebugState.IncDispatch();
 
@@ -381,6 +399,8 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
 
     const auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline->Handle());
+    scheduler.Checkpoint(Scheduler::CheckpointKind::DispatchIndirect,
+                         StageHash(*pipeline, Shader::SwStage::Compute), 0, 0);
     cmdbuf.dispatchIndirect(buffer->Handle(), base);
     DebugState.IncDispatch();
 

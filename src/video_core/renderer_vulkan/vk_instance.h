@@ -269,6 +269,11 @@ public:
     }
 
     /// Returns true when the shaderSubgroupClock feature of
+    /// VK_NV_device_diagnostic_checkpoints is supported.
+    bool HasNvCheckpoints() const {
+        return nv_checkpoints;
+    }
+
     /// VK_KHR_shader_clock is supported.
     bool IsShaderSubgroupClockSupported() const {
         return shader_clock && shader_clock_features.shaderSubgroupClock;
@@ -547,6 +552,7 @@ private:
     bool image_2d_view_of_3d{};
     bool image_view_min_lod{};
     bool shader_clock{};
+    bool nv_checkpoints{};
     bool supports_memory_budget{};
     bool pageable_device_local_memory{};
     bool supports_block_texel_view{};
