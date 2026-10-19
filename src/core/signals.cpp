@@ -31,7 +31,7 @@ namespace Core {
 #if defined(_WIN32)
 
 // nhlport: write a small minidump (all thread stacks, referenced memory) next to the log.
-static void WriteCrashDump(EXCEPTION_POINTERS* pExp) noexcept {
+static void WriteCrashDumpImpl(EXCEPTION_POINTERS* pExp) noexcept {
     using MiniDumpWriteDumpFn = BOOL(WINAPI*)(HANDLE, DWORD, HANDLE, MINIDUMP_TYPE,
                                               PMINIDUMP_EXCEPTION_INFORMATION,
                                               PMINIDUMP_USER_STREAM_INFORMATION,
@@ -58,8 +58,8 @@ static void WriteCrashDump(EXCEPTION_POINTERS* pExp) noexcept {
     const auto type = static_cast<MINIDUMP_TYPE>(MiniDumpWithIndirectlyReferencedMemory |
                                                  MiniDumpWithThreadInfo |
                                                  MiniDumpWithHandleData);
-    const BOOL ok = write_dump(GetCurrentProcess(), GetCurrentProcessId(), file, type, &info,
-                               nullptr, nullptr);
+    const BOOL ok = write_dump(GetCurrentProcess(), GetCurrentProcessId(), file, type,
+                               pExp ? &info : nullptr, nullptr, nullptr);
     CloseHandle(file);
     LOG_CRITICAL(Debug, "crash dump {}: {}", ok ? "written" : "FAILED", path.string());
 }
@@ -418,6 +418,12 @@ bool SignalDispatch::DispatchIllegalInstruction(void* context) const {
         }
     }
     return false;
+}
+
+void WriteCrashDump(void* exception_pointers) {
+#if defined(_WIN32)
+    WriteCrashDumpImpl(static_cast<EXCEPTION_POINTERS*>(exception_pointers));
+#endif
 }
 
 } // namespace Core
