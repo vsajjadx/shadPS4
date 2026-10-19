@@ -1315,6 +1315,13 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
                 rasterizer->OnFence();
             }
             release_mem->SignalFence(
+                [this](VAddr address, const void* value, u32 num_bytes) {
+                    if (rasterizer) {
+                        rasterizer->InlineData(address, value, num_bytes);
+                    } else {
+                        std::memcpy(std::bit_cast<void*>(address), value, num_bytes);
+                    }
+                },
                 [pipe_id = queue.pipe_id] {
                     Platform::IrqC::Instance()->Signal(static_cast<Platform::InterruptId>(pipe_id));
                 },

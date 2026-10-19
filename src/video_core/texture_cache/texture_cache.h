@@ -118,7 +118,7 @@ public:
     }
 
     /// Invalidates any image in the logical page range.
-    void InvalidateMemory(VAddr addr, size_t size);
+    void InvalidateMemory(VAddr addr, size_t size, bool from_cp = false);
 
     /// Marks an image as dirty if it exists at the provided address.
     void InvalidateMemoryFromGPU(VAddr address, size_t max_size);

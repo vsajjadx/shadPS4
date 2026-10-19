@@ -170,7 +170,7 @@ void TextureCache::MarkAsMaybeDirty(ImageId image_id, Image& image) {
     UntrackImage(image_id);
 }
 
-void TextureCache::InvalidateMemory(VAddr addr, size_t size) {
+void TextureCache::InvalidateMemory(VAddr addr, size_t size, bool from_cp) {
     const auto pages_start = PageManager::GetPageAddr(addr);
     const auto pages_end = PageManager::GetNextPageAddr(addr + size - 1);
 
@@ -185,6 +185,10 @@ void TextureCache::InvalidateMemory(VAddr addr, size_t size) {
         const auto image_begin = image.info.guest_address;
         const auto image_end = image.info.guest_address + image.info.guest_size;
         if (image.Overlaps(addr, size)) {
+            if (from_cp && (image.usage.render_target || image.usage.depth_target ||
+                            True(image.flags & ImageFlagBits::GpuModified))) {
+                continue;
+            }
             // Modified region overlaps image, so the image was definitely accessed by this fault.
             // Untrack the image, so that the range is unprotected and the guest can write freely.
             image.flags |= ImageFlagBits::CpuDirty;
