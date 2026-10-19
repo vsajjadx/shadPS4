@@ -1434,6 +1434,14 @@ void Rasterizer::FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gds
     runtime.FillBuffer(buffer, offset, num_bytes, value);
 }
 
+void Rasterizer::InlineData(VAddr address, const void* data, u32 num_bytes) {
+    if (buffer_cache.InlineData(address, data, num_bytes)) {
+        texture_cache.InvalidateMemory(address, num_bytes, true);
+        return;
+    }
+    std::memcpy(std::bit_cast<void*>(address), data, num_bytes);
+}
+
 void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, bool src_gds) {
     if (!dst_gds && !buffer_cache.IsRegionGpuModified(dst, num_bytes)) {
         if (!src_gds && !buffer_cache.IsRegionGpuModified(src, num_bytes) &&

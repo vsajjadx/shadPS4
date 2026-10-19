@@ -158,6 +158,38 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
     }
 }
 
+bool BufferCache::InlineData(VAddr address, const void* data, u32 num_bytes) {
+    constexpr VAddr GpuAddressLimit = VAddr{1} << ADDRESS_SPACE_BITS;
+    if (address % 4 != 0 || num_bytes % 4 != 0 || num_bytes == 0 || num_bytes > 65536 ||
+        address >= GpuAddressLimit || num_bytes > GpuAddressLimit - address) {
+        return false;
+    }
+    if (!memory->IsValidGpuMapping(address, num_bytes) ||
+        !memory->IsValidMapping(address, num_bytes)) {
+        return false;
+    }
+    if (!memory->TryWriteBacking(std::bit_cast<void*>(address), data, num_bytes)) {
+        return false;
+    }
+    if (IsRegionGpuModified(address, num_bytes)) {
+        const auto [buffer, offset] = ObtainBuffer(address, num_bytes, ObtainBufferFlags::IsWritten);
+        runtime.InlineData(buffer, offset, data, num_bytes);
+        return true;
+    }
+    const u64 first_block = address >> block_shift;
+    const u64 last_block = (address + num_bytes - 1) >> block_shift;
+    bool resident = true;
+    resident_ranges.ForEachGap(first_block, last_block + 1, [&](u64, u64) { resident = false; });
+    if (!resident) {
+        memory_tracker->MarkRegionAsCpuModified(address, num_bytes);
+        return true;
+    }
+    // Do not mark a resident page CPU-dirty: uploading it would overwrite adjacent GPU results.
+    const auto* arena = GetArena(first_block, last_block);
+    runtime.InlineData(arena, arena->Offset(address), data, num_bytes);
+    return true;
+}
+
 void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 size, bool is_write,
                                  bool async) {
     boost::container::small_vector<vk::BufferCopy, 1> copies;

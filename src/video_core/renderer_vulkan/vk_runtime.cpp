@@ -147,16 +147,20 @@ void Runtime::FillBuffer(const VideoCore::Buffer* dst, u64 offset, u64 size, u32
 }
 
 void Runtime::InlineData(VideoCore::Buffer* dst, u64 offset, u32 value) {
+    InlineData(dst, offset, &value, sizeof(value));
+}
+
+void Runtime::InlineData(const VideoCore::Buffer* dst, u64 offset, const void* data, u32 size) {
     scheduler.EndRendering();
 
-    if (IsBufferAccessed(dst, offset, sizeof(value), true)) {
+    if (IsBufferAccessed(dst, offset, size, true)) {
         FlushBarriers();
     }
 
     const auto cmdbuf = scheduler.CommandBuffer();
-    cmdbuf.updateBuffer(dst->Handle(), offset, sizeof(value), &value);
+    cmdbuf.updateBuffer(dst->Handle(), offset, size, data);
 
-    AccessBuffer(dst, offset, sizeof(value), vk::PipelineStageFlagBits2::eCopy,
+    AccessBuffer(dst, offset, size, vk::PipelineStageFlagBits2::eCopy,
                  vk::AccessFlagBits2::eTransferWrite);
 }
 

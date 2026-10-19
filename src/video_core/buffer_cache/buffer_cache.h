@@ -93,6 +93,8 @@ public:
 
     void TickFrame();
 
+    bool InlineData(VAddr address, const void* data, u32 num_bytes);
+
     /// Invalidates any buffer in the logical page range.
     void InvalidateMemory(VAddr device_addr, u64 size, bool assume_locks = false);
 

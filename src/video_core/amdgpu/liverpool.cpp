@@ -855,7 +855,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
             case PM4ItOpcode::WriteData: {
                 const auto* write_data = reinterpret_cast<const PM4CmdWriteData*>(header);
                 const u32 data_size = (header->type3.count.Value() - 2) * 4;
-                u64* address = write_data->Address<u64*>();
+                const VAddr address = write_data->Address<VAddr>();
                 if (write_data->dst_sel.Value() != 2 && write_data->dst_sel.Value() != 5) {
                     LOG_ERROR(Render, "Skipping WriteData to dst_sel {}",
                               u32(write_data->dst_sel.Value()));
@@ -863,10 +863,19 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     if (rasterizer) {
                         rasterizer->OnFence();
                     }
-                    std::memcpy(address, write_data->data, data_size);
+                    if (rasterizer) {
+                        rasterizer->InlineData(address, write_data->data, data_size);
+                    } else {
+                        std::memcpy(std::bit_cast<void*>(address), write_data->data, data_size);
+                    }
                 } else if (data_size >= 4) {
                     // Every dword goes to the same address, so only the last one remains.
-                    std::memcpy(address, &write_data->data[data_size / 4 - 1], sizeof(u32));
+                    const auto* value = &write_data->data[data_size / 4 - 1];
+                    if (rasterizer) {
+                        rasterizer->InlineData(address, value, sizeof(u32));
+                    } else {
+                        std::memcpy(std::bit_cast<void*>(address), value, sizeof(u32));
+                    }
                 }
                 break;
             }
@@ -1244,10 +1253,18 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
                 if (rasterizer) {
                     rasterizer->OnFence();
                 }
-                std::memcpy(write_data->Address<void*>(), write_data->data, data_size);
+                if (rasterizer) {
+                    rasterizer->InlineData(write_data->Address<VAddr>(), write_data->data, data_size);
+                } else {
+                    std::memcpy(write_data->Address<void*>(), write_data->data, data_size);
+                }
             } else if (data_size >= 4) {
-                std::memcpy(write_data->Address<void*>(), &write_data->data[data_size / 4 - 1],
-                            sizeof(u32));
+                const auto* value = &write_data->data[data_size / 4 - 1];
+                if (rasterizer) {
+                    rasterizer->InlineData(write_data->Address<VAddr>(), value, sizeof(u32));
+                } else {
+                    std::memcpy(write_data->Address<void*>(), value, sizeof(u32));
+                }
             }
             break;
         }
