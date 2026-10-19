@@ -145,7 +145,8 @@ bool Swapchain::Present() {
         needs_recreation = true;
     } else {
         if (result == vk::Result::eErrorDeviceLost) {
-            DumpWorkOnDeviceLost();
+            Diag::Event("vulkan", "Device lost during swapchain presentation");
+            Diag::Flush();
         }
         ASSERT_MSG(result == vk::Result::eSuccess, "Swapchain presentation failed: {}",
                    vk::to_string(result));

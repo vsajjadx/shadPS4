@@ -50,7 +50,7 @@ void Semaphore::Refresh() {
     }
 }
 
-void Semaphore::Wait(u64 tick) {
+void Semaphore::Wait(u64 tick, std::source_location caller) {
     // No need to wait if the GPU is ahead of the tick
     if (IsFree(tick)) {
         return;
@@ -81,8 +81,10 @@ void Semaphore::Wait(u64 tick) {
                    vk::to_string(result));
         waited_s += 2;
         Refresh();
-        LOG_WARNING(Render_Vulkan, "timeline wait {}s: tick {} known {} current {} thread {}",
-                    waited_s, tick, KnownGpuTick(), CurrentTick(), Common::GetCurrentThreadName());
+        LOG_WARNING(Render_Vulkan,
+                    "timeline wait {}s: tick {} known {} current {} thread {} at {}:{}",
+                    waited_s, tick, KnownGpuTick(), CurrentTick(), Common::GetCurrentThreadName(),
+                    caller.file_name(), caller.line());
     }
     Refresh();
 }

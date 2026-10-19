@@ -3,7 +3,14 @@
 
 #pragma once
 
+#include <condition_variable>
+#include <functional>
+#include <mutex>
+#include <queue>
+#include <thread>
 #include <variant>
+#include <vector>
+#include "common/polyfill_thread.h"
 #include <tsl/robin_map.h>
 #include "shader_recompiler/profile.h"
 #include "shader_recompiler/recompiler.h"
@@ -66,6 +73,30 @@ struct Program {
         modules.resize(std::max(modules.size(), perm_idx + 1)); // <-- beware of realloc
         modules[perm_idx] = {module, std::move(spec)};
     }
+};
+
+/// Runs Vulkan pipeline creation off the GPU command processor thread.
+class PipelineCompileWorkers {
+public:
+    explicit PipelineCompileWorkers(u32 num_threads);
+    ~PipelineCompileWorkers();
+
+    void Submit(std::function<void()>&& task);
+    void WaitIdle();
+
+    [[nodiscard]] u32 NumThreads() const noexcept {
+        return static_cast<u32>(threads.size());
+    }
+
+private:
+    void Run(std::stop_token stoken, u32 index);
+
+    std::mutex mutex;
+    std::condition_variable_any work_cv;
+    std::condition_variable_any idle_cv;
+    std::queue<std::function<void()>> tasks;
+    u32 in_flight{};
+    std::vector<std::jthread> threads;
 };
 
 struct DrawIndirectParams {
@@ -147,6 +178,9 @@ private:
     tsl::robin_map<vk::ShaderModule,
                    std::vector<std::variant<GraphicsPipelineKey, ComputePipelineKey>>>
         module_related_pipelines;
+
+    // Declared last so compilation finishes before pipeline resources are destroyed.
+    PipelineCompileWorkers compile_workers;
 };
 
 } // namespace Vulkan

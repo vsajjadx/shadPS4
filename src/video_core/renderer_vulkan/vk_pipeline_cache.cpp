@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <chrono>
+#include <thread>
+#include "common/thread.h"
 #include "common/diag_log.h"
 #include <ranges>
 
@@ -50,6 +53,70 @@ constexpr static std::array DescriptorHeapSizes = {
     vk::DescriptorPoolSize{vk::DescriptorType::eStorageImage, 1024},
     vk::DescriptorPoolSize{vk::DescriptorType::eSampler, 1024},
 };
+
+static u32 NumCompileWorkers() {
+    // The real bottleneck on a cold cache isn't CPU threads, it's the GPU driver's own shader
+    // compiler: NVIDIA's (and some others') contends heavily with itself under many concurrent
+    // pipeline-creation calls, which can stall the driver badly enough to trip Windows' GPU
+    // timeout (TDR) during a big first-run compile storm. Cap well below full hardware
+    // concurrency so a 16+ thread CPU doesn't throw that many compiles at the driver at once;
+    // this only slows down cold cache warm-up, not steady-state play once the cache is warm.
+    const u32 hw_threads = std::max(std::thread::hardware_concurrency(), 2u);
+    return std::clamp(hw_threads / 4, 2u, 4u);
+}
+
+PipelineCompileWorkers::PipelineCompileWorkers(u32 num_threads) {
+    threads.reserve(num_threads);
+    for (u32 i = 0; i < num_threads; ++i) {
+        threads.emplace_back([this, i](std::stop_token stoken) { Run(stoken, i); });
+    }
+}
+
+PipelineCompileWorkers::~PipelineCompileWorkers() {
+    WaitIdle();
+    for (auto& thread : threads) {
+        thread.request_stop();
+    }
+    work_cv.notify_all();
+    threads.clear();
+}
+
+void PipelineCompileWorkers::Submit(std::function<void()>&& task) {
+    {
+        std::scoped_lock lk{mutex};
+        tasks.emplace(std::move(task));
+        ++in_flight;
+    }
+    work_cv.notify_one();
+}
+
+void PipelineCompileWorkers::WaitIdle() {
+    std::unique_lock lk{mutex};
+    idle_cv.wait(lk, [this] { return in_flight == 0; });
+}
+
+void PipelineCompileWorkers::Run(std::stop_token stoken, u32 index) {
+    Common::SetCurrentThreadName(fmt::format("shadPS4:PipelineCompile{}", index).c_str());
+    Common::SetCurrentThreadPriority(Common::ThreadPriority::Low);
+    while (true) {
+        std::function<void()> task;
+        {
+            std::unique_lock lk{mutex};
+            Common::CondvarWait(work_cv, lk, stoken, [this] { return !tasks.empty(); });
+            if (tasks.empty()) {
+                return;
+            }
+            task = std::move(tasks.front());
+            tasks.pop();
+        }
+        task();
+        {
+            std::scoped_lock lk{mutex};
+            --in_flight;
+        }
+        idle_cv.notify_all();
+    }
+}
 
 static u32 MapOutputs(std::span<Shader::OutputMap, 3> outputs, const AmdGpu::VsOutputControl& ctl) {
     u32 num_outputs = 0;
@@ -286,7 +353,8 @@ const Shader::RuntimeInfo& PipelineCache::BuildRuntimeInfo(HwStage stage, SwStag
 PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
                              AmdGpu::Liverpool* liverpool_, u32 sparse_page_shift)
     : instance{instance_}, scheduler{scheduler_}, liverpool{liverpool_},
-      desc_heap{instance, scheduler.GetWorkSemaphore(), DescriptorHeapSizes} {
+      desc_heap{instance, scheduler.GetWorkSemaphore(), DescriptorHeapSizes},
+      compile_workers{NumCompileWorkers()} {
     const auto& vk12_props = instance.GetVk12Properties();
     profile = Shader::Profile{
         .max_viewport_width = instance.GetMaxViewportWidth(),
