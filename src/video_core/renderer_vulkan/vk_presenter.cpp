@@ -942,34 +942,14 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
     return frame;
 }
 
-float Presenter::GetDisplayRefreshRate() {
-    const auto now = std::chrono::steady_clock::now();
-    if (now - last_refresh_query < std::chrono::seconds(1)) {
-        return refresh_rate;
-    }
-    last_refresh_query = now;
-    if (const SDL_DisplayID display = SDL_GetDisplayForWindow(window.GetSDLWindow())) {
-        if (const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(display);
-            mode && mode->refresh_rate > 0.0f) {
-            refresh_rate = mode->refresh_rate;
-        }
-    }
-    return refresh_rate;
-}
-
 bool Presenter::UpdateGenerationPacing() {
     using namespace std::chrono_literals;
-    bool paceable = false;
-    if (FrameGeneration::IsEnabled()) {
-        const auto half_interval = flip_interval / 2;
-        if (half_interval >= 2ms && half_interval <= 40ms) {
-            const double ratio = std::chrono::duration<double>(half_interval).count() *
-                                 static_cast<double>(GetDisplayRefreshRate());
-            paceable = ratio >= (generation_wanted ? 0.8 : 0.9);
-        }
-    }
-    generation_wanted = paceable;
-    return paceable;
+    // Every game frame gets an interpolated one, whatever the display refresh rate is, like
+    // frame generation in PC games. Only rates where interpolating makes no sense are left out.
+    const bool wanted =
+        FrameGeneration::IsEnabled() && flip_interval >= 2ms && flip_interval <= 80ms;
+    generation_wanted = wanted;
+    return wanted;
 }
 
 bool Presenter::IsSceneCut(Frame* frame) {
@@ -1011,10 +991,13 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     last_real_present = now;
 
     const bool paceable = UpdateGenerationPacing();
+    // A frame that waited longer than a whole game frame means this thread is behind, so the
+    // generated image is dropped instead of holding the game back.
+    const bool behind = std::chrono::steady_clock::now() - now > flip_interval;
     const bool scene_cut = IsSceneCut(frame);
     if (frame->has_generated) {
         frame->has_generated = false;
-        if (paceable && steady_cadence && !scene_cut) {
+        if (paceable && steady_cadence && !behind && !scene_cut) {
             const auto generated_shown = std::chrono::steady_clock::now();
             PresentImage(frame, false, is_game_frame, true);
             // The real frame follows halfway to the next one.

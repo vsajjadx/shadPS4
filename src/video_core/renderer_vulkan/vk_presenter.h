@@ -117,7 +117,6 @@ private:
     Frame* GetRenderFrame();
 
     void PresentImage(Frame* frame, bool is_reusing_frame, bool is_game_frame, bool generated);
-    float GetDisplayRefreshRate();
     bool UpdateGenerationPacing();
     bool IsSceneCut(Frame* frame);
     void CreateGeneratedImage(Frame* frame, vk::Format format);
@@ -161,8 +160,6 @@ private:
     std::chrono::steady_clock::time_point last_real_present{};
     std::chrono::nanoseconds flip_interval{};
     std::atomic_bool generation_wanted{false};
-    std::chrono::steady_clock::time_point last_refresh_query{};
-    float refresh_rate{60.0f};
 };
 
 } // namespace Vulkan
