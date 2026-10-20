@@ -903,11 +903,9 @@ bool UpdatePressedKeys(InputEvent event) {
         return true;
     } else if (event.active) {
         // Find the correct position for insertion to maintain order
-        auto it = std::lower_bound(pressed_keys.begin(), pressed_keys.end(), input,
-                                   [](const std::pair<InputEvent, bool>& e, InputID i) {
-                                       return std::tie(e.first.input.type, e.first.input.sdl_id) <
-                                              std::tie(i.type, i.sdl_id);
-                                   });
+        auto it = std::lower_bound(
+            pressed_keys.begin(), pressed_keys.end(), input,
+            [](const std::pair<InputEvent, bool>& e, InputID i) { return e.first.input < i; });
 
         // Insert only if 'value' is not already in the list
         if (it == pressed_keys.end() || it->first.input != input) {
