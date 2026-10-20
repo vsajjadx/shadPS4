@@ -260,8 +260,8 @@ void FrameGenerator::RecordSignature(vk::CommandBuffer cmdbuf, vk::Image frame, 
     using Access = vk::AccessFlagBits2;
     using Layout = vk::ImageLayout;
 
-    const auto mip_barrier = [&](u32 mip, Access src_access, Access dst_access, Layout old_layout,
-                                 Layout new_layout, u32 level_count) {
+    const auto mip_barrier = [&](u32 mip, vk::AccessFlags2 src_access, vk::AccessFlags2 dst_access,
+                                 Layout old_layout, Layout new_layout, u32 level_count) {
         auto barrier = Barrier(signature.image, Stage::eAllCommands, src_access, Stage::eTransfer,
                                dst_access, old_layout, new_layout);
         barrier.subresourceRange.baseMipLevel = mip;
