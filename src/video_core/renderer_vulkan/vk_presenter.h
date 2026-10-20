@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <functional>
 #include <memory>
 
 #include "core/libraries/videoout/buffer.h"
@@ -110,7 +111,10 @@ public:
 
     Frame* PrepareBlankFrame(bool present_thread);
 
-    void Present(Frame* frame, bool is_reusing_frame = false, bool is_game_frame = true);
+    /// `flipped` reports the game's flip as complete; it is called once, as soon as the frame is
+    /// accepted when a generated frame is paced around it, otherwise after the frame is presented.
+    void Present(Frame* frame, bool is_reusing_frame = false, bool is_game_frame = true,
+                 const std::function<void()>& flipped = {});
     Frame* PrepareLastFrame();
 
 private:

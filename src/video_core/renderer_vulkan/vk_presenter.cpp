@@ -958,13 +958,13 @@ bool Presenter::IsSceneCut(Frame* frame) {
     if (frame->signature_id == 0) {
         return false;
     }
-    const vk::SemaphoreWaitInfo wait_info{
-        .semaphoreCount = 1,
-        .pSemaphores = &frame->ready_semaphore,
-        .pValues = &frame->ready_tick,
-    };
-    if (instance.GetDevice().waitSemaphores(wait_info, std::numeric_limits<u64>::max()) !=
-        vk::Result::eSuccess) {
+    // Never block on the GPU here: the present thread completes the game's flips, so waiting for
+    // the whole frame to finish serialises the game with the GPU and drops its frame rate. The
+    // signature is only compared when the frame is already done; otherwise it is assumed to be
+    // no scene cut, which at worst blends one generated frame across a cut.
+    const auto [result, completed] =
+        instance.GetDevice().getSemaphoreCounterValue(frame->ready_semaphore);
+    if (result != vk::Result::eSuccess || completed < frame->ready_tick) {
         return false;
     }
     return frame_generator->IsSceneCut(frame->signature_id);
@@ -974,9 +974,13 @@ bool Presenter::IsSceneCut(Frame* frame) {
 #endif
 }
 
-void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame) {
+void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame,
+                        const std::function<void()>& flipped) {
     if (is_reusing_frame || !is_game_frame) {
         PresentImage(frame, is_reusing_frame, is_game_frame, false);
+        if (flipped) {
+            flipped();
+        }
         return;
     }
     const auto now = frame->prepared_at;
@@ -996,9 +1000,17 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     // generated image is dropped instead of holding the game back.
     const bool behind = std::chrono::steady_clock::now() - now > flip_interval;
     const bool scene_cut = IsSceneCut(frame);
+    bool flip_reported = false;
     if (frame->has_generated) {
         frame->has_generated = false;
         if (paceable && steady_cadence && !behind && !scene_cut) {
+            // The game's flip is done once its frame is accepted. Holding it back until the pair
+            // is on screen would add half a game frame to every flip, and a game that waits for
+            // its flips would run at half speed with frame generation on.
+            if (flipped) {
+                flipped();
+                flip_reported = true;
+            }
             const auto generated_shown = std::chrono::steady_clock::now();
             PresentImage(frame, false, is_game_frame, true);
             // The real frame follows halfway to the next one.
@@ -1011,6 +1023,9 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         }
     }
     PresentImage(frame, false, is_game_frame, false);
+    if (!flip_reported && flipped) {
+        flipped();
+    }
 }
 
 void Presenter::PresentImage(Frame* frame, bool is_reusing_frame, bool is_game_frame,

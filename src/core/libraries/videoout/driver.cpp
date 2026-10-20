@@ -242,47 +242,50 @@ void VideoOutDriver::Flip(const Request& req) {
     // Update HDR status before presenting.
     presenter->SetHDR(req.port->is_hdr);
 
+    // Update flip status. The presenter calls this as soon as the game's frame is accepted when it
+    // paces a generated frame around it, so frame generation does not delay the game's flips.
+    const auto complete_flip = [this, &req] {
+        auto* port = req.port;
+        {
+            std::unique_lock lock{port->port_mutex};
+            auto& flip_status = port->flip_status;
+            flip_status.count++;
+            flip_status.process_time = Libraries::Kernel::sceKernelGetProcessTime();
+            flip_status.tsc = Libraries::Kernel::sceKernelReadTsc();
+            flip_status.flip_arg = req.flip_arg;
+            flip_status.current_buffer = req.index;
+            if (req.eop) {
+                --flip_status.gc_queue_num;
+            }
+            --flip_status.flip_pending_num;
+            LOG_DEBUG(Lib_VideoOut, "flip presented: index={} arg={} eop={} count={} pending={}",
+                      req.index, req.flip_arg, req.eop, flip_status.count,
+                      flip_status.flip_pending_num);
+        }
+
+        // Trigger flip events for the port.
+        for (auto event : port->flip_events) {
+            auto equeue = Kernel::GetEqueue(event);
+            if (equeue != nullptr) {
+                equeue->TriggerEvent(
+                    static_cast<u64>(OrbisVideoOutInternalEventId::Flip),
+                    Kernel::OrbisKernelEvent::Filter::VideoOut,
+                    reinterpret_cast<void*>(static_cast<u64>(OrbisVideoOutInternalEventId::Flip) |
+                                            (req.flip_arg << 16)));
+            }
+        }
+
+        // Reset prev flip label
+        if (port->prev_index != -1) {
+            port->buffer_labels[port->prev_index] = 0;
+            port->SignalVoLabel();
+        }
+        // save to prev buf index
+        port->prev_index = req.index;
+    };
+
     // Present the frame.
-    presenter->Present(req.frame);
-
-    // Update flip status.
-    auto* port = req.port;
-    {
-        std::unique_lock lock{port->port_mutex};
-        auto& flip_status = port->flip_status;
-        flip_status.count++;
-        flip_status.process_time = Libraries::Kernel::sceKernelGetProcessTime();
-        flip_status.tsc = Libraries::Kernel::sceKernelReadTsc();
-        flip_status.flip_arg = req.flip_arg;
-        flip_status.current_buffer = req.index;
-        if (req.eop) {
-            --flip_status.gc_queue_num;
-        }
-        --flip_status.flip_pending_num;
-        LOG_DEBUG(Lib_VideoOut, "flip presented: index={} arg={} eop={} count={} pending={}",
-                  req.index, req.flip_arg, req.eop, flip_status.count,
-                  flip_status.flip_pending_num);
-    }
-
-    // Trigger flip events for the port.
-    for (auto event : port->flip_events) {
-        auto equeue = Kernel::GetEqueue(event);
-        if (equeue != nullptr) {
-            equeue->TriggerEvent(
-                static_cast<u64>(OrbisVideoOutInternalEventId::Flip),
-                Kernel::OrbisKernelEvent::Filter::VideoOut,
-                reinterpret_cast<void*>(static_cast<u64>(OrbisVideoOutInternalEventId::Flip) |
-                                        (req.flip_arg << 16)));
-        }
-    }
-
-    // Reset prev flip label
-    if (port->prev_index != -1) {
-        port->buffer_labels[port->prev_index] = 0;
-        port->SignalVoLabel();
-    }
-    // save to prev buf index
-    port->prev_index = req.index;
+    presenter->Present(req.frame, false, true, complete_flip);
 }
 
 void VideoOutDriver::DrawBlankFrame() {
