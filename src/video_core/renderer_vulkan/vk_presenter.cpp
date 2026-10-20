@@ -473,8 +473,13 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
       swapchain{instance, window}, runtime{instance, draw_scheduler},
       rasterizer{std::make_unique<Rasterizer>(instance, draw_scheduler, runtime, liverpool)},
       texture_cache{rasterizer->GetTextureCache()} {
-    const u32 num_images = swapchain.GetImageCount();
     const vk::Device device = instance.GetDevice();
+#ifdef ENABLE_FSR_FRAMEGEN
+    constexpr u32 frame_generation_extra_frames = 2;
+#else
+    constexpr u32 frame_generation_extra_frames = 0;
+#endif
+    const u32 num_images = swapchain.GetImageCount() + frame_generation_extra_frames;
 
     // Create presentation frames.
     present_frames.resize(num_images);
