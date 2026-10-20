@@ -837,11 +837,13 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
 
     frame->prepared_at = std::chrono::steady_clock::now();
     frame->has_generated = false;
+    frame->signature_id = 0;
 #ifdef ENABLE_FSR_FRAMEGEN
     if (FrameGeneration::IsEnabled() && generation_wanted && frame->generated_image &&
         !frame->is_hdr) {
         frame->has_generated = frame_generator->Generate(
             cmdbuf, frame->image, frame->generated_image, frame->width, frame->height);
+        frame->signature_id = frame_generator->SignatureId();
     } else {
         frame_generator->Reset();
     }
@@ -974,6 +976,27 @@ bool Presenter::UpdateGenerationPacing() {
     return paceable;
 }
 
+bool Presenter::IsSceneCut(Frame* frame) {
+#ifdef ENABLE_FSR_FRAMEGEN
+    if (frame->signature_id == 0) {
+        return false;
+    }
+    const vk::SemaphoreWaitInfo wait_info{
+        .semaphoreCount = 1,
+        .pSemaphores = &frame->ready_semaphore,
+        .pValues = &frame->ready_tick,
+    };
+    if (instance.GetDevice().waitSemaphores(wait_info, std::numeric_limits<u64>::max()) !=
+        vk::Result::eSuccess) {
+        return false;
+    }
+    return frame_generator->IsSceneCut(frame->signature_id);
+#else
+    (void)frame;
+    return false;
+#endif
+}
+
 void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame) {
     if (is_reusing_frame || !is_game_frame) {
         PresentImage(frame, is_reusing_frame, is_game_frame, false);
@@ -992,9 +1015,10 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     last_real_present = now;
 
     const bool paceable = UpdateGenerationPacing();
+    const bool scene_cut = IsSceneCut(frame);
     if (frame->has_generated) {
         frame->has_generated = false;
-        if (paceable && steady_cadence) {
+        if (paceable && steady_cadence && !scene_cut) {
             const auto generated_shown = std::chrono::steady_clock::now();
             PresentImage(frame, false, is_game_frame, true);
             // The real frame follows halfway to the next one.

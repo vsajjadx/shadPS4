@@ -48,6 +48,7 @@ struct Frame {
     vk::ImageView generated_image_view{};
     ImTextureID generated_imgui_texture{};
     bool has_generated{false};
+    u64 signature_id{};
     std::chrono::steady_clock::time_point prepared_at{};
 };
 
@@ -118,6 +119,7 @@ private:
     void PresentImage(Frame* frame, bool is_reusing_frame, bool is_game_frame, bool generated);
     float GetDisplayRefreshRate();
     bool UpdateGenerationPacing();
+    bool IsSceneCut(Frame* frame);
     void CreateGeneratedImage(Frame* frame, vk::Format format);
     void DestroyGeneratedImage(Frame* frame);
 

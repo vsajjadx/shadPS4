@@ -3,8 +3,12 @@
 
 #pragma once
 
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <deque>
+#include <mutex>
+#include <vector>
 #include "common/types.h"
 #include "video_core/renderer_vulkan/vk_common.h"
 
@@ -39,6 +43,16 @@ public:
         reset = true;
     }
 
+    /// Identifies the signature recorded by the last `Generate` call, or zero when none was.
+    u64 SignatureId() const {
+        return signature_id;
+    }
+
+    /// Whether the frame with the given signature id differs so much from the previous one that
+    /// interpolating between them would blend two unrelated shots. Needs the frame's GPU work to
+    /// be complete.
+    bool IsSceneCut(u64 id);
+
 private:
     struct Target {
         VmaAllocation allocation{};
@@ -48,12 +62,23 @@ private:
         u64 frame_id;
         u64 tick;
     };
+    static constexpr u32 SignatureSlots = 8;
+    struct SignatureSlot {
+        VmaAllocation allocation{};
+        vk::Buffer buffer{};
+        void* mapped{};
+        u64 frame_id{};
+    };
 
     bool Recreate(vk::CommandBuffer cmdbuf, u32 width, u32 height);
     void Destroy();
     void DestroyTarget(Target& target);
     bool CreateTarget(Target& target, vk::Format format, vk::ImageUsageFlags usage, u32 width,
-                      u32 height, const char* name);
+                      u32 height, const char* name, u32 mip_levels = 1);
+    bool CreateSignature(u32 frame_width, u32 frame_height);
+    void DestroySignature();
+    void RecordSignature(vk::CommandBuffer cmdbuf, vk::Image frame, u32 frame_width,
+                         u32 frame_height, u64 id);
     void Fail(const char* what);
 
     const Instance& instance;
@@ -63,10 +88,19 @@ private:
     Target interpolated;
     Target depth;
     Target motion;
+    Target signature;
+    u32 signature_levels{};
+    u32 signature_width{};
+    u32 signature_height{};
+    std::array<SignatureSlot, SignatureSlots> signature_slots;
+    std::vector<u8> previous_signature;
+    u64 previous_signature_id{};
+    u64 signature_id{};
+    std::mutex signature_mutex;
     u32 width{};
     u32 height{};
     u64 frame_id{};
-    bool reset{true};
+    std::atomic_bool reset{true};
     bool failed{false};
     std::deque<PendingFrame> pending;
     std::chrono::steady_clock::time_point last_generate{};

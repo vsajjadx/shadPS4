@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <atomic>
 #include <span>
 
@@ -49,6 +50,9 @@ constexpr vk::ImageUsageFlags InterpolatedUsage = vk::ImageUsageFlagBits::eStora
 constexpr vk::ImageUsageFlags InputUsage = vk::ImageUsageFlagBits::eStorage |
                                            vk::ImageUsageFlagBits::eSampled |
                                            vk::ImageUsageFlagBits::eTransferDst;
+
+constexpr u32 SignatureMaxWidth = 48;
+constexpr float SceneCutThreshold = 0.08f;
 
 constexpr vk::ImageSubresourceRange ColorRange{
     .aspectMask = vk::ImageAspectFlagBits::eColor,
@@ -130,12 +134,13 @@ void FrameGenerator::Fail(const char* what) {
 }
 
 bool FrameGenerator::CreateTarget(Target& target, vk::Format format, vk::ImageUsageFlags usage,
-                                  u32 target_width, u32 target_height, const char* name) {
+                                  u32 target_width, u32 target_height, const char* name,
+                                  u32 mip_levels) {
     const VkImageCreateInfo image_info = static_cast<VkImageCreateInfo>(vk::ImageCreateInfo{
         .imageType = vk::ImageType::e2D,
         .format = format,
         .extent = {target_width, target_height, 1},
-        .mipLevels = 1,
+        .mipLevels = mip_levels,
         .arrayLayers = 1,
         .samples = vk::SampleCountFlagBits::e1,
         .tiling = vk::ImageTiling::eOptimal,
@@ -178,12 +183,209 @@ void FrameGenerator::Destroy() {
         context = nullptr;
     }
     pending.clear();
+    DestroySignature();
     DestroyTarget(color);
     DestroyTarget(interpolated);
     DestroyTarget(depth);
     DestroyTarget(motion);
     width = 0;
     height = 0;
+}
+
+bool FrameGenerator::CreateSignature(u32 frame_width, u32 frame_height) {
+    u32 level_width = std::max(frame_width / 2, 1u);
+    u32 level_height = std::max(frame_height / 2, 1u);
+    const u32 base_width = level_width;
+    const u32 base_height = level_height;
+    u32 levels = 1;
+    while (level_width > SignatureMaxWidth) {
+        level_width = std::max(level_width / 2, 1u);
+        level_height = std::max(level_height / 2, 1u);
+        ++levels;
+    }
+    if (!CreateTarget(signature, ColorFormat,
+                      vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst,
+                      base_width, base_height, "signature", levels)) {
+        return false;
+    }
+    signature_levels = levels;
+    signature_width = level_width;
+    signature_height = level_height;
+
+    const VkBufferCreateInfo buffer_info = static_cast<VkBufferCreateInfo>(vk::BufferCreateInfo{
+        .size = static_cast<vk::DeviceSize>(level_width) * level_height * 4,
+        .usage = vk::BufferUsageFlagBits::eTransferDst,
+        .sharingMode = vk::SharingMode::eExclusive,
+    });
+    const VmaAllocationCreateInfo alloc_info = {
+        .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+    };
+    std::scoped_lock lock{signature_mutex};
+    for (auto& slot : signature_slots) {
+        VkBuffer buffer{};
+        VmaAllocationInfo info{};
+        if (vmaCreateBuffer(instance.GetAllocator(), &buffer_info, &alloc_info, &buffer,
+                            &slot.allocation, &info) != VK_SUCCESS) {
+            slot = {};
+            return false;
+        }
+        slot.buffer = vk::Buffer{buffer};
+        slot.mapped = info.pMappedData;
+        slot.frame_id = 0;
+    }
+    previous_signature.clear();
+    previous_signature_id = 0;
+    return true;
+}
+
+void FrameGenerator::DestroySignature() {
+    std::scoped_lock lock{signature_mutex};
+    for (auto& slot : signature_slots) {
+        if (slot.buffer) {
+            vmaDestroyBuffer(instance.GetAllocator(), static_cast<VkBuffer>(slot.buffer),
+                             slot.allocation);
+        }
+        slot = {};
+    }
+    previous_signature.clear();
+    previous_signature_id = 0;
+    DestroyTarget(signature);
+    signature_levels = 0;
+}
+
+void FrameGenerator::RecordSignature(vk::CommandBuffer cmdbuf, vk::Image frame, u32 frame_width,
+                                     u32 frame_height, u64 id) {
+    using Stage = vk::PipelineStageFlagBits2;
+    using Access = vk::AccessFlagBits2;
+    using Layout = vk::ImageLayout;
+
+    const auto mip_barrier = [&](u32 mip, Access src_access, Access dst_access, Layout old_layout,
+                                 Layout new_layout, u32 level_count) {
+        auto barrier = Barrier(signature.image, Stage::eAllCommands, src_access, Stage::eTransfer,
+                               dst_access, old_layout, new_layout);
+        barrier.subresourceRange.baseMipLevel = mip;
+        barrier.subresourceRange.levelCount = level_count;
+        return barrier;
+    };
+
+    const std::array to_blit{
+        mip_barrier(0, Access::eTransferRead | Access::eTransferWrite, Access::eTransferWrite,
+                    Layout::eUndefined, Layout::eTransferDstOptimal, signature_levels),
+    };
+    PipelineBarriers(cmdbuf, to_blit);
+
+    const u32 base_width = std::max(frame_width / 2, 1u);
+    const u32 base_height = std::max(frame_height / 2, 1u);
+    u32 source_width = frame_width;
+    u32 source_height = frame_height;
+    for (u32 level = 0; level < signature_levels; ++level) {
+        const u32 level_width = std::max(base_width >> level, 1u);
+        const u32 level_height = std::max(base_height >> level, 1u);
+        if (level > 0) {
+            const std::array to_source{
+                mip_barrier(level - 1, Access::eTransferWrite, Access::eTransferRead,
+                            Layout::eTransferDstOptimal, Layout::eTransferSrcOptimal, 1),
+            };
+            PipelineBarriers(cmdbuf, to_source);
+        }
+        const vk::ImageBlit blit{
+            .srcSubresource{
+                .aspectMask = vk::ImageAspectFlagBits::eColor,
+                .mipLevel = level > 0 ? level - 1 : 0,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+            .srcOffsets = {{vk::Offset3D{0, 0, 0},
+                            vk::Offset3D{static_cast<s32>(source_width),
+                                         static_cast<s32>(source_height), 1}}},
+            .dstSubresource{
+                .aspectMask = vk::ImageAspectFlagBits::eColor,
+                .mipLevel = level,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+            .dstOffsets = {{vk::Offset3D{0, 0, 0},
+                            vk::Offset3D{static_cast<s32>(level_width),
+                                         static_cast<s32>(level_height), 1}}},
+        };
+        cmdbuf.blitImage(level > 0 ? signature.image : frame,
+                         level > 0 ? Layout::eTransferSrcOptimal : Layout::eGeneral,
+                         signature.image, Layout::eTransferDstOptimal, blit, vk::Filter::eLinear);
+        source_width = level_width;
+        source_height = level_height;
+    }
+
+    const u32 last = signature_levels - 1;
+    const std::array to_readback{
+        mip_barrier(last, Access::eTransferWrite, Access::eTransferRead,
+                    Layout::eTransferDstOptimal, Layout::eTransferSrcOptimal, 1),
+    };
+    PipelineBarriers(cmdbuf, to_readback);
+
+    SignatureSlot& slot = signature_slots[id % SignatureSlots];
+    const vk::BufferImageCopy copy{
+        .bufferOffset = 0,
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
+        .imageSubresource{
+            .aspectMask = vk::ImageAspectFlagBits::eColor,
+            .mipLevel = last,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        },
+        .imageOffset = {0, 0, 0},
+        .imageExtent = {signature_width, signature_height, 1},
+    };
+    cmdbuf.copyImageToBuffer(signature.image, Layout::eTransferSrcOptimal, slot.buffer, copy);
+
+    const vk::MemoryBarrier2 to_host{
+        .srcStageMask = Stage::eTransfer,
+        .srcAccessMask = Access::eTransferWrite,
+        .dstStageMask = Stage::eHost,
+        .dstAccessMask = Access::eHostRead,
+    };
+    cmdbuf.pipelineBarrier2(vk::DependencyInfo{
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &to_host,
+    });
+
+    std::scoped_lock lock{signature_mutex};
+    slot.frame_id = id;
+}
+
+bool FrameGenerator::IsSceneCut(u64 id) {
+    std::scoped_lock lock{signature_mutex};
+    if (id == 0) {
+        return false;
+    }
+    const SignatureSlot& slot = signature_slots[id % SignatureSlots];
+    if (!slot.mapped || slot.frame_id != id) {
+        return false;
+    }
+    const size_t size = static_cast<size_t>(signature_width) * signature_height * 4;
+    vmaInvalidateAllocation(instance.GetAllocator(), slot.allocation, 0, size);
+    const auto* data = static_cast<const u8*>(slot.mapped);
+
+    bool cut = false;
+    if (previous_signature_id + 1 == id && previous_signature.size() == size) {
+        u64 difference = 0;
+        for (size_t i = 0; i < size; i += 4) {
+            for (size_t channel = 0; channel < 3; ++channel) {
+                const int delta = static_cast<int>(data[i + channel]) -
+                                  static_cast<int>(previous_signature[i + channel]);
+                difference += static_cast<u64>(delta < 0 ? -delta : delta);
+            }
+        }
+        const double mean = static_cast<double>(difference) / (size / 4 * 3 * 255.0);
+        cut = mean > SceneCutThreshold;
+    }
+    previous_signature.assign(data, data + size);
+    previous_signature_id = id;
+    if (cut) {
+        reset = true;
+    }
+    return cut;
 }
 
 bool FrameGenerator::Recreate(vk::CommandBuffer cmdbuf, u32 new_width, u32 new_height) {
@@ -195,6 +397,11 @@ bool FrameGenerator::Recreate(vk::CommandBuffer cmdbuf, u32 new_width, u32 new_h
         !CreateTarget(motion, MotionFormat, InputUsage, new_width, new_height, "motion")) {
         Destroy();
         Fail("out of video memory for its images");
+        return false;
+    }
+    if (!CreateSignature(new_width, new_height)) {
+        Destroy();
+        Fail("out of video memory for its scene change signature");
         return false;
     }
 
@@ -255,6 +462,7 @@ bool FrameGenerator::Recreate(vk::CommandBuffer cmdbuf, u32 new_width, u32 new_h
 
 bool FrameGenerator::Generate(vk::CommandBuffer cmdbuf, vk::Image frame, vk::Image output,
                               u32 frame_width, u32 frame_height) {
+    signature_id = 0;
     if (failed || frame_width == 0 || frame_height == 0) {
         return false;
     }
@@ -291,6 +499,8 @@ bool FrameGenerator::Generate(vk::CommandBuffer cmdbuf, vk::Image frame, vk::Ima
     };
     PipelineBarriers(cmdbuf, to_copy);
     CopyImage(cmdbuf, frame, Layout::eGeneral, color.image, Layout::eGeneral, width, height);
+    RecordSignature(cmdbuf, frame, width, height, frame_id + 1);
+    signature_id = frame_id + 1;
 
     const std::array to_interpolate{
         Barrier(color.image, Stage::eTransfer, Access::eTransferWrite, Stage::eAllCommands,
