@@ -926,6 +926,7 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
     });
 
     // Flush frame creation commands.
+    frame->prepared_at = std::chrono::steady_clock::now();
     frame->has_generated = false;
     frame->ready_semaphore = scheduler.GetWorkSemaphore()->Handle();
     frame->ready_tick = scheduler.CurrentTick();
