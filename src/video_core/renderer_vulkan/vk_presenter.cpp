@@ -830,6 +830,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
         attribute.attrib.pixel_format == Libraries::VideoOut::PixelFormat::A2R10G10B10Srgb;
     pp_pass.Render(cmdbuf, image_view, image_size, *frame, pp_settings);
 
+    frame->prepared_at = std::chrono::steady_clock::now();
     frame->has_generated = false;
 #ifdef ENABLE_FSR_FRAMEGEN
     if (FrameGeneration::IsEnabled() && generation_wanted && frame->generated_image &&
@@ -972,7 +973,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         PresentImage(frame, is_reusing_frame, is_game_frame, false);
         return;
     }
-    const auto now = std::chrono::steady_clock::now();
+    const auto now = frame->prepared_at;
     bool steady_cadence = false;
     if (last_real_present.time_since_epoch().count() != 0) {
         const auto interval = now - last_real_present;

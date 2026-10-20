@@ -48,6 +48,7 @@ struct Frame {
     vk::ImageView generated_image_view{};
     ImTextureID generated_imgui_texture{};
     bool has_generated{false};
+    std::chrono::steady_clock::time_point prepared_at{};
 };
 
 enum SchedulerType {
