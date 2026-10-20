@@ -51,6 +51,7 @@ private:
                      SettingsCategory category);
 
     void AddSettingCheckbox(std::string name, bool& value);
+    void AddSettingText(std::string name, std::string& value);
     void AddSettingSliderInt(std::string name, int& value, int min, int max);
     void AddSettingSliderFloat(std::string name, float& value, int min, int max, int precision);
     void AddSettingCombo(std::string name, int& value, std::vector<std::string> options);
@@ -135,6 +136,9 @@ private:
     int windowHeightSetting;
     bool hdrAllowedSetting;
     bool fsrEnabledSetting;
+    bool frameGenerationEnabledSetting;
+    std::string frameGenerationHotkeySetting;
+    bool frameGenerationHotkeyCtrlSetting;
     bool rcasEnabledSetting;
     float rcasAttenuationSetting;
     int anisotropySetting;

@@ -5,6 +5,7 @@
 #include <bit>
 #include <fstream>
 #include <stb_image.h>
+#include <string>
 
 #include "common/logging/log.h"
 #include "common/path_util.h"
@@ -36,6 +37,23 @@ float uiScale = 1.0f;
 SDL_Renderer* renderer;
 
 namespace {
+
+// True when the folder is a PS4 game dump: it must carry a parseable
+// sce_sys/param.sfo whose title id starts with CUSA (PS4 discs and digital
+// dumps). PS5 games use PPSA title ids, so they are left out of the list.
+bool IsPs4GameFolder(const std::filesystem::path& folder) {
+    const auto sfo_path = Core::FileSys::ResolveGameFilePath(folder, "sce_sys/param.sfo");
+    if (!sfo_path.has_value()) {
+        return false;
+    }
+    PSF psf;
+    if (!psf.Open(*sfo_path)) {
+        return false;
+    }
+    const auto title_id = psf.GetString("TITLE_ID");
+    return title_id.has_value() && title_id->size() >= 4 &&
+           title_id->compare(0, 4, "CUSA") == 0;
+}
 
 std::filesystem::path UpdateChecker(const std::string sceItem, std::filesystem::path game_folder) {
     std::filesystem::path updatedPath = "";
@@ -199,7 +217,7 @@ void scanFolder(std::vector<IconInfo>& icons, std::filesystem::path folderPath, 
             continue;
         }
 
-        if (isEntryDir && !std::filesystem::exists(entry.path() / "eboot.bin", ec)) {
+        if (isEntryDir && !IsPs4GameFolder(entry.path())) {
             scanFolder(icons, entry.path(), depth + 1);
         }
 
@@ -221,6 +239,20 @@ void scanFolder(std::vector<IconInfo>& icons, std::filesystem::path folderPath, 
                 it.increment(ec);
                 continue;
             }
+        }
+
+        // A PS4 game is a folder or .zar archive holding eboot.bin plus a
+        // parseable sce_sys/param.sfo with a CUSA title id; anything else
+        // (PS5 dumps, partial folders) is skipped.
+        if (!IsPs4GameFolder(entry.path())) {
+            it.increment(ec);
+            continue;
+        }
+
+        if (!Core::FileSys::IsZArchiveFile(entry.path()) &&
+            !std::filesystem::exists(entry.path() / "eboot.bin", ec)) {
+            it.increment(ec);
+            continue;
         }
 
         IconInfo icon;

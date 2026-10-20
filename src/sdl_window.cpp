@@ -35,6 +35,12 @@
 #include "video_core/renderer_vulkan/vk_frame_generation.h"
 #endif
 
+#include <SDL3/SDL_keyboard.h>
+
+#include <cctype>
+#include <optional>
+#include <string>
+
 #ifdef __APPLE__
 #include <SDL3/SDL_metal.h>
 #endif
@@ -47,6 +53,25 @@ CMRC_DECLARE(res);
 namespace Frontend {
 
 using namespace Libraries::Pad;
+
+#ifdef ENABLE_FSR_FRAMEGEN
+// The launcher stores the toggle key as an SDL key name plus an optional Ctrl
+// modifier; an unset ("None") key disables the hotkey entirely.
+static bool MatchesFrameGenerationHotkey(SDL_Keycode key, SDL_Keymod mod) {
+    const std::string name = EmulatorSettings.GetFrameGenerationHotkey();
+    if (name.empty() || name == "None") {
+        return false;
+    }
+    const SDL_Keycode hotkey = SDL_GetKeyFromName(name.c_str());
+    if (hotkey == SDLK_UNKNOWN || key != hotkey) {
+        return false;
+    }
+    const bool ctrl_setting = EmulatorSettings.IsFrameGenerationHotkeyCtrl();
+    const bool ctrl_pressed = (mod & SDL_KMOD_CTRL) != 0;
+    const bool other_mods = (mod & (SDL_KMOD_ALT | SDL_KMOD_SHIFT | SDL_KMOD_GUI)) != 0;
+    return ctrl_setting ? (ctrl_pressed && !other_mods) : (!ctrl_pressed && !other_mods);
+}
+#endif
 
 static OrbisPadButtonDataOffset SDLGamepadToOrbisButton(u8 button) {
     using OPBDO = OrbisPadButtonDataOffset;
@@ -248,15 +273,13 @@ void WindowSDL::WaitEvent() {
         }
 #ifdef ENABLE_FSR_FRAMEGEN
         if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat &&
-            (event.key.key == SDLK_1 || event.key.key == SDLK_2) &&
-            !(event.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_SHIFT | SDL_KMOD_GUI))) {
-            const bool enable = event.key.key == SDLK_1;
+            MatchesFrameGenerationHotkey(event.key.key, event.key.mod)) {
+            const bool enable = !Vulkan::FrameGeneration::IsEnabled();
             Vulkan::FrameGeneration::SetEnabled(enable);
             const char* message = !Vulkan::FrameGeneration::IsAvailable()
                                       ? "FSR frame generation is not available on this GPU"
                                   : enable ? "FSR frame generation: ON"
                                            : "FSR frame generation: OFF";
-            LOG_INFO(Frontend, "{}", message);
             shadNotifications::QueueNotification(message, 2.0f,
                                                  shadNotifications::position::BottomRight);
         }

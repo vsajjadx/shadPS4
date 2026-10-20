@@ -2,6 +2,7 @@
 //  SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <map>
+#include <cstring>
 #include <ranges>
 #include <ImGuiFileDialog.h>
 #include <cmrc/cmrc.hpp>
@@ -64,6 +65,9 @@ void SettingsWindow::LoadSettings(std::string profile) {
     windowWidthSetting = EmulatorSettings.GetWindowWidth();
     hdrAllowedSetting = EmulatorSettings.IsHdrAllowed();
     fsrEnabledSetting = EmulatorSettings.IsFsrEnabled();
+    frameGenerationEnabledSetting = EmulatorSettings.IsFrameGenerationEnabled();
+    frameGenerationHotkeySetting = EmulatorSettings.GetFrameGenerationHotkey();
+    frameGenerationHotkeyCtrlSetting = EmulatorSettings.IsFrameGenerationHotkeyCtrl();
     rcasEnabledSetting = EmulatorSettings.IsRcasEnabled();
     rcasAttenuationSetting = static_cast<float>(EmulatorSettings.GetRcasAttenuation() * 0.001f);
     {
@@ -128,6 +132,9 @@ void SettingsWindow::SaveSettings(std::string profile) {
     EmulatorSettings.SetWindowWidth(windowWidthSetting, isSpecific);
     EmulatorSettings.SetHdrAllowed(hdrAllowedSetting, isSpecific);
     EmulatorSettings.SetFsrEnabled(fsrEnabledSetting, isSpecific);
+    EmulatorSettings.SetFrameGenerationEnabled(frameGenerationEnabledSetting, isSpecific);
+    EmulatorSettings.SetFrameGenerationHotkey(frameGenerationHotkeySetting, isSpecific);
+    EmulatorSettings.SetFrameGenerationHotkeyCtrl(frameGenerationHotkeyCtrlSetting, isSpecific);
     EmulatorSettings.SetRcasEnabled(rcasEnabledSetting, isSpecific);
     EmulatorSettings.SetRcasAttenuation(static_cast<int>(rcasAttenuationSetting * 1000),
                                         isSpecific);
@@ -741,6 +748,16 @@ void SettingsWindow::DrawSettingsTable(SettingsCategory category) {
             AddSettingSliderInt("Window Height", windowHeightSetting, 0, 7000);
             AddSettingCheckbox("Enable HDR", hdrAllowedSetting);
             AddSettingCheckbox("Enable FSR", fsrEnabledSetting);
+            AddSettingCheckbox("Enable Frame Generation", frameGenerationEnabledSetting);
+            if (frameGenerationEnabledSetting) {
+                AddSettingText("Frame Generation Hotkey (None = disabled)",
+                               frameGenerationHotkeySetting);
+                if (!frameGenerationHotkeySetting.empty() &&
+                    frameGenerationHotkeySetting != "None") {
+                    AddSettingCheckbox("Use Ctrl with Frame Generation Hotkey",
+                                       frameGenerationHotkeyCtrlSetting);
+                }
+            }
 
             if (fsrEnabledSetting) {
                 AddSettingCheckbox("Enable RCAS", rcasEnabledSetting);
@@ -841,6 +858,20 @@ void SettingsWindow::AddSettingCheckbox(std::string name, bool& value) {
     ImGui::TextWrapped("%s", name.c_str());
     ImGui::TableNextColumn();
     ImGui::Checkbox(label.c_str(), &value);
+}
+
+void SettingsWindow::AddSettingText(std::string name, std::string& value) {
+    std::string label = "##" + name;
+    char buf[64];
+    std::strncpy(buf, value.c_str(), sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::TextWrapped("%s", name.c_str());
+    ImGui::TableNextColumn();
+    if (ImGui::InputText(label.c_str(), buf, sizeof(buf))) {
+        value = buf;
+    }
 }
 
 void SettingsWindow::AddSettingSliderInt(std::string name, int& value, int min, int max) {
