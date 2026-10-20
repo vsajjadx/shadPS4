@@ -972,31 +972,6 @@ bool Presenter::UpdateGenerationPacing() {
     return paceable;
 }
 
-void Presenter::LimitFrameRateForGeneration(const Frame* frame) {
-    const auto refresh_period = std::chrono::duration<double>(1.0 / GetDisplayRefreshRate());
-    if (!FrameGeneration::IsEnabled() || frame->is_hdr || !frame->generated_image) {
-        generation_limiting = false;
-        return;
-    }
-    if (flip_interval.count() != 0 && flip_interval < refresh_period * 0.8) {
-        generation_limiting = true;
-    }
-    if (!generation_limiting) {
-        return;
-    }
-    const auto min_interval =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(refresh_period * 2);
-    const auto now = std::chrono::steady_clock::now();
-    const auto due = last_limited_present + min_interval;
-    if (due > now) {
-        Common::AccurateSleep(std::chrono::duration_cast<std::chrono::nanoseconds>(due - now),
-                              nullptr, false);
-        last_limited_present = due;
-    } else {
-        last_limited_present = now;
-    }
-}
-
 bool Presenter::IsSceneCut(Frame* frame) {
 #ifdef ENABLE_FSR_FRAMEGEN
     if (frame->signature_id == 0) {
@@ -1035,7 +1010,6 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     }
     last_real_present = now;
 
-    LimitFrameRateForGeneration(frame);
     const bool paceable = UpdateGenerationPacing();
     const bool scene_cut = IsSceneCut(frame);
     if (frame->has_generated) {
@@ -1100,7 +1074,7 @@ void Presenter::PresentImage(Frame* frame, bool is_reusing_frame, bool is_game_f
                    vk::to_string(reset_result));
     }
 
-    ImGuiID dockId = ImGui::Core::NewFrame(is_reusing_frame || generated);
+    ImGuiID dockId = ImGui::Core::NewFrame(is_reusing_frame);
 
     const vk::Image swapchain_image = swapchain.Image();
     const vk::ImageView swapchain_image_view = swapchain.ImageView();

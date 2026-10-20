@@ -120,7 +120,6 @@ private:
     float GetDisplayRefreshRate();
     bool UpdateGenerationPacing();
     bool IsSceneCut(Frame* frame);
-    void LimitFrameRateForGeneration(const Frame* frame);
     void CreateGeneratedImage(Frame* frame, vk::Format format);
     void DestroyGeneratedImage(Frame* frame);
 
@@ -162,8 +161,6 @@ private:
     std::chrono::steady_clock::time_point last_real_present{};
     std::chrono::nanoseconds flip_interval{};
     std::atomic_bool generation_wanted{false};
-    bool generation_limiting{false};
-    std::chrono::steady_clock::time_point last_limited_present{};
     std::chrono::steady_clock::time_point last_refresh_query{};
     float refresh_rate{60.0f};
 };
