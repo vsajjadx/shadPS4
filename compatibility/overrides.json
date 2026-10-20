@@ -43,9 +43,9 @@
   },
   "CUSA37933": {
     "name": "NHL® 24",
-    "status": "status-IN GAME",
+    "status": "status-playable",
     "version": "Anti-Crash",
-    "last_tested": "2026-10-18T00:00:00Z"
+    "last_tested": "2026-10-20T00:00:00Z"
   },
   "CUSA13903": {
     "name": "The Grand Tour Game",
