@@ -435,8 +435,31 @@ void WindowSDL::OnGamepadEvent(const SDL_Event* event) {
     // as it would break the entire touchpad handling
     // You can still bind other things to it though
     if (event->gbutton.button == SDL_GAMEPAD_BUTTON_TOUCHPAD) {
-        controllers[controllers.GetGamepadIndexFromJoystickId(event->gbutton.which)]->Button(
-            OrbisPadButtonDataOffset::TouchPad, input_down);
+        const u8 pad = controllers.GetGamepadIndexFromJoystickId(event->gbutton.which);
+        controllers[pad]->Button(OrbisPadButtonDataOffset::TouchPad, input_down);
+
+        // A click is also an input for the bindings (touchpad_left / touchpad_center /
+        // touchpad_right, as the launcher records them): the third of the pad the finger is on.
+        // The release reports the third the press did, so a finger that slid keeps it consistent.
+        if (pad < touchpad_click_region.size()) {
+            const float x = touchpad_last_x[pad];
+            u32 region = touchpad_click_region[pad];
+            if (input_down) {
+                region = x < 1.0f / 3.0f   ? static_cast<u32>(SDL_GAMEPAD_BUTTON_TOUCHPAD_LEFT)
+                         : x > 2.0f / 3.0f ? static_cast<u32>(SDL_GAMEPAD_BUTTON_TOUCHPAD_RIGHT)
+                                           : static_cast<u32>(SDL_GAMEPAD_BUTTON_TOUCHPAD_CENTER);
+                touchpad_click_region[pad] = region;
+            } else {
+                touchpad_click_region[pad] = 0;
+            }
+            if (region != 0) {
+                const Input::InputEvent region_event(
+                    Input::InputID(Input::InputType::Controller, region, pad + 1), input_down, 0);
+                if (Input::UpdatePressedKeys(region_event)) {
+                    Input::ActivateOutputsFromInputs();
+                }
+            }
+        }
         return;
     }
 
@@ -464,6 +487,12 @@ void WindowSDL::OnGamepadEvent(const SDL_Event* event) {
     case SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN:
     case SDL_EVENT_GAMEPAD_TOUCHPAD_UP:
     case SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION:
+        if (event->type != SDL_EVENT_GAMEPAD_TOUCHPAD_UP) {
+            const u8 pad = controllers.GetGamepadIndexFromJoystickId(event->gtouchpad.which);
+            if (pad < touchpad_last_x.size()) {
+                touchpad_last_x[pad] = event->gtouchpad.x;
+            }
+        }
         controllers[controllers.GetGamepadIndexFromJoystickId(event->gtouchpad.which)]
             ->SetTouchpadState(event->gtouchpad.finger,
                                event->type != SDL_EVENT_GAMEPAD_TOUCHPAD_UP, event->gtouchpad.x,

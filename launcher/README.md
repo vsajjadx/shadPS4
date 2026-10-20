@@ -13,6 +13,10 @@ The patches add:
 - A list of common window sizes instead of typing the width and height.
 - A frame generation (FSR 3.1) switch in the Graphics tab, and a Toggle Frame Generation key in the
   Hotkeys dialog (default `1`; a single key, a combination like `Ctrl+1`, or a controller button).
+- The controller and Hotkeys dialogs read a click on the DualSense / DualShock 4 touchpad as
+  `touchpad_left`, `touchpad_center` or `touchpad_right`, by the third of the pad the finger is on
+  (it used to be ignored, leaving the field on `back`). The emulator takes these as inputs, so they
+  work for any output and for the hotkeys.
 - File > Scan for PS4 games: scans every drive in the background, skips the Windows folder and
   system folders, and adds the PS4 games it finds to the library without asking for a folder.
 - The compatibility list comes from the official database, with the games listed in

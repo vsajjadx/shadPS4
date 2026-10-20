@@ -1,0 +1,185 @@
+From 81e6249de35392731c3fd1a74c4bfabf3afc3a44 Mon Sep 17 00:00:00 2001
+From: ci <ci@localhost>
+Date: Tue, 20 Oct 2026 23:38:36 +0000
+Subject: [PATCH] Recognise the DualSense touchpad as left / middle / right in
+ the controller and Hotkeys dialogs
+
+A touchpad click was dropped by the capture code (SDL reports it as SDL_GAMEPAD_BUTTON_TOUCHPAD, which
+had no case), so the field kept showing its old value, usually 'back'. The SDL event wrapper now
+follows the finger and reports a click as touchpad_left, touchpad_center or touchpad_right by the
+third of the pad the finger was on; both dialogs record it, and the touchpad names are known as
+controller inputs when the config files are read back.
+---
+ src/qt_gui/control_settings.cpp  |  9 +++++++++
+ src/qt_gui/control_settings.h    |  3 ++-
+ src/qt_gui/hotkeys.cpp           |  9 +++++++++
+ src/qt_gui/hotkeys.h             |  3 ++-
+ src/qt_gui/kbm_gui.h             |  1 +
+ src/qt_gui/sdl_event_wrapper.cpp | 30 ++++++++++++++++++++++++++++++
+ src/qt_gui/sdl_event_wrapper.h   | 12 ++++++++++++
+ 7 files changed, 65 insertions(+), 2 deletions(-)
+
+diff --git a/src/qt_gui/control_settings.cpp b/src/qt_gui/control_settings.cpp
+index be880ac..81fe082 100644
+--- a/src/qt_gui/control_settings.cpp
++++ b/src/qt_gui/control_settings.cpp
+@@ -962,6 +962,15 @@ void ControlSettings::processSDLEvents(int Type, int Input, int Value) {
+             case SDL_GAMEPAD_BUTTON_START:
+                 pressedButtons.insert(12, "options");
+                 break;
++            case SdlEventWrapper::TouchpadLeft:
++                pressedButtons.insert(21, "touchpad_left");
++                break;
++            case SdlEventWrapper::TouchpadCenter:
++                pressedButtons.insert(22, "touchpad_center");
++                break;
++            case SdlEventWrapper::TouchpadRight:
++                pressedButtons.insert(23, "touchpad_right");
++                break;
+             default:
+                 break;
+             }
+diff --git a/src/qt_gui/control_settings.h b/src/qt_gui/control_settings.h
+index ee5dc1e..5603cd3 100644
+--- a/src/qt_gui/control_settings.h
++++ b/src/qt_gui/control_settings.h
+@@ -83,7 +83,8 @@ private:
+         "pad_down",
+ 
+         "pad_left",     "pad_right", "axis_left_x", "axis_left_y", "axis_right_x",
+-        "axis_right_y", "back"};
++        "axis_right_y", "back",
++        "touchpad_left", "touchpad_center", "touchpad_right"};
+ 
+ protected:
+     void closeEvent(QCloseEvent* event) override {
+diff --git a/src/qt_gui/hotkeys.cpp b/src/qt_gui/hotkeys.cpp
+index f47f1a7..384a9ae 100644
+--- a/src/qt_gui/hotkeys.cpp
++++ b/src/qt_gui/hotkeys.cpp
+@@ -917,6 +917,15 @@ void Hotkeys::processSDLEvents(int Type, int Input, int Value) {
+             case SDL_GAMEPAD_BUTTON_START:
+                 pressedButtons.insert(12, "options");
+                 break;
++            case SdlEventWrapper::TouchpadLeft:
++                pressedButtons.insert(21, "touchpad_left");
++                break;
++            case SdlEventWrapper::TouchpadCenter:
++                pressedButtons.insert(22, "touchpad_center");
++                break;
++            case SdlEventWrapper::TouchpadRight:
++                pressedButtons.insert(23, "touchpad_right");
++                break;
+             default:
+                 break;
+             }
+diff --git a/src/qt_gui/hotkeys.h b/src/qt_gui/hotkeys.h
+index 2500e24..dde7e7f 100644
+--- a/src/qt_gui/hotkeys.h
++++ b/src/qt_gui/hotkeys.h
+@@ -83,7 +83,8 @@ private:
+         "pad_down",
+ 
+         "pad_left",     "pad_right", "axis_left_x", "axis_left_y", "axis_right_x",
+-        "axis_right_y", "back"};
++        "axis_right_y", "back",
++        "touchpad_left", "touchpad_center", "touchpad_right"};
+ 
+ protected:
+     void closeEvent(QCloseEvent* event) override {
+diff --git a/src/qt_gui/kbm_gui.h b/src/qt_gui/kbm_gui.h
+index 9109a57..df0b290 100644
+--- a/src/qt_gui/kbm_gui.h
++++ b/src/qt_gui/kbm_gui.h
+@@ -74,5 +74,6 @@ private:
+         "r5",           "l5",          "pad_up",       "pad_down",     "pad_left", "pad_right",
+         "axis_left_x",  "axis_left_y", "axis_right_x", "axis_right_y", "back",     "share",
+         "lpaddle_high", "lpaddle_low", "rpaddle_high", "rpaddle_low",  "qam",      "options",
++        "touchpad_left", "touchpad_center", "touchpad_right",
+     };
+ };
+diff --git a/src/qt_gui/sdl_event_wrapper.cpp b/src/qt_gui/sdl_event_wrapper.cpp
+index e160dec..fafcf75 100644
+--- a/src/qt_gui/sdl_event_wrapper.cpp
++++ b/src/qt_gui/sdl_event_wrapper.cpp
+@@ -17,6 +17,19 @@ Wrapper* Wrapper::GetInstance() {
+     return WrapperInstance;
+ }
+ 
++static int TouchpadRegionFromX(float x) {
++    if (x < 0.0f) {
++        return TouchpadCenter; // no finger position known: treat the click as the middle
++    }
++    if (x < 1.0f / 3.0f) {
++        return TouchpadLeft;
++    }
++    if (x > 2.0f / 3.0f) {
++        return TouchpadRight;
++    }
++    return TouchpadCenter;
++}
++
+ bool Wrapper::ProcessEvent(SDL_Event* event) {
+     switch (event->type) {
+     case SDL_EVENT_WINDOW_RESTORED:
+@@ -32,10 +45,27 @@ bool Wrapper::ProcessEvent(SDL_Event* event) {
+     case SDL_EVENT_QUIT:
+         emit SDLEvent(SDL_EVENT_QUIT, 0, 0);
+         return true;
++    case SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN:
++    case SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION:
++        lastTouchX = event->gtouchpad.x;
++        return true;
+     case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
++        if (event->gbutton.button == SDL_GAMEPAD_BUTTON_TOUCHPAD) {
++            // A touchpad click is reported as the left / middle / right part of the pad that
++            // the finger was on, the way the emulator reads it in game.
++            heldTouchpadRegion = TouchpadRegionFromX(lastTouchX);
++            emit SDLEvent(SDL_EVENT_GAMEPAD_BUTTON_DOWN, heldTouchpadRegion, 0);
++            return true;
++        }
+         emit SDLEvent(SDL_EVENT_GAMEPAD_BUTTON_DOWN, event->gbutton.button, 0);
+         return true;
+     case SDL_EVENT_GAMEPAD_BUTTON_UP:
++        if (event->gbutton.button == SDL_GAMEPAD_BUTTON_TOUCHPAD) {
++            emit SDLEvent(SDL_EVENT_GAMEPAD_BUTTON_UP,
++                          heldTouchpadRegion != 0 ? heldTouchpadRegion : TouchpadCenter, 0);
++            heldTouchpadRegion = 0;
++            return true;
++        }
+         emit SDLEvent(SDL_EVENT_GAMEPAD_BUTTON_UP, event->gbutton.button, 0);
+         return true;
+     case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+diff --git a/src/qt_gui/sdl_event_wrapper.h b/src/qt_gui/sdl_event_wrapper.h
+index 4cb918c..e9ff157 100644
+--- a/src/qt_gui/sdl_event_wrapper.h
++++ b/src/qt_gui/sdl_event_wrapper.h
+@@ -7,6 +7,12 @@
+ 
+ namespace SdlEventWrapper {
+ 
++// Pseudo button ids sent in SDLEvent's Input for a click on the DualSense / DualShock 4 touchpad,
++// by the part of the pad the finger was on. They never collide with SDL_GamepadButton values.
++constexpr int TouchpadLeft = 0x7001;
++constexpr int TouchpadCenter = 0x7002;
++constexpr int TouchpadRight = 0x7003;
++
+ class Wrapper : public QObject {
+     Q_OBJECT
+ 
+@@ -18,6 +24,12 @@ public:
+     static bool wrapperActive;
+     static Wrapper* WrapperInstance;
+ 
++private:
++    float lastTouchX = -1.0f; // x (0..1) of the finger that touched the touchpad last
++    int heldTouchpadRegion = 0;
++
++public:
++
+ signals:
+     void SDLEvent(int Type, int Input, int Value);
+     void audioDeviceChanged(bool isAdd);
+-- 
+2.43.0
+
