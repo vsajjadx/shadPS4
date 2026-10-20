@@ -963,17 +963,38 @@ bool Presenter::UpdateGenerationPacing() {
     if (FrameGeneration::IsEnabled()) {
         const auto half_interval = flip_interval / 2;
         if (half_interval >= 2ms && half_interval <= 40ms) {
-            // The generated and the real image each stay on screen for the same whole number of
-            // refreshes only when half a game frame is a whole multiple of the refresh period.
             const double ratio = std::chrono::duration<double>(half_interval).count() *
                                  static_cast<double>(GetDisplayRefreshRate());
-            const double nearest = std::max(1.0, std::round(ratio));
-            const double tolerance = (generation_wanted ? 0.15 : 0.08) * nearest;
-            paceable = ratio >= 0.92 && std::abs(ratio - nearest) <= tolerance;
+            paceable = ratio >= (generation_wanted ? 0.8 : 0.9);
         }
     }
     generation_wanted = paceable;
     return paceable;
+}
+
+void Presenter::LimitFrameRateForGeneration(const Frame* frame) {
+    const auto refresh_period = std::chrono::duration<double>(1.0 / GetDisplayRefreshRate());
+    if (!FrameGeneration::IsEnabled() || frame->is_hdr || !frame->generated_image) {
+        generation_limiting = false;
+        return;
+    }
+    if (flip_interval.count() != 0 && flip_interval < refresh_period * 0.8) {
+        generation_limiting = true;
+    }
+    if (!generation_limiting) {
+        return;
+    }
+    const auto min_interval =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(refresh_period * 2);
+    const auto now = std::chrono::steady_clock::now();
+    const auto due = last_limited_present + min_interval;
+    if (due > now) {
+        Common::AccurateSleep(std::chrono::duration_cast<std::chrono::nanoseconds>(due - now),
+                              nullptr, false);
+        last_limited_present = due;
+    } else {
+        last_limited_present = now;
+    }
 }
 
 bool Presenter::IsSceneCut(Frame* frame) {
@@ -1006,14 +1027,15 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     bool steady_cadence = false;
     if (last_real_present.time_since_epoch().count() != 0) {
         const auto interval = now - last_real_present;
-        steady_cadence = flip_interval.count() != 0 &&
-                         std::chrono::abs(interval - flip_interval) * 5 <= flip_interval;
+        steady_cadence = flip_interval.count() != 0 && interval * 2 >= flip_interval &&
+                         interval <= flip_interval * 2;
         flip_interval = flip_interval.count() == 0 || interval > flip_interval * 3
                             ? std::chrono::duration_cast<std::chrono::nanoseconds>(interval)
                             : (flip_interval * 7 + interval) / 8;
     }
     last_real_present = now;
 
+    LimitFrameRateForGeneration(frame);
     const bool paceable = UpdateGenerationPacing();
     const bool scene_cut = IsSceneCut(frame);
     if (frame->has_generated) {
