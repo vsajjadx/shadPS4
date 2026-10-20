@@ -1,0 +1,145 @@
+From 17fe2b743c1e53bf2e1c75033c11ccd6b8a798b2 Mon Sep 17 00:00:00 2001
+From: Replit Agent <agent@replit.com>
+Date: Tue, 20 Oct 2026 16:16:27 +0000
+Subject: [PATCH] Add configurable frame generation hotkey
+
+---
+ src/core/emulator_settings.h   |  7 ++++++-
+ src/qt_gui/settings_dialog.cpp | 29 +++++++++++++++++++++++++++--
+ src/qt_gui/settings_dialog.h   |  2 ++
+ 3 files changed, 35 insertions(+), 3 deletions(-)
+
+diff --git a/src/core/emulator_settings.h b/src/core/emulator_settings.h
+index 992aab3..d5acdf9 100644
+--- a/src/core/emulator_settings.h
++++ b/src/core/emulator_settings.h
+@@ -433,6 +433,7 @@ struct GPUSettings {
+     Setting<bool> userfaultfd{false};
+     Setting<bool> inline_fetch_shader{false};
+     Setting<bool> frame_generation_enabled{false};
++    Setting<std::string> frame_generation_toggle_hotkey{"1"};
+ 
+     std::vector<OverrideItem> GetOverrideableFields() const {
+         return std::vector<OverrideItem>{
+@@ -459,6 +460,8 @@ struct GPUSettings {
+             make_override<GPUSettings>("inline_fetch_shader", &GPUSettings::inline_fetch_shader),
+             make_override<GPUSettings>("frame_generation_enabled",
+                                        &GPUSettings::frame_generation_enabled),
++            make_override<GPUSettings>("frame_generation_toggle_hotkey",
++                                       &GPUSettings::frame_generation_toggle_hotkey),
+         };
+     }
+ };
+@@ -468,7 +471,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GPUSettings, window_width, window_height, int
+                                    direct_memory_access_enabled, dump_shaders, patch_shaders,
+                                    vblank_frequency, full_screen, full_screen_mode, present_mode,
+                                    hdr_allowed, fsr_enabled, rcas_enabled, rcas_attenuation,
+-                                   userfaultfd, inline_fetch_shader, frame_generation_enabled)
++                                   userfaultfd, inline_fetch_shader, frame_generation_enabled,
++                                   frame_generation_toggle_hotkey)
+ 
+ // -------------------------------
+ // Vulkan settings
+@@ -748,6 +752,7 @@ public:
+     SETTING_FORWARD_BOOL(m_gpu, UserfaultfdTracking, userfaultfd)
+     SETTING_FORWARD_BOOL_READONLY(m_gpu, InlineFetchShader, inline_fetch_shader)
+     SETTING_FORWARD_BOOL(m_gpu, FrameGenerationEnabled, frame_generation_enabled)
++    SETTING_FORWARD(m_gpu, FrameGenerationToggleHotkey, frame_generation_toggle_hotkey)
+ 
+     u32 GetVblankFrequency() {
+         if (m_gpu.vblank_frequency.value < 30) {
+diff --git a/src/qt_gui/settings_dialog.cpp b/src/qt_gui/settings_dialog.cpp
+index 53cb76e..c4d8bbe 100644
+--- a/src/qt_gui/settings_dialog.cpp
++++ b/src/qt_gui/settings_dialog.cpp
+@@ -10,7 +10,11 @@
+ #include <QDesktopServices>
+ #include <QDirIterator>
+ #include <QFileDialog>
++#include <QHBoxLayout>
+ #include <QHoverEvent>
++#include <QKeySequence>
++#include <QKeySequenceEdit>
++#include <QLabel>
+ #include <QMessageBox>
+ #include <QSignalBlocker>
+ #include <SDL3/SDL.h>
+@@ -760,6 +764,9 @@ void SettingsDialog::LoadValuesFromConfig() {
+     ui->enableHDRCheckBox->setChecked(EmulatorSettings.IsHdrAllowed());
+     SyncResolutionComboBox();
+     frameGenCheckBox->setChecked(EmulatorSettings.IsFrameGenerationEnabled());
++    frameGenHotkeyEdit->setKeySequence(QKeySequence::fromString(
++        QString::fromStdString(EmulatorSettings.GetFrameGenerationToggleHotkey()),
++        QKeySequence::PortableText));
+ 
+     ui->FSRCheckBox->setChecked(EmulatorSettings.IsFsrEnabled());
+     ui->RCASCheckBox->setChecked(EmulatorSettings.IsRcasEnabled());
+@@ -1018,7 +1025,7 @@ void SettingsDialog::updateNoteTextEdit(const QString& elementName) {
+     } else if (elementName == "windowSizeGroupBox") {
+         text = tr("Window Size:\\nPick the size of the emulator window at launch. It can be resized during gameplay.\\nThis is different from the in-game resolution.");
+     } else if (elementName == "frameGenCheckBox") {
+-        text = tr("Enable Frame Generation:\\nAdds a generated frame between every two game frames with AMD FSR 3.1, so the game looks smoother.\\nWorks best when the game already runs at 30 FPS or more. It can also be turned on and off in game with the 1 and 2 keys.");
++        text = tr("Enable Frame Generation:\\nAdds a generated frame between every two game frames with AMD FSR 3.1, so the game looks smoother.\\nWorks best when the game already runs at 30 FPS or more. Use the configured hotkey to toggle it while playing; the default is 1. Clear the hotkey to disable it.");
+     } else if (elementName == "heightDivider") {
+         text = tr("Vblank Frequency:\\nThe frame rate at which the emulator refreshes at (60hz is the baseline, whether the game runs at 30 or 60fps). Changing this may have adverse effects, such as increasing the game speed, or breaking critical game functionality that does not expect this to change!");
+     } else if (elementName == "dumpShadersCheckBox") {
+@@ -1178,6 +1185,9 @@ void SettingsDialog::UpdateSettings(bool is_specific) {
+     EmulatorSettings.SetHdrAllowed(ui->enableHDRCheckBox->isChecked(), is_specific);
+     EmulatorSettings.SetFsrEnabled(ui->FSRCheckBox->isChecked(), is_specific);
+     EmulatorSettings.SetFrameGenerationEnabled(frameGenCheckBox->isChecked(), is_specific);
++    EmulatorSettings.SetFrameGenerationToggleHotkey(
++        frameGenHotkeyEdit->keySequence().toString(QKeySequence::PortableText).toStdString(),
++        is_specific);
+     EmulatorSettings.SetRcasEnabled(ui->RCASCheckBox->isChecked(), is_specific);
+     EmulatorSettings.SetRcasAttenuation(ui->RCASSlider->value(), is_specific);
+ 
+@@ -1584,10 +1594,25 @@ void SettingsDialog::SetupGraphicsExtras() {
+                 }
+             });
+ 
+-    // Frame generation, also toggled in game with the 1 and 2 keys.
++    // Frame generation and its in-game toggle hotkey.
+     frameGenCheckBox = new QCheckBox(tr("Enable Frame Generation (FSR 3.1)"), ui->FSRGroupBox);
+     frameGenCheckBox->setObjectName("frameGenCheckBox");
+     ui->verticalLayout_5->insertWidget(0, frameGenCheckBox);
++
++    auto* hotkeyLayout = new QHBoxLayout();
++    hotkeyLayout->setContentsMargins(24, 0, 0, 0);
++    hotkeyLayout->addWidget(new QLabel(tr("Toggle hotkey:"), ui->FSRGroupBox));
++    frameGenHotkeyEdit = new QKeySequenceEdit(ui->FSRGroupBox);
++    frameGenHotkeyEdit->setMaximumSequenceLength(1);
++    frameGenHotkeyEdit->setToolTip(
++        tr("Press a key or key combination, such as 1 or Ctrl+1, to toggle frame generation."));
++    hotkeyLayout->addWidget(frameGenHotkeyEdit, 1);
++    auto* clearHotkeyButton = new QPushButton(tr("Clear"), ui->FSRGroupBox);
++    clearHotkeyButton->setToolTip(tr("Disable the frame generation toggle hotkey."));
++    connect(clearHotkeyButton, &QPushButton::clicked, frameGenHotkeyEdit,
++            &QKeySequenceEdit::clear);
++    hotkeyLayout->addWidget(clearHotkeyButton);
++    ui->verticalLayout_5->insertLayout(1, hotkeyLayout);
+ }
+ 
+ void SettingsDialog::SyncResolutionComboBox() {
+diff --git a/src/qt_gui/settings_dialog.h b/src/qt_gui/settings_dialog.h
+index 20fd4ad..e0a8868 100644
+--- a/src/qt_gui/settings_dialog.h
++++ b/src/qt_gui/settings_dialog.h
+@@ -9,6 +9,7 @@
+ #include <QComboBox>
+ #include <QDialog>
+ #include <QGroupBox>
++#include <QKeySequenceEdit>
+ #include <QPushButton>
+ 
+ #include "common/path_util.h"
+@@ -71,6 +72,7 @@ private:
+ 
+     QComboBox* resolutionComboBox{};
+     QCheckBox* frameGenCheckBox{};
++    QKeySequenceEdit* frameGenHotkeyEdit{};
+ 
+     std::unique_ptr<Ui::SettingsDialog> ui;
+     std::shared_ptr<gui_settings> m_gui_settings;
+-- 
+2.54.0
+

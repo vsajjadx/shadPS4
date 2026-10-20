@@ -11,7 +11,7 @@ The patches add:
   downloaded and replaces the launcher and the emulator, then the launcher restarts.
 - The included `shadPS4.exe` is listed and selected as the emulator version.
 - A list of common window sizes instead of typing the width and height.
-- A frame generation (FSR 3.1) switch in the Graphics tab.
+- A frame generation (FSR 3.1) switch and configurable in-game toggle hotkey in the Graphics tab.
 - The compatibility list comes from the official database, with the games listed in
   `compatibility/overrides.json` on the `main` branch shown with the fork's status.
 - About links only to this repository.
