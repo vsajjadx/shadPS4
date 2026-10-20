@@ -24,6 +24,8 @@ namespace FrameGeneration {
 void SetEnabled(bool enabled);
 bool IsEnabled();
 bool IsAvailable();
+bool RetryRequested();
+void ClearRetryRequest();
 } // namespace FrameGeneration
 
 /// Interpolates a frame between the two last presented frames with FSR 3.1 frame generation.
@@ -63,6 +65,8 @@ private:
         u64 tick;
     };
     static constexpr u32 SignatureSlots = 8;
+    static constexpr u32 MaxAutomaticRetries = 3;
+    static constexpr std::chrono::seconds RetryDelay{5};
     struct SignatureSlot {
         VmaAllocation allocation{};
         vk::Buffer buffer{};
@@ -80,6 +84,8 @@ private:
     void RecordSignature(vk::CommandBuffer cmdbuf, vk::Image frame, u32 frame_width,
                          u32 frame_height, u64 id);
     void Fail(const char* what);
+    void Suspend(const char* what);
+    bool TryResume();
 
     const Instance& instance;
     Scheduler& scheduler;
@@ -102,6 +108,9 @@ private:
     u64 frame_id{};
     std::atomic_bool reset{true};
     bool failed{false};
+    u32 consecutive_failures{0};
+    u64 failed_tick{};
+    std::chrono::steady_clock::time_point retry_at{};
     std::deque<PendingFrame> pending;
     std::chrono::steady_clock::time_point last_generate{};
 };

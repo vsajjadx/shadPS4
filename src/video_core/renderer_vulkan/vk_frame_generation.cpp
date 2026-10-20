@@ -20,9 +20,22 @@ namespace FrameGeneration {
 
 static std::atomic_bool enabled{false};
 static std::atomic_bool available{true};
+static std::atomic_bool retry_requested{false};
 
 void SetEnabled(bool enable) {
     enabled = enable;
+    if (enable) {
+        // Turning it on again also resumes a generator that paused after a failed frame.
+        retry_requested = true;
+    }
+}
+
+bool RetryRequested() {
+    return retry_requested;
+}
+
+void ClearRetryRequest() {
+    retry_requested = false;
 }
 
 bool IsEnabled() {
@@ -131,6 +144,43 @@ void FrameGenerator::Fail(const char* what) {
     LOG_ERROR(Render_Vulkan, "FSR frame generation disabled: {}", what);
     failed = true;
     FrameGeneration::available = false;
+}
+
+void FrameGenerator::Suspend(const char* what) {
+    // A failed pass or an allocation that ran out of video memory can pass, unlike a GPU that
+    // cannot run the effect at all. Pause, and try again from a clean state later instead of
+    // turning frame generation off until the game restarts.
+    LOG_ERROR(Render_Vulkan, "FSR frame generation paused: {}", what);
+    failed = true;
+    failed_tick = scheduler.CurrentTick();
+    // A request made before this failure is stale.
+    FrameGeneration::ClearRetryRequest();
+    retry_at = std::chrono::steady_clock::now() + RetryDelay;
+    if (++consecutive_failures >= MaxAutomaticRetries) {
+        // Keep it paused until the person turns it on again.
+        retry_at = std::chrono::steady_clock::time_point::max();
+    }
+}
+
+bool FrameGenerator::TryResume() {
+    if (!FrameGeneration::IsAvailable()) {
+        return false;
+    }
+    const bool requested = FrameGeneration::RetryRequested();
+    if (!requested && std::chrono::steady_clock::now() < retry_at) {
+        return false;
+    }
+    // The commands of the failed frame may still be recording or running on the GPU.
+    if (!scheduler.IsFree(failed_tick)) {
+        return false;
+    }
+    FrameGeneration::ClearRetryRequest();
+    if (requested) {
+        consecutive_failures = 0;
+    }
+    Destroy();
+    failed = false;
+    return true;
 }
 
 bool FrameGenerator::CreateTarget(Target& target, vk::Format format, vk::ImageUsageFlags usage,
@@ -396,12 +446,12 @@ bool FrameGenerator::Recreate(vk::CommandBuffer cmdbuf, u32 new_width, u32 new_h
         !CreateTarget(depth, DepthFormat, InputUsage, new_width, new_height, "depth") ||
         !CreateTarget(motion, MotionFormat, InputUsage, new_width, new_height, "motion")) {
         Destroy();
-        Fail("out of video memory for its images");
+        Suspend("out of video memory for its images");
         return false;
     }
     if (!CreateSignature(new_width, new_height)) {
         Destroy();
-        Fail("out of video memory for its scene change signature");
+        Suspend("out of video memory for its scene change signature");
         return false;
     }
 
@@ -463,7 +513,10 @@ bool FrameGenerator::Recreate(vk::CommandBuffer cmdbuf, u32 new_width, u32 new_h
 bool FrameGenerator::Generate(vk::CommandBuffer cmdbuf, vk::Image frame, vk::Image output,
                               u32 frame_width, u32 frame_height) {
     signature_id = 0;
-    if (failed || frame_width == 0 || frame_height == 0) {
+    if (frame_width == 0 || frame_height == 0) {
+        return false;
+    }
+    if (failed && !TryResume()) {
         return false;
     }
 
@@ -541,7 +594,7 @@ bool FrameGenerator::Generate(vk::CommandBuffer cmdbuf, vk::Image frame, vk::Ima
     if (ffxVkFsr3_3_1_6FrameGenerationContextRecordPrepare(context, &prepare) !=
         FFX_VK_FSR3_3_1_6_FRAMEGEN_OK) {
         pending.push_back({id, scheduler.CurrentTick()});
-        Fail("its prepare pass failed");
+        Suspend("its prepare pass failed");
         return false;
     }
 
@@ -566,10 +619,11 @@ bool FrameGenerator::Generate(vk::CommandBuffer cmdbuf, vk::Image frame, vk::Ima
     const auto result = ffxVkFsr3_3_1_6FrameGenerationContextRecordDispatch(context, &dispatch);
     pending.push_back({id, scheduler.CurrentTick()});
     if (result != FFX_VK_FSR3_3_1_6_FRAMEGEN_OK) {
-        Fail("its interpolation pass failed");
+        Suspend("its interpolation pass failed");
         return false;
     }
     reset = false;
+    consecutive_failures = 0;
 
     const std::array to_output{
         Barrier(interpolated.image, Stage::eAllCommands, Access::eShaderWrite, Stage::eTransfer,

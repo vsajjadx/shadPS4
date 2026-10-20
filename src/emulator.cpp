@@ -500,6 +500,16 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
             LOG_INFO(Config, "Driveclub: linear image readbacks forced on");
         }
     }
+    // inFAMOUS Second Son renders dark unless GPU-written data and linear images are read back
+    // on the CPU: it needs relaxed readbacks and linear image readbacks.
+    if (id == "CUSA00004") {
+        if (EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Disabled) {
+            EmulatorSettings.SetReadbacksMode(GpuReadbacksMode::Relaxed, true);
+        }
+        if (!EmulatorSettings.IsReadbackLinearImagesEnabled()) {
+            EmulatorSettings.SetReadbackLinearImagesEnabled(true, true);
+        }
+    }
     game_info.title = title;
     game_info.app_ver = app_version;
     game_info.firmware_ver = fw_version & 0xFFF00000;

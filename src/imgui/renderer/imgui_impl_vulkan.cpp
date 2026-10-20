@@ -238,6 +238,9 @@ static inline vk::DeviceSize AlignBufferSize(vk::DeviceSize size, vk::DeviceSize
 }
 
 void UploadTextureData::Upload() {
+    if (command_buffer == VK_NULL_HANDLE) {
+        return;
+    }
     VkData* bd = GetBackendData();
     const InitInfo& v = bd->init_info;
 
@@ -292,7 +295,12 @@ ImTextureID AddTexture(vk::ImageView image_view, vk::ImageLayout image_layout,
             .descriptorSetCount = 1,
             .pSetLayouts = &bd->descriptor_set_layout,
         };
-        descriptor_set = CheckVkResult(v.device.allocateDescriptorSets(alloc_info)).front();
+        const auto sets = v.device.allocateDescriptorSets(alloc_info);
+        if (sets.result != vk::Result::eSuccess || sets.value.empty()) {
+            CheckVkErr(sets.result);
+            return nullptr;
+        }
+        descriptor_set = sets.value.front();
     }
 
     // Update the Descriptor Set:
@@ -325,14 +333,44 @@ UploadTextureData UploadTexture(const void* data, vk::Format format, u32 width, 
     const InitInfo& v = bd->init_info;
 
     UploadTextureData info{};
+    // Allocations fail when video memory runs out. Release what was created so far and return an
+    // empty texture, instead of handing null handles to the driver.
+    const auto abort_upload = [&]() -> UploadTextureData {
+        if (info.upload_buffer != VK_NULL_HANDLE) {
+            v.device.destroyBuffer(info.upload_buffer, v.allocator);
+        }
+        if (info.upload_buffer_memory != VK_NULL_HANDLE) {
+            v.device.freeMemory(info.upload_buffer_memory, v.allocator);
+        }
+        if (info.im_texture != nullptr) {
+            RemoveTexture(info.im_texture);
+        }
+        if (info.image_view != VK_NULL_HANDLE) {
+            v.device.destroyImageView(info.image_view, v.allocator);
+        }
+        if (info.image != VK_NULL_HANDLE) {
+            v.device.destroyImage(info.image, v.allocator);
+        }
+        if (info.image_memory != VK_NULL_HANDLE) {
+            v.device.freeMemory(info.image_memory, v.allocator);
+        }
+        if (info.command_buffer != VK_NULL_HANDLE) {
+            std::unique_lock lk(bd->command_pool_mutex);
+            v.device.freeCommandBuffers(bd->command_pool, {info.command_buffer});
+        }
+        return UploadTextureData{};
+    };
     {
         std::unique_lock lk(bd->command_pool_mutex);
-        info.command_buffer =
-            CheckVkResult(v.device.allocateCommandBuffers(vk::CommandBufferAllocateInfo{
-                              .commandPool = bd->command_pool,
-                              .commandBufferCount = 1,
-                          }))
-                .front();
+        const auto buffers = v.device.allocateCommandBuffers(vk::CommandBufferAllocateInfo{
+            .commandPool = bd->command_pool,
+            .commandBufferCount = 1,
+        });
+        if (buffers.result != vk::Result::eSuccess || buffers.value.empty()) {
+            CheckVkErr(buffers.result);
+            return UploadTextureData{};
+        }
+        info.command_buffer = buffers.value.front();
         CheckVkErr(info.command_buffer.begin(vk::CommandBufferBeginInfo{
             .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
         }));
@@ -356,15 +394,29 @@ UploadTextureData UploadTexture(const void* data, vk::Format format, u32 width, 
             .sharingMode = vk::SharingMode::eExclusive,
             .initialLayout = vk::ImageLayout::eUndefined,
         };
-        info.image = CheckVkResult(v.device.createImage(image_info, v.allocator));
+        const auto image = v.device.createImage(image_info, v.allocator);
+        if (image.result != vk::Result::eSuccess) {
+            CheckVkErr(image.result);
+            return abort_upload();
+        }
+        info.image = image.value;
         auto req = v.device.getImageMemoryRequirements(info.image);
         vk::MemoryAllocateInfo alloc_info{
             .allocationSize = IM_MAX(v.min_allocation_size, req.size),
             .memoryTypeIndex =
                 FindMemoryType(vk::MemoryPropertyFlagBits::eDeviceLocal, req.memoryTypeBits),
         };
-        info.image_memory = CheckVkResult(v.device.allocateMemory(alloc_info, v.allocator));
-        CheckVkErr(v.device.bindImageMemory(info.image, info.image_memory, 0));
+        const auto memory = v.device.allocateMemory(alloc_info, v.allocator);
+        if (memory.result != vk::Result::eSuccess) {
+            CheckVkErr(memory.result);
+            return abort_upload();
+        }
+        info.image_memory = memory.value;
+        const auto bind_result = v.device.bindImageMemory(info.image, info.image_memory, 0);
+        if (bind_result != vk::Result::eSuccess) {
+            CheckVkErr(bind_result);
+            return abort_upload();
+        }
     }
 
     // Create Image View
@@ -379,11 +431,19 @@ UploadTextureData UploadTexture(const void* data, vk::Format format, u32 width, 
                 .layerCount = 1,
             },
         };
-        info.image_view = CheckVkResult(v.device.createImageView(view_info, v.allocator));
+        const auto view = v.device.createImageView(view_info, v.allocator);
+        if (view.result != vk::Result::eSuccess) {
+            CheckVkErr(view.result);
+            return abort_upload();
+        }
+        info.image_view = view.value;
     }
 
     // Create descriptor set (ImTextureID)
     info.im_texture = AddTexture(info.image_view, vk::ImageLayout::eShaderReadOnlyOptimal);
+    if (info.im_texture == nullptr) {
+        return abort_upload();
+    }
 
     // Create Upload Buffer
     {
@@ -392,7 +452,12 @@ UploadTextureData UploadTexture(const void* data, vk::Format format, u32 width, 
             .usage = vk::BufferUsageFlagBits::eTransferSrc,
             .sharingMode = vk::SharingMode::eExclusive,
         };
-        info.upload_buffer = CheckVkResult(v.device.createBuffer(buffer_info, v.allocator));
+        const auto buffer = v.device.createBuffer(buffer_info, v.allocator);
+        if (buffer.result != vk::Result::eSuccess) {
+            CheckVkErr(buffer.result);
+            return abort_upload();
+        }
+        info.upload_buffer = buffer.value;
         auto req = v.device.getBufferMemoryRequirements(info.upload_buffer);
         auto alignemtn = IM_MAX(bd->buffer_memory_alignment, req.alignment);
         vk::MemoryAllocateInfo alloc_info{
@@ -400,14 +465,28 @@ UploadTextureData UploadTexture(const void* data, vk::Format format, u32 width, 
             .memoryTypeIndex =
                 FindMemoryType(vk::MemoryPropertyFlagBits::eHostVisible, req.memoryTypeBits),
         };
-        info.upload_buffer_memory = CheckVkResult(v.device.allocateMemory(alloc_info, v.allocator));
-        CheckVkErr(v.device.bindBufferMemory(info.upload_buffer, info.upload_buffer_memory, 0));
+        const auto memory = v.device.allocateMemory(alloc_info, v.allocator);
+        if (memory.result != vk::Result::eSuccess) {
+            CheckVkErr(memory.result);
+            return abort_upload();
+        }
+        info.upload_buffer_memory = memory.value;
+        const auto bind_result =
+            v.device.bindBufferMemory(info.upload_buffer, info.upload_buffer_memory, 0);
+        if (bind_result != vk::Result::eSuccess) {
+            CheckVkErr(bind_result);
+            return abort_upload();
+        }
     }
 
     // Upload to Buffer
     {
-        char* map = (char*)CheckVkResult(v.device.mapMemory(info.upload_buffer_memory, 0, size));
-        memcpy(map, data, size);
+        const auto mapped = v.device.mapMemory(info.upload_buffer_memory, 0, size);
+        if (mapped.result != vk::Result::eSuccess) {
+            CheckVkErr(mapped.result);
+            return abort_upload();
+        }
+        memcpy(mapped.value, data, size);
         vk::MappedMemoryRange range[1]{
             {
                 .memory = info.upload_buffer_memory,
