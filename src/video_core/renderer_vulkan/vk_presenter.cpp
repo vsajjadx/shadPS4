@@ -584,6 +584,7 @@ void Presenter::CreateGeneratedImage(Frame* frame, vk::Format format) {
         .image = frame->generated_image,
         .viewType = vk::ImageViewType::e2D,
         .format = format,
+        .components{.a = vk::ComponentSwizzle::eOne},
         .subresourceRange{
             .aspectMask = vk::ImageAspectFlagBits::eColor,
             .baseMipLevel = 0,
