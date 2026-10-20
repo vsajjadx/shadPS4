@@ -387,6 +387,13 @@ void Runtime::CopyImageWithBuffer(VideoCore::Image* src, VideoCore::Image* dst,
     });
 
     for (auto& copy : buffer_copies) {
+        const u32 mip = copy.imageSubresource.mipLevel;
+        copy.bufferRowLength = copy.imageExtent.width;
+        copy.bufferImageHeight = copy.imageExtent.height;
+        copy.imageExtent = vk::Extent3D{
+            std::min(copy.imageExtent.width, std::max(dst->info.size.width >> mip, 1u)),
+            std::min(copy.imageExtent.height, std::max(dst->info.size.height >> mip, 1u)),
+            std::min(copy.imageExtent.depth, std::max(dst->info.size.depth >> mip, 1u))};
         copy.imageSubresource.aspectMask = dst->aspect_mask & ~vk::ImageAspectFlagBits::eStencil;
     }
     cmdbuf.copyBufferToImage(buffer->Handle(), dst->GetImage(),
