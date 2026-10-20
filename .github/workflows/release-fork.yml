@@ -1,0 +1,44 @@
+name: Release Fork Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Build and Release run id to publish
+        required: true
+      tag:
+        description: Release tag
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download bundle artifact
+      uses: actions/download-artifact@v8
+      with:
+        run-id: ${{ inputs.run_id }}
+        github-token: ${{ github.token }}
+        pattern: shadPS4-AntiCrash-win64-*
+        path: bundle
+
+    - name: Package
+      run: |
+        short=$(echo "${{ inputs.tag }}" | sed 's/.*-//')
+        cd bundle/*/ && zip -r "$GITHUB_WORKSPACE/shadPS4-anticrash-${short}.zip" .
+
+    - name: Create release
+      uses: ncipollo/release-action@v1
+      with:
+        token: ${{ github.token }}
+        tag: ${{ inputs.tag }}
+        commit: ${{ github.sha }}
+        name: shadPS4 Anti-Crash ${{ inputs.tag }}
+        body: |
+          Windows package with the emulator and the launcher. Commit: https://github.com/${{ github.repository }}/commit/${{ github.sha }}
+        artifacts: shadPS4-anticrash-*.zip
+        allowUpdates: true
