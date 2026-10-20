@@ -1,0 +1,148 @@
+From 407bc51b640d4b71590ca7e2ec79e0615ddc36ac Mon Sep 17 00:00:00 2001
+From: ci <ci@localhost>
+Date: Wed, 21 Oct 2026 01:51:38 +0330
+Subject: [PATCH 4/5] Add frame generation toggle to the Hotkeys dialog
+
+---
+ src/qt_gui/hotkeys.cpp | 15 ++++++++--
+ src/qt_gui/hotkeys.ui  | 63 ++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 76 insertions(+), 2 deletions(-)
+
+diff --git a/src/qt_gui/hotkeys.cpp b/src/qt_gui/hotkeys.cpp
+index d0e3492..f47f1a7 100644
+--- a/src/qt_gui/hotkeys.cpp
++++ b/src/qt_gui/hotkeys.cpp
+@@ -52,7 +52,7 @@ Hotkeys::Hotkeys(std::shared_ptr<IpcClient> ipc_client, bool isGameRunning, QWid
+     PadButtonsList = {ui->fpsButtonPad,     ui->quitButtonPad,       ui->fullscreenButtonPad,
+                       ui->pauseButtonPad,   ui->reloadButtonPad,     ui->volUpButtonPad,
+                       ui->volDownButtonPad, ui->screenshotButtonPad, ui->screenshotOverlayButtonPad,
+-                      ui->settingsButtonPad};
++                      ui->settingsButtonPad, ui->frameGenButtonPad};
+ 
+     KBButtonsList = {ui->fpsButtonKB,
+                      ui->quitButtonKB,
+@@ -65,7 +65,8 @@ Hotkeys::Hotkeys(std::shared_ptr<IpcClient> ipc_client, bool isGameRunning, QWid
+                      ui->volDownButtonKB,
+                      ui->screenshotButtonKB,
+                      ui->screenshotOverlayButtonKB,
+-                     ui->settingsButtonKB};
++                     ui->settingsButtonKB,
++                     ui->frameGenButtonKB};
+ 
+     connect(ui->buttonBox, &QDialogButtonBox::clicked, this, [this](QAbstractButton* button) {
+         if (button == ui->buttonBox->button(QDialogButtonBox::Save)) {
+@@ -146,6 +147,7 @@ void Hotkeys::SetDefault() {
+     ui->screenshotButtonPad->setText("unmapped");
+     ui->screenshotOverlayButtonPad->setText("unmapped");
+     ui->settingsButtonPad->setText("unmapped");
++    ui->frameGenButtonPad->setText("unmapped");
+ 
+     ui->fpsButtonKB->setText("f10");
+     ui->quitButtonKB->setText("lctrl, lshift, end");
+@@ -157,6 +159,7 @@ void Hotkeys::SetDefault() {
+     ui->screenshotButtonKB->setText("f12");
+     ui->screenshotOverlayButtonKB->setText("lalt, f12");
+     ui->settingsButtonKB->setText("f3");
++    ui->frameGenButtonKB->setText("1");
+ 
+     ui->mouseJoystickButton->setText("f7");
+     ui->mouseGyroButton->setText("f6");
+@@ -213,6 +216,10 @@ void Hotkeys::SaveHotkeys(bool CloseOnSave) {
+     add_mapping(ui->settingsButtonKB->text(), "hotkey_emulator_settings");
+     lines.push_back("");
+ 
++    add_mapping(ui->frameGenButtonPad->text(), "hotkey_toggle_frame_generation");
++    add_mapping(ui->frameGenButtonKB->text(), "hotkey_toggle_frame_generation");
++    lines.push_back("");
++
+     add_mapping(ui->mouseJoystickButton->text(), "hotkey_toggle_mouse_to_joystick");
+     add_mapping(ui->mouseGyroButton->text(), "hotkey_toggle_mouse_to_gyro");
+ 
+@@ -363,6 +370,10 @@ void Hotkeys::LoadHotkeys() {
+             controllerInputDetected
+                 ? ui->screenshotOverlayButtonPad->setText(QString::fromStdString(input_string))
+                 : ui->screenshotOverlayButtonKB->setText(QString::fromStdString(input_string));
++        } else if (output_string.contains("hotkey_toggle_frame_generation")) {
++            controllerInputDetected
++                ? ui->frameGenButtonPad->setText(QString::fromStdString(input_string))
++                : ui->frameGenButtonKB->setText(QString::fromStdString(input_string));
+         } else if (output_string.contains("hotkey_emulator_settings")) {
+             controllerInputDetected
+                 ? ui->settingsButtonPad->setText(QString::fromStdString(input_string))
+diff --git a/src/qt_gui/hotkeys.ui b/src/qt_gui/hotkeys.ui
+index 580e496..c0851d9 100644
+--- a/src/qt_gui/hotkeys.ui
++++ b/src/qt_gui/hotkeys.ui
+@@ -661,6 +661,69 @@
+               </layout>
+              </widget>
+             </item>
++            <item>
++             <widget class="QFrame" name="frameGenFrame">
++              <property name="frameShape">
++               <enum>QFrame::Shape::StyledPanel</enum>
++              </property>
++              <property name="frameShadow">
++               <enum>QFrame::Shadow::Raised</enum>
++              </property>
++              <layout class="QHBoxLayout" name="horizontalLayout_frameGen">
++               <item>
++                <widget class="QLabel" name="frameGenLabel">
++                 <property name="sizePolicy">
++                  <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
++                   <horstretch>0</horstretch>
++                   <verstretch>0</verstretch>
++                  </sizepolicy>
++                 </property>
++                 <property name="font">
++                  <font>
++                   <pointsize>12</pointsize>
++                   <bold>false</bold>
++                  </font>
++                 </property>
++                 <property name="text">
++                  <string>Toggle Frame Generation</string>
++                 </property>
++                 <property name="wordWrap">
++                  <bool>true</bool>
++                 </property>
++                </widget>
++               </item>
++               <item>
++                <widget class="QRightClickButton" name="frameGenButtonPad">
++                 <property name="sizePolicy">
++                  <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
++                   <horstretch>0</horstretch>
++                   <verstretch>0</verstretch>
++                  </sizepolicy>
++                 </property>
++                 <property name="text">
++                  <string>unmapped</string>
++                 </property>
++                </widget>
++               </item>
++               <item>
++                <widget class="QRightClickButton" name="frameGenButtonKB">
++                 <property name="sizePolicy">
++                  <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
++                   <horstretch>0</horstretch>
++                   <verstretch>0</verstretch>
++                  </sizepolicy>
++                 </property>
++                 <property name="focusPolicy">
++                  <enum>Qt::FocusPolicy::NoFocus</enum>
++                 </property>
++                 <property name="text">
++                  <string>1</string>
++                 </property>
++                </widget>
++               </item>
++              </layout>
++             </widget>
++            </item>
+             <item>
+              <widget class="QFrame" name="mouseJoystickFrame">
+               <property name="frameShape">
+-- 
+2.43.0
+

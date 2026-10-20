@@ -2935,7 +2935,7 @@ index 0a58c7a..53cb76e 100644
 -        text = tr("Width/Height:\\nSets the size of the emulator window at launch, which can be resized during gameplay.\\nThis is different from the in-game resolution.");
 +        text = tr("Window Size:\\nPick the size of the emulator window at launch. It can be resized during gameplay.\\nThis is different from the in-game resolution.");
 +    } else if (elementName == "frameGenCheckBox") {
-+        text = tr("Enable Frame Generation:\\nAdds a generated frame between every two game frames with AMD FSR 3.1, so the game looks smoother.\\nWorks best when the game already runs at 30 FPS or more. It can also be turned on and off in game with the 1 and 2 keys.");
++        text = tr("Enable Frame Generation:\\nAdds a generated frame between every two game frames with AMD FSR 3.1, so the game looks smoother.\\nWorks best when the game already runs at 30 FPS or more. The key that turns it on and off while playing is set in Hotkeys (default: 1).");
      } else if (elementName == "heightDivider") {
          text = tr("Vblank Frequency:\\nThe frame rate at which the emulator refreshes at (60hz is the baseline, whether the game runs at 30 or 60fps). Changing this may have adverse effects, such as increasing the game speed, or breaking critical game functionality that does not expect this to change!");
      } else if (elementName == "dumpShadersCheckBox") {
@@ -3007,7 +3007,7 @@ index 0a58c7a..53cb76e 100644
 +                }
 +            });
 +
-+    // Frame generation, also toggled in game with the 1 and 2 keys.
++    // Frame generation; its in-game toggle key is set in the Hotkeys dialog.
 +    frameGenCheckBox = new QCheckBox(tr("Enable Frame Generation (FSR 3.1)"), ui->FSRGroupBox);
 +    frameGenCheckBox->setObjectName("frameGenCheckBox");
 +    ui->verticalLayout_5->insertWidget(0, frameGenCheckBox);
