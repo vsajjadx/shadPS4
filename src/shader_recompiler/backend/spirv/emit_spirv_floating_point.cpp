@@ -150,14 +150,17 @@ Id EmitFPSqrt(EmitContext& ctx, Id value) {
     return ctx.OpSqrt(ctx.F32[1], value);
 }
 
+// NClamp is defined as NMin(NMax()), but drivers have been seen passing a NaN through it, which
+// then spreads over depth of field and hair. (From mateussmeneses/theorder1886-port 276495a6.)
 Id EmitFPSaturate32(EmitContext& ctx, Id value) {
-    return ctx.OpNClamp(ctx.F32[1], value, ctx.f32_zero_value, ctx.f32_one_value);
+    return ctx.OpNMin(ctx.F32[1], ctx.OpNMax(ctx.F32[1], value, ctx.f32_zero_value),
+                      ctx.f32_one_value);
 }
 
 Id EmitFPSaturate64(EmitContext& ctx, Id value) {
     const Id zero{ctx.Constant(ctx.F64[1], f64{0.0})};
     const Id one{ctx.Constant(ctx.F64[1], f64{1.0})};
-    return ctx.OpNClamp(ctx.F64[1], value, zero, one);
+    return ctx.OpNMin(ctx.F64[1], ctx.OpNMax(ctx.F64[1], value, zero), one);
 }
 
 Id EmitFPClamp32(EmitContext& ctx, Id value, Id min_value, Id max_value) {
