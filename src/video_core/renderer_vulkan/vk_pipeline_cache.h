@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <deque>
 #include <functional>
 #include <mutex>
 #include <thread>
@@ -122,8 +123,11 @@ public:
     const ComputePipeline* GetComputePipeline();
 
     using Result = std::tuple<const Shader::Info*, vk::ShaderModule, u64>;
+    /// With async set, a shader that isn't translated yet is translated on a worker and an empty
+    /// result is returned until it is ready.
     Result GetProgram(Shader::HwStage hw_stage, Shader::SwStage sw_stage,
-                      const Shader::ShaderParams& params, Shader::Backend::Bindings& binding);
+                      const Shader::ShaderParams& params, Shader::Backend::Bindings& binding,
+                      bool async = false);
 
     std::optional<vk::ShaderModule> ReplaceShader(vk::ShaderModule module,
                                                   std::span<const u32> spv_code);
@@ -140,6 +144,15 @@ private:
     bool RefreshGraphicsStages();
     bool RefreshComputeKey();
 
+    struct ModuleBuild {
+        vk::ShaderModule module{};
+        std::vector<u32> spv;
+        std::optional<std::vector<u32>> patch;
+        bool failed{};
+        std::string error;
+    };
+    struct PendingTranslation;
+
     std::unordered_set<u64> failed_shaders;
     void DumpShader(std::span<const u32> code, u64 hash, Shader::HwStage stage, size_t perm_idx,
                     std::string_view ext);
@@ -148,6 +161,17 @@ private:
     vk::ShaderModule CompileModule(Shader::Info& info, Shader::RuntimeInfo& runtime_info,
                                    const std::span<const u32>& code, size_t perm_idx,
                                    Shader::Backend::Bindings& binding);
+    ModuleBuild BuildModule(Shader::Pools& build_pools, Shader::Info& info,
+                            Shader::RuntimeInfo& runtime_info, std::span<const u32> code,
+                            size_t perm_idx, Shader::Backend::Bindings& binding);
+    vk::ShaderModule FinishModule(const Shader::Info& info, std::span<const u32> code,
+                                  size_t perm_idx, ModuleBuild&& build);
+    void SubmitTranslation(Shader::HwStage hw_stage, Shader::SwStage sw_stage,
+                           const Shader::ShaderParams& params,
+                           const Shader::RuntimeInfo& runtime_info,
+                           const Shader::Backend::Bindings& start_binding, size_t perm_idx,
+                           std::optional<Shader::StageSpecialization> spec);
+    void CollectTranslations();
     const Shader::RuntimeInfo& BuildRuntimeInfo(Shader::HwStage stage, Shader::SwStage l_stage);
 
     [[nodiscard]] bool IsPipelineCacheDirty() const {
@@ -183,6 +207,8 @@ private:
         module_related_pipelines;
 
     u32 num_pending_draws_skipped{};
+    u32 num_pending_translations_skipped{};
+    tsl::robin_map<u64, std::deque<std::unique_ptr<PendingTranslation>>> pending_translations;
     std::chrono::steady_clock::time_point pending_wait_window_start{};
     std::chrono::microseconds pending_wait_spent{};
     // Declared last so the workers finish before the pipelines they build are destroyed.

@@ -55,6 +55,18 @@ static u32 NumCompileWorkers() {
     return std::clamp(hw_threads > 4 ? hw_threads - 4 : 2u, 2u, 8u);
 }
 
+struct PipelineCache::PendingTranslation {
+    std::array<u32, Shader::ShaderParams::NumShaderUserData> user_data{};
+    std::optional<Shader::Info> info;
+    Shader::RuntimeInfo runtime_info{};
+    Shader::Backend::Bindings start_binding{};
+    std::span<const u32> code;
+    size_t perm_idx{};
+    std::optional<Shader::StageSpecialization> spec;
+    ModuleBuild build;
+    std::atomic_bool done{};
+};
+
 PipelineCompileWorkers::PipelineCompileWorkers(u32 num_threads) {
     threads.reserve(num_threads);
     for (u32 i = 0; i < num_threads; ++i) {
@@ -654,6 +666,10 @@ bool PipelineCache::RefreshGraphicsStages() {
 
     Shader::Backend::Bindings binding{};
     bool stage_failed = false;
+    const bool async_translation = EmulatorSettings.IsAsyncPipelineCompilation();
+    if (async_translation) {
+        CollectTranslations();
+    }
     const auto bind_stage = [&](HwStage stage_in, SwStage stage_out) -> bool {
         const auto stage_in_idx = static_cast<u32>(stage_in);
         const auto stage_out_idx = static_cast<u32>(stage_out);
@@ -672,7 +688,7 @@ bool PipelineCache::RefreshGraphicsStages() {
 
         const auto params = AmdGpu::GetParams(*pgm);
         std::tie(infos[stage_out_idx], modules[stage_out_idx], key.stage_hashes[stage_out_idx]) =
-            GetProgram(stage_in, stage_out, params, binding);
+            GetProgram(stage_in, stage_out, params, binding, async_translation);
         if (!modules[stage_out_idx]) {
             stage_failed = true;
         }
@@ -793,55 +809,153 @@ bool PipelineCache::RefreshComputeKey() {
 vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::RuntimeInfo& runtime_info,
                                               const std::span<const u32>& code, size_t perm_idx,
                                               Shader::Backend::Bindings& binding) {
+    return FinishModule(info, code, perm_idx,
+                        BuildModule(pools, info, runtime_info, code, perm_idx, binding));
+}
+
+PipelineCache::ModuleBuild PipelineCache::BuildModule(Shader::Pools& build_pools,
+                                                      Shader::Info& info,
+                                                      Shader::RuntimeInfo& runtime_info,
+                                                      std::span<const u32> code, size_t perm_idx,
+                                                      Shader::Backend::Bindings& binding) {
     LOG_INFO(Render_Vulkan, "Compiling {} shader {:#x} {}", info.hw_stage, info.pgm_hash,
              perm_idx != 0 ? "(permutation)" : "");
     DumpShader(code, info.pgm_hash, info.hw_stage, perm_idx, "bin");
 
-    std::vector<u32> spv;
+    ModuleBuild build{};
     try {
         // A shader the translator cannot handle no longer stops the emulator: a failed ASSERT or
         // UNREACHABLE in translation is thrown, the shader is reported once and the draws or
         // dispatches that use it are skipped. (From shadGT FIX-034.)
         Common::RecoverableScope recoverable;
-        const auto ir_program = Shader::TranslateProgram(code, pools, info, runtime_info, profile);
-        spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, ir_program, binding);
+        const auto ir_program =
+            Shader::TranslateProgram(code, build_pools, info, runtime_info, profile);
+        build.spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, ir_program, binding);
     } catch (const Common::RecoverableFailure& e) {
+        build.failed = true;
+        build.error = e.what();
+        return build;
+    }
+    DumpShader(build.spv, info.pgm_hash, info.hw_stage, perm_idx, "spv");
+
+    build.patch = GetShaderPatch(info.pgm_hash, info.hw_stage, perm_idx, "spv");
+    if (build.patch && EmulatorSettings.IsPatchShaders()) {
+        LOG_INFO(Loader, "Loaded patch for {} shader {:#x}", info.hw_stage, info.pgm_hash);
+        build.module = CompileSPV(*build.patch, instance.GetDevice());
+    } else {
+        build.module = CompileSPV(build.spv, instance.GetDevice());
+    }
+    Vulkan::SetObjectName(instance.GetDevice(), build.module,
+                          GetShaderName(info.hw_stage, info.pgm_hash, perm_idx));
+    return build;
+}
+
+vk::ShaderModule PipelineCache::FinishModule(const Shader::Info& info, std::span<const u32> code,
+                                             size_t perm_idx, ModuleBuild&& build) {
+    if (build.failed) {
         if (failed_shaders.insert(info.pgm_hash).second) {
             LOG_ERROR(Render_Vulkan,
                       "{} shader {:#x} (permutation {}, {} dwords) could not be translated: {}; "
                       "draws that use it are skipped",
-                      info.hw_stage, info.pgm_hash, perm_idx, code.size(), e.what());
+                      info.hw_stage, info.pgm_hash, perm_idx, code.size(), build.error);
         }
         return {};
     }
-    DumpShader(spv, info.pgm_hash, info.hw_stage, perm_idx, "spv");
 
-    vk::ShaderModule module;
+    const auto& spv = build.spv;
+    RegisterShaderBinary(std::move(build.spv), info.pgm_hash, perm_idx);
 
-    auto patch = GetShaderPatch(info.pgm_hash, info.hw_stage, perm_idx, "spv");
-    const bool is_patched = patch && EmulatorSettings.IsPatchShaders();
-    if (is_patched) {
-        LOG_INFO(Loader, "Loaded patch for {} shader {:#x}", info.hw_stage, info.pgm_hash);
-        module = CompileSPV(*patch, instance.GetDevice());
-    } else {
-        module = CompileSPV(spv, instance.GetDevice());
-    }
-
-    RegisterShaderBinary(std::move(spv), info.pgm_hash, perm_idx);
-
-    const auto name = GetShaderName(info.hw_stage, info.pgm_hash, perm_idx);
-    Vulkan::SetObjectName(instance.GetDevice(), module, name);
     if (EmulatorSettings.IsShaderCollect()) {
-        DebugState.CollectShader(name, info.sw_stage, module, spv, code,
-                                 patch ? *patch : std::span<const u32>{}, is_patched);
+        const bool is_patched = build.patch && EmulatorSettings.IsPatchShaders();
+        DebugState.CollectShader(GetShaderName(info.hw_stage, info.pgm_hash, perm_idx),
+                                 info.sw_stage, build.module, spv, code,
+                                 build.patch ? *build.patch : std::span<const u32>{}, is_patched);
     }
-    return module;
+    return build.module;
+}
+
+void PipelineCache::SubmitTranslation(HwStage hw_stage, SwStage sw_stage,
+                                      const Shader::ShaderParams& params,
+                                      const Shader::RuntimeInfo& runtime_info,
+                                      const Shader::Backend::Bindings& start_binding,
+                                      size_t perm_idx,
+                                      std::optional<Shader::StageSpecialization> spec) {
+    // The user data registers change with the next draw, so the worker reads a copy of them.
+    auto job = std::make_unique<PendingTranslation>();
+    std::ranges::copy(params.user_data, job->user_data.begin());
+    job->info.emplace(hw_stage, sw_stage,
+                      Shader::ShaderParams{
+                          .user_data = job->user_data, .code = params.code, .hash = params.hash});
+    job->runtime_info = runtime_info;
+    job->start_binding = start_binding;
+    job->code = params.code;
+    job->perm_idx = perm_idx;
+    job->spec = std::move(spec);
+
+    auto* const translation = job.get();
+    pending_translations[params.hash].push_back(std::move(job));
+    compile_workers.Submit([this, translation] {
+        thread_local Shader::Pools worker_pools;
+        auto binding = translation->start_binding;
+        translation->build =
+            BuildModule(worker_pools, *translation->info, translation->runtime_info,
+                        translation->code, translation->perm_idx, binding);
+        if (!translation->spec) {
+            translation->spec.emplace(*translation->info, translation->runtime_info, profile,
+                                      translation->start_binding);
+        }
+        translation->done.store(true, std::memory_order_release);
+    });
+}
+
+void PipelineCache::CollectTranslations() {
+    for (auto it = pending_translations.begin(); it != pending_translations.end();) {
+        auto& queue = it.value();
+        // Permutations of a program are added in the order their indices were handed out.
+        while (!queue.empty() && queue.front()->done.load(std::memory_order_acquire)) {
+            auto& translation = *queue.front();
+            const u64 hash = it->first;
+            const auto module = FinishModule(*translation.info, translation.code,
+                                             translation.perm_idx, std::move(translation.build));
+
+            auto [it_pgm, new_program] = program_cache.try_emplace(hash);
+            if (new_program) {
+                it_pgm.value() = std::make_unique<Program>();
+                it_pgm.value()->info = std::move(*translation.info);
+            }
+            auto& program = *it_pgm.value();
+            program.info.user_data = translation.user_data;
+            if (module) {
+                RegisterShaderMeta(program.info, translation.spec->fetch_shader_data,
+                                   *translation.spec, HashCombine(hash, translation.perm_idx),
+                                   translation.perm_idx);
+            }
+            program.InsertPermut(module, std::move(*translation.spec), translation.perm_idx);
+            program.info.user_data = {};
+            queue.pop_front();
+        }
+        if (queue.empty()) {
+            it = pending_translations.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_stage,
                                                 const Shader::ShaderParams& params,
-                                                Shader::Backend::Bindings& binding) {
+                                                Shader::Backend::Bindings& binding, bool async) {
     auto runtime_info = BuildRuntimeInfo(hw_stage, sw_stage);
+    if (async && !program_cache.contains(params.hash)) {
+        if (!pending_translations.contains(params.hash)) {
+            SubmitTranslation(hw_stage, sw_stage, params, runtime_info, binding, 0, std::nullopt);
+        }
+        if ((num_pending_translations_skipped++ % 256) == 0) {
+            LOG_INFO(Render_Vulkan, "Skipping draws while shaders translate ({} so far)",
+                     num_pending_translations_skipped);
+        }
+        return {};
+    }
     auto [it_pgm, new_program] = program_cache.try_emplace(params.hash);
     if (new_program) {
         it_pgm.value() = std::make_unique<Program>(hw_stage, sw_stage, params);
@@ -894,6 +1008,20 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
             }
         }
         info.null_image_mask = best_mask;
+    }
+    if (it == program->modules.end() && async) {
+        auto& queue = pending_translations[params.hash];
+        const bool queued = std::ranges::any_of(
+            queue, [&](const auto& translation) { return *translation->spec == spec; });
+        if (!queued) {
+            SubmitTranslation(hw_stage, sw_stage, params, runtime_info, binding,
+                              program->modules.size() + queue.size(), std::move(spec));
+        }
+        if ((num_pending_translations_skipped++ % 256) == 0) {
+            LOG_INFO(Render_Vulkan, "Skipping draws while shaders translate ({} so far)",
+                     num_pending_translations_skipped);
+        }
+        return {};
     }
     if (it == program->modules.end()) {
         if (perm_idx >= 8) {
