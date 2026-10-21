@@ -1,4 +1,4 @@
-From 8e5c26453d4dad4f22c6bfabfb3ac3ee58ab2a37 Mon Sep 17 00:00:00 2001
+From 9cf0e265d4bd55fcfecc42d8b57b9bbf1b39d7e1 Mon Sep 17 00:00:00 2001
 From: vsajjadx <noreply@github.com>
 Date: Wed, 21 Oct 2026 04:34:23 +0330
 Subject: [PATCH] Add Anti-Aliasing, Resolution Scaling and Anisotropic
@@ -56,7 +56,7 @@ index 992aab3..a0519a5 100644
      u32 GetVblankFrequency() {
          if (m_gpu.vblank_frequency.value < 30) {
 diff --git a/src/qt_gui/settings_dialog.cpp b/src/qt_gui/settings_dialog.cpp
-index 53cb76e..ea3db48 100644
+index 6832882..1af3f87 100644
 --- a/src/qt_gui/settings_dialog.cpp
 +++ b/src/qt_gui/settings_dialog.cpp
 @@ -10,6 +10,9 @@
@@ -99,7 +99,7 @@ index 53cb76e..ea3db48 100644
 +    } else if (elementName == "anisotropicComboBox") {
 +        text = tr("Anisotropic Filtering:\\nMakes textures sharper on surfaces seen at a steep angle, such as roads and floors. Higher values look better and cost a little GPU time. Off leaves it as the game sets it.");
      } else if (elementName == "frameGenCheckBox") {
-         text = tr("Enable Frame Generation:\\nAdds a generated frame between every two game frames with AMD FSR 3.1, so the game looks smoother.\\nWorks best when the game already runs at 30 FPS or more. It can also be turned on and off in game with the 1 and 2 keys.");
+         text = tr("Enable Frame Generation:\\nAdds a generated frame between every two game frames with AMD FSR 3.1, so the game looks smoother.\\nWorks best when the game already runs at 30 FPS or more. The key that turns it on and off while playing is set in Hotkeys (default: 1).");
      } else if (elementName == "heightDivider") {
 @@ -1178,6 +1192,11 @@ void SettingsDialog::UpdateSettings(bool is_specific) {
      EmulatorSettings.SetHdrAllowed(ui->enableHDRCheckBox->isChecked(), is_specific);
