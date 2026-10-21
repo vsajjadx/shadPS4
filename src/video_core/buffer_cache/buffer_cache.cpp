@@ -272,7 +272,7 @@ bool BufferCache::IsRegionGpuModified(VAddr addr, size_t size) {
 
 void BufferCache::MarkRegionAsGpuModified(VAddr addr, size_t size) {
     texture_cache.MarkAsMaybeGpuDirty(addr, size);
-    memory_tracker->MarkRegionAsGpuModified(addr, size);
+    memory_tracker->MarkRegionAsGpuModified(addr, size, size <= ReadWatchMaxBytes);
     gpu_modified_ranges.Add(addr, size);
 }
 
@@ -490,10 +490,17 @@ bool BufferCache::SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 
                                     bool is_written, bool is_texel_buffer) {
     boost::container::small_vector<vk::BufferCopy, 4> copies;
     size_t total_size_bytes{};
-    memory_tracker->ForEachUploadRange(device_addr, size, is_written, [&](u64 addr, u64 size) {
-        copies.emplace_back(total_size_bytes, addr, size);
-        total_size_bytes += size;
-    });
+    // Engines compute small results on the GPU and read them back on the CPU (exposure, depth of
+    // field focus, shadow cascade bounds, visibility tests); with relaxed readbacks the CPU saw
+    // stale values. CPU reads of the small buffers the GPU writes are watched like precise
+    // readbacks, while the costly large ones stay unwatched. (After the theorder1886-port's
+    // read-watched GPU-written buffers, mateussmeneses/theorder1886-port 3654b062.)
+    const bool watch_reads = size <= ReadWatchMaxBytes;
+    memory_tracker->ForEachUploadRange(device_addr, size, is_written, watch_reads,
+                                       [&](u64 addr, u64 size) {
+                                           copies.emplace_back(total_size_bytes, addr, size);
+                                           total_size_bytes += size;
+                                       });
     if (total_size_bytes > MaxUploadPartBytes) {
         // A staging buffer the size of a gigabyte upload can fail to allocate when other
         // programs hold video memory, which ended the game. Upload such ranges a part at a time.

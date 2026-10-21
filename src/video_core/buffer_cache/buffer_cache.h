@@ -155,6 +155,7 @@ private:
                            bool is_texel_buffer);
 
     static constexpr u64 MaxUploadPartBytes = 256_MB;
+    static constexpr u64 ReadWatchMaxBytes = 64_KB;
 
     void UploadInParts(const Buffer* arena, std::span<const vk::BufferCopy> ranges);
 
