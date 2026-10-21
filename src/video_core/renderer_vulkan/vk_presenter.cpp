@@ -684,13 +684,18 @@ Frame* Presenter::PrepareLastFrame() {
 
     Frame* frame = last_submit_frame;
 
+    u32 waited_s = 0;
     while (true) {
-        vk::Result result = instance.GetDevice().waitForFences(frame->present_done, false,
-                                                               std::numeric_limits<u64>::max());
+        vk::Result result =
+            instance.GetDevice().waitForFences(frame->present_done, false, 2'000'000'000ULL);
         if (result == vk::Result::eSuccess) {
             break;
         }
         if (result == vk::Result::eTimeout) {
+            waited_s += 2;
+            LOG_WARNING(Render_Vulkan,
+                        "PrepareLastFrame: waited {}s for the present fence of frame {} (thread {})",
+                        waited_s, frame->id, Common::GetCurrentThreadName());
             continue;
         }
         ASSERT_MSG(result != vk::Result::eErrorDeviceLost,
