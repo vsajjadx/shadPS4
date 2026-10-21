@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+
 #include "common/assert.h"
 #include "common/elf_info.h"
 #include "common/logging/log.h"
@@ -465,8 +467,10 @@ s32 PS4_SYSV_ABI sceVideoOutSetWindowModeMargins(s32 handle, s32 top, s32 bottom
 }
 
 void RegisterLib(Core::Loader::SymbolsResolver* sym) {
-    driver = std::make_unique<VideoOutDriver>(EmulatorSettings.GetInternalScreenWidth(),
-                                              EmulatorSettings.GetInternalScreenHeight());
+    const u32 scale = std::clamp<u32>(EmulatorSettings.GetResolutionScale(), 25, 400);
+    const auto scaled = [scale](u32 size) { return std::max<u32>(size * scale / 100 & ~1u, 2); };
+    driver = std::make_unique<VideoOutDriver>(scaled(EmulatorSettings.GetInternalScreenWidth()),
+                                              scaled(EmulatorSettings.GetInternalScreenHeight()));
 
     LIB_FUNCTION("SbU3dwp80lQ", "libSceVideoOut", 1, "libSceVideoOut", sceVideoOutGetFlipStatus);
     LIB_FUNCTION("U46NwOiJpys", "libSceVideoOut", 1, "libSceVideoOut", sceVideoOutSubmitFlip);

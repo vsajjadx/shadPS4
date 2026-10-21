@@ -1,0 +1,193 @@
+From 8e5c26453d4dad4f22c6bfabfb3ac3ee58ab2a37 Mon Sep 17 00:00:00 2001
+From: vsajjadx <noreply@github.com>
+Date: Wed, 21 Oct 2026 04:34:23 +0330
+Subject: [PATCH] Add Anti-Aliasing, Resolution Scaling and Anisotropic
+ Filtering to the Graphics tab
+
+---
+ src/core/emulator_settings.h   | 13 ++++++-
+ src/qt_gui/settings_dialog.cpp | 67 ++++++++++++++++++++++++++++++++++
+ src/qt_gui/settings_dialog.h   |  5 +++
+ 3 files changed, 84 insertions(+), 1 deletion(-)
+
+diff --git a/src/core/emulator_settings.h b/src/core/emulator_settings.h
+index 992aab3..a0519a5 100644
+--- a/src/core/emulator_settings.h
++++ b/src/core/emulator_settings.h
+@@ -433,6 +433,9 @@ struct GPUSettings {
+     Setting<bool> userfaultfd{false};
+     Setting<bool> inline_fetch_shader{false};
+     Setting<bool> frame_generation_enabled{false};
++    Setting<bool> anti_aliasing{false};
++    Setting<u32> resolution_scale{100};
++    Setting<u32> anisotropic_filtering{0};
+ 
+     std::vector<OverrideItem> GetOverrideableFields() const {
+         return std::vector<OverrideItem>{
+@@ -459,6 +462,10 @@ struct GPUSettings {
+             make_override<GPUSettings>("inline_fetch_shader", &GPUSettings::inline_fetch_shader),
+             make_override<GPUSettings>("frame_generation_enabled",
+                                        &GPUSettings::frame_generation_enabled),
++            make_override<GPUSettings>("anti_aliasing", &GPUSettings::anti_aliasing),
++            make_override<GPUSettings>("resolution_scale", &GPUSettings::resolution_scale),
++            make_override<GPUSettings>("anisotropic_filtering",
++                                       &GPUSettings::anisotropic_filtering),
+         };
+     }
+ };
+@@ -468,7 +475,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GPUSettings, window_width, window_height, int
+                                    direct_memory_access_enabled, dump_shaders, patch_shaders,
+                                    vblank_frequency, full_screen, full_screen_mode, present_mode,
+                                    hdr_allowed, fsr_enabled, rcas_enabled, rcas_attenuation,
+-                                   userfaultfd, inline_fetch_shader, frame_generation_enabled)
++                                   userfaultfd, inline_fetch_shader, frame_generation_enabled,
++                                   anti_aliasing, resolution_scale, anisotropic_filtering)
+ 
+ // -------------------------------
+ // Vulkan settings
+@@ -748,6 +756,9 @@ public:
+     SETTING_FORWARD_BOOL(m_gpu, UserfaultfdTracking, userfaultfd)
+     SETTING_FORWARD_BOOL_READONLY(m_gpu, InlineFetchShader, inline_fetch_shader)
+     SETTING_FORWARD_BOOL(m_gpu, FrameGenerationEnabled, frame_generation_enabled)
++    SETTING_FORWARD_BOOL(m_gpu, AntiAliasing, anti_aliasing)
++    SETTING_FORWARD(m_gpu, ResolutionScale, resolution_scale)
++    SETTING_FORWARD(m_gpu, AnisotropicFiltering, anisotropic_filtering)
+ 
+     u32 GetVblankFrequency() {
+         if (m_gpu.vblank_frequency.value < 30) {
+diff --git a/src/qt_gui/settings_dialog.cpp b/src/qt_gui/settings_dialog.cpp
+index 53cb76e..ea3db48 100644
+--- a/src/qt_gui/settings_dialog.cpp
++++ b/src/qt_gui/settings_dialog.cpp
+@@ -10,6 +10,9 @@
+ #include <QDesktopServices>
+ #include <QDirIterator>
+ #include <QFileDialog>
++#include <QHBoxLayout>
++#include <QLabel>
++#include <QVBoxLayout>
+ #include <QHoverEvent>
+ #include <QMessageBox>
+ #include <QSignalBlocker>
+@@ -553,6 +556,9 @@ SettingsDialog::SettingsDialog(std::shared_ptr<gui_settings> gui_settings,
+         ui->graphicsAdapterGroupBox->installEventFilter(this);
+         ui->windowSizeGroupBox->installEventFilter(this);
+         frameGenCheckBox->installEventFilter(this);
++        antiAliasingCheckBox->installEventFilter(this);
++        resolutionScaleComboBox->installEventFilter(this);
++        anisotropicComboBox->installEventFilter(this);
+         ui->presentModeGroupBox->installEventFilter(this);
+         ui->heightDivider->installEventFilter(this);
+         ui->nullGpuCheckBox->installEventFilter(this);
+@@ -760,6 +766,8 @@ void SettingsDialog::LoadValuesFromConfig() {
+     ui->enableHDRCheckBox->setChecked(EmulatorSettings.IsHdrAllowed());
+     SyncResolutionComboBox();
+     frameGenCheckBox->setChecked(EmulatorSettings.IsFrameGenerationEnabled());
++    antiAliasingCheckBox->setChecked(EmulatorSettings.IsAntiAliasing());
++    SyncImageQualityComboBoxes();
+ 
+     ui->FSRCheckBox->setChecked(EmulatorSettings.IsFsrEnabled());
+     ui->RCASCheckBox->setChecked(EmulatorSettings.IsRcasEnabled());
+@@ -1017,6 +1025,12 @@ void SettingsDialog::updateNoteTextEdit(const QString& elementName) {
+                   "Immediate: Frames immediately present to your screen when ready. May result in tearing.");
+     } else if (elementName == "windowSizeGroupBox") {
+         text = tr("Window Size:\\nPick the size of the emulator window at launch. It can be resized during gameplay.\\nThis is different from the in-game resolution.");
++    } else if (elementName == "antiAliasingCheckBox") {
++        text = tr("Anti-Aliasing (FXAA):\\nSmooths jagged edges in the final image. It is applied after the game is drawn, so it works in every game and costs very little performance.");
++    } else if (elementName == "resolutionScaleComboBox") {
++        text = tr("Resolution Scaling:\\nScales the screen resolution that the emulator reports to the game. Games that choose their render resolution from it draw at the scaled size; games that always draw at a fixed size are not changed. Applies the next time a game starts.");
++    } else if (elementName == "anisotropicComboBox") {
++        text = tr("Anisotropic Filtering:\\nMakes textures sharper on surfaces seen at a steep angle, such as roads and floors. Higher values look better and cost a little GPU time. Off leaves it as the game sets it.");
+     } else if (elementName == "frameGenCheckBox") {
+         text = tr("Enable Frame Generation:\\nAdds a generated frame between every two game frames with AMD FSR 3.1, so the game looks smoother.\\nWorks best when the game already runs at 30 FPS or more. It can also be turned on and off in game with the 1 and 2 keys.");
+     } else if (elementName == "heightDivider") {
+@@ -1178,6 +1192,11 @@ void SettingsDialog::UpdateSettings(bool is_specific) {
+     EmulatorSettings.SetHdrAllowed(ui->enableHDRCheckBox->isChecked(), is_specific);
+     EmulatorSettings.SetFsrEnabled(ui->FSRCheckBox->isChecked(), is_specific);
+     EmulatorSettings.SetFrameGenerationEnabled(frameGenCheckBox->isChecked(), is_specific);
++    EmulatorSettings.SetAntiAliasing(antiAliasingCheckBox->isChecked(), is_specific);
++    EmulatorSettings.SetResolutionScale(resolutionScaleComboBox->currentData().toUInt(),
++                                        is_specific);
++    EmulatorSettings.SetAnisotropicFiltering(anisotropicComboBox->currentData().toUInt(),
++                                             is_specific);
+     EmulatorSettings.SetRcasEnabled(ui->RCASCheckBox->isChecked(), is_specific);
+     EmulatorSettings.SetRcasAttenuation(ui->RCASSlider->value(), is_specific);
+ 
+@@ -1588,6 +1607,54 @@ void SettingsDialog::SetupGraphicsExtras() {
+     frameGenCheckBox = new QCheckBox(tr("Enable Frame Generation (FSR 3.1)"), ui->FSRGroupBox);
+     frameGenCheckBox->setObjectName("frameGenCheckBox");
+     ui->verticalLayout_5->insertWidget(0, frameGenCheckBox);
++
++    imageQualityGroupBox = new QGroupBox(tr("Image Quality"), this);
++    imageQualityGroupBox->setObjectName("imageQualityGroupBox");
++    auto* imageQualityLayout = new QVBoxLayout(imageQualityGroupBox);
++
++    antiAliasingCheckBox = new QCheckBox(tr("Enable Anti-Aliasing (FXAA)"), imageQualityGroupBox);
++    antiAliasingCheckBox->setObjectName("antiAliasingCheckBox");
++    imageQualityLayout->addWidget(antiAliasingCheckBox);
++
++    auto* scaleLayout = new QHBoxLayout();
++    scaleLayout->addWidget(new QLabel(tr("Resolution Scaling:"), imageQualityGroupBox));
++    resolutionScaleComboBox = new QComboBox(imageQualityGroupBox);
++    resolutionScaleComboBox->setObjectName("resolutionScaleComboBox");
++    for (const int percent : {50, 75, 100, 125, 150, 200, 300, 400}) {
++        resolutionScaleComboBox->addItem(QStringLiteral("%1%").arg(percent), percent);
++    }
++    scaleLayout->addWidget(resolutionScaleComboBox, 1);
++    imageQualityLayout->addLayout(scaleLayout);
++
++    auto* anisotropicLayout = new QHBoxLayout();
++    anisotropicLayout->addWidget(new QLabel(tr("Anisotropic Filtering:"), imageQualityGroupBox));
++    anisotropicComboBox = new QComboBox(imageQualityGroupBox);
++    anisotropicComboBox->setObjectName("anisotropicComboBox");
++    anisotropicComboBox->addItem(tr("Off"), 0);
++    for (const int level : {2, 4, 8, 16}) {
++        anisotropicComboBox->addItem(QStringLiteral("%1x").arg(level), level);
++    }
++    anisotropicLayout->addWidget(anisotropicComboBox, 1);
++    imageQualityLayout->addLayout(anisotropicLayout);
++
++    ui->graphicsTabLayoutRight->insertWidget(
++        ui->graphicsTabLayoutRight->indexOf(ui->FSRGroupBox) + 1, imageQualityGroupBox);
++}
++
++void SettingsDialog::SyncImageQualityComboBoxes() {
++    const auto select = [](QComboBox* box, u32 value, const QString& custom) {
++        int index = box->findData(value);
++        if (index < 0) {
++            box->addItem(custom, value);
++            index = box->count() - 1;
++        }
++        QSignalBlocker blocker(box);
++        box->setCurrentIndex(index);
++    };
++    const u32 scale = EmulatorSettings.GetResolutionScale();
++    select(resolutionScaleComboBox, scale, QStringLiteral("%1%").arg(scale));
++    const u32 aniso = EmulatorSettings.GetAnisotropicFiltering();
++    select(anisotropicComboBox, aniso, QStringLiteral("%1x").arg(aniso));
+ }
+ 
+ void SettingsDialog::SyncResolutionComboBox() {
+diff --git a/src/qt_gui/settings_dialog.h b/src/qt_gui/settings_dialog.h
+index 20fd4ad..2218a62 100644
+--- a/src/qt_gui/settings_dialog.h
++++ b/src/qt_gui/settings_dialog.h
+@@ -56,6 +56,7 @@ private:
+     void RefreshAudioDevices();
+     void SetupGraphicsExtras();
+     void SyncResolutionComboBox();
++    void SyncImageQualityComboBoxes();
+ 
+     void closeEvent(QCloseEvent* event) override;
+ 
+@@ -71,6 +72,10 @@ private:
+ 
+     QComboBox* resolutionComboBox{};
+     QCheckBox* frameGenCheckBox{};
++    QCheckBox* antiAliasingCheckBox{};
++    QComboBox* resolutionScaleComboBox{};
++    QComboBox* anisotropicComboBox{};
++    QGroupBox* imageQualityGroupBox{};
+ 
+     std::unique_ptr<Ui::SettingsDialog> ui;
+     std::shared_ptr<gui_settings> m_gui_settings;
