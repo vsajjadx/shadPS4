@@ -70,6 +70,7 @@ private:
 
     std::filesystem::path m_path;
     Common::FS::IOFile m_file;
+    u32 m_inode{0};
     bool m_read_only;
     std::once_flag m_positional_once;
     intptr_t m_positional_handle{-1};
@@ -101,6 +102,7 @@ public:
 
     bool Exists(std::string_view rel_path) override;
     bool IsDirectory(std::string_view rel_path) override;
+    bool Stat(std::string_view rel_path, FileStat& out) override;
 
     std::unique_ptr<IFile> Open(std::string_view rel_path,
                                 Common::FS::FileAccessMode mode) override;

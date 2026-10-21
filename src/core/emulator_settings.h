@@ -452,6 +452,7 @@ struct GPUSettings {
     // Added to every texture's LOD bias, in hundredths of a mip level (-50 = sharper by half a
     // level). Useful with a raised internal resolution.
     Setting<int> texture_lod_bias{0};
+    Setting<bool> fast_shader_math{false};
 
     std::vector<OverrideItem> GetOverrideableFields() const {
         return std::vector<OverrideItem>{
@@ -485,6 +486,7 @@ struct GPUSettings {
             make_override<GPUSettings>("anisotropic_filtering",
                                        &GPUSettings::anisotropic_filtering),
             make_override<GPUSettings>("texture_lod_bias", &GPUSettings::texture_lod_bias),
+            make_override<GPUSettings>("fast_shader_math", &GPUSettings::fast_shader_math),
         };
     }
 };
@@ -496,7 +498,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GPUSettings, window_width, window_height, int
                                    hdr_allowed, fsr_enabled, rcas_enabled, rcas_attenuation,
                                    userfaultfd, inline_fetch_shader, anisotropic_filtering,
                                    texture_lod_bias, frame_generation_enabled,
-                                   gpu_thread_core_reserve, anti_aliasing, resolution_scale)
+                                   gpu_thread_core_reserve, anti_aliasing, resolution_scale,
+                                   fast_shader_math)
 
 // -------------------------------
 // Vulkan settings
@@ -803,6 +806,7 @@ public:
     SETTING_FORWARD_BOOL_READONLY(m_gpu, InlineFetchShader, inline_fetch_shader)
     SETTING_FORWARD(m_gpu, AnisotropicFiltering, anisotropic_filtering)
     SETTING_FORWARD(m_gpu, TextureLodBias, texture_lod_bias)
+    SETTING_FORWARD_BOOL_READONLY(m_gpu, FastShaderMath, fast_shader_math)
 
     /// Vblank frequency in Hz, 0 means unlimited.
     u32 GetVblankFrequency() {

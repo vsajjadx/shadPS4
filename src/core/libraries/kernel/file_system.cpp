@@ -301,7 +301,7 @@ s32 PS4_SYSV_ABI open(const char* raw_path, s32 flags, u16 mode) {
 
         file->type = Core::FileSys::FileType::Directory;
         file->is_opened = true;
-        if (file->m_guest_name.starts_with("/app0")) {
+        if (file->m_guest_name.starts_with("/app0") || file->m_guest_name.starts_with("/addcont")) {
             // TODO: Properly identify type for paths like "/app0/.."
             file->directory = Core::Directories::PfsDirectory::Create(file->m_guest_name);
         } else {
@@ -426,6 +426,11 @@ s64 PS4_SYSV_ABI write(s32 fd, const void* buf, u64 nbytes) {
         }
         return result;
     } else if (file->type == Core::FileSys::FileType::Directory) {
+        *__Error() = POSIX_EBADF;
+        return -1;
+    }
+
+    if (file->IsReadOnly()) {
         *__Error() = POSIX_EBADF;
         return -1;
     }
@@ -569,6 +574,11 @@ s64 PS4_SYSV_ABI writev(s32 fd, const OrbisKernelIovec* iov, s32 iovcnt) {
         }
         return result;
     } else if (file->type == Core::FileSys::FileType::Directory) {
+        *__Error() = POSIX_EBADF;
+        return -1;
+    }
+
+    if (file->IsReadOnly()) {
         *__Error() = POSIX_EBADF;
         return -1;
     }
@@ -739,13 +749,13 @@ s64 PS4_SYSV_ABI sceKernelRead(s32 fd, void* buf, u64 nbytes) {
 }
 
 s32 PS4_SYSV_ABI posix_mkdir(const char* path, u16 mode) {
+    if (path == nullptr) {
+        *__Error() = POSIX_EFAULT;
+        return -1;
+    }
     LOG_INFO(Kernel_Fs, "path = {} mode = {:#o}", path, mode);
     if (strlen(path) > 255) {
         *__Error() = POSIX_ENAMETOOLONG;
-        return -1;
-    }
-    if (path == nullptr) {
-        *__Error() = POSIX_ENOTDIR;
         return -1;
     }
     std::string sanitized_path(path);
@@ -769,7 +779,11 @@ s32 PS4_SYSV_ABI posix_mkdir(const char* path, u16 mode) {
     }
 
     std::error_code ec;
-    if (dir_name.empty() || !fs::create_directories(dir_name, ec)) {
+    if (dir_name.empty() || !fs::create_directory(dir_name, ec)) {
+        if (ec == std::errc::no_such_file_or_directory) {
+            *__Error() = POSIX_ENOENT;
+            return -1;
+        }
         *__Error() = (ec.value() == EACCES || ec.value() == EPERM) ? POSIX_EACCES : POSIX_EIO;
         return -1;
     }
@@ -923,25 +937,26 @@ s32 PS4_SYSV_ABI posix_stat(const char* path, OrbisKernelStat* sb) {
         // TODO incomplete
     } else {
         sb->st_mode = 0000777u | 0100000u;
-        if (auto handle = mnt->Open(path, /*writable=*/false)) {
-            Core::FileSys::FileStat fst{};
-            handle->Stat(fst);
-            sb->st_size = static_cast<s64>(fst.size);
-            if (fst.mtime_sec != 0 || fst.mtime_nsec != 0) {
-                sb->st_mtim.tv_sec = fst.mtime_sec;
-                sb->st_mtim.tv_nsec = fst.mtime_nsec;
-                sb->st_atim.tv_sec = fst.atime_sec;
-                sb->st_atim.tv_nsec = fst.atime_nsec;
-                sb->st_ctim.tv_sec = fst.ctime_sec;
-                sb->st_ctim.tv_nsec = fst.ctime_nsec;
-            } else {
-                sb->st_mtim.tv_sec =
-                    std::chrono::duration_cast<std::chrono::seconds>(mtimestamp.time_since_epoch())
-                        .count();
-            }
+        Core::FileSys::FileStat fst{};
+        if (!mnt->Stat(path, fst)) {
+            LOG_ERROR(Kernel_Fs, "Could not get metadata for {}", path);
+            *__Error() = POSIX_EIO;
+            return -1;
+        }
+        if (fst.inode == 0) {
+            *__Error() = POSIX_EIO;
+            return -1;
+        }
+        sb->st_ino = fst.inode;
+        sb->st_size = static_cast<s64>(fst.size);
+        if (fst.mtime_sec != 0 || fst.mtime_nsec != 0) {
+            sb->st_mtim.tv_sec = fst.mtime_sec;
+            sb->st_mtim.tv_nsec = fst.mtime_nsec;
+            sb->st_atim.tv_sec = fst.atime_sec;
+            sb->st_atim.tv_nsec = fst.atime_nsec;
+            sb->st_ctim.tv_sec = fst.ctime_sec;
+            sb->st_ctim.tv_nsec = fst.ctime_nsec;
         } else {
-            sb->st_size =
-                fs::exists(path_name, ec) ? static_cast<s64>(fs::file_size(path_name, ec)) : 0;
             sb->st_mtim.tv_sec =
                 std::chrono::duration_cast<std::chrono::seconds>(mtimestamp.time_since_epoch())
                     .count();
@@ -1019,6 +1034,11 @@ s32 PS4_SYSV_ABI fstat(s32 fd, OrbisKernelStat* sb) {
         if (file->handle) {
             file->handle->Stat(fst);
         }
+        if (fst.inode == 0) {
+            *__Error() = POSIX_EIO;
+            return -1;
+        }
+        sb->st_ino = fst.inode;
         sb->st_size = static_cast<s64>(fst.size);
         sb->st_blocks = (sb->st_size + 511) / 512;
         sb->st_mtim.tv_sec = fst.mtime_sec;
@@ -1065,6 +1085,11 @@ s32 PS4_SYSV_ABI sceKernelFstat(s32 fd, OrbisKernelStat* sb) {
 }
 
 s32 PS4_SYSV_ABI posix_ftruncate(s32 fd, s64 length) {
+    if (length < 0) {
+        *__Error() = POSIX_EINVAL;
+        return -1;
+    }
+
     auto* h = Common::Singleton<Core::FileSys::HandleTable>::Instance();
     auto* file = h->GetFile(fd);
 
@@ -1082,6 +1107,12 @@ s32 PS4_SYSV_ABI posix_ftruncate(s32 fd, s64 length) {
         return result;
     }
 
+    if (file->type == Core::FileSys::FileType::Directory ||
+        (file->handle && file->handle->IsReadOnly())) {
+        *__Error() = POSIX_EINVAL;
+        return -1;
+    }
+
     if (file->m_host_name.empty()) {
         *__Error() = POSIX_EACCES;
         return -1;
@@ -1091,7 +1122,10 @@ s32 PS4_SYSV_ABI posix_ftruncate(s32 fd, s64 length) {
         *__Error() = POSIX_EROFS;
         return -1;
     }
-    host->SetSize(length);
+    if (!host->SetSize(length)) {
+        *__Error() = POSIX_EIO;
+        return -1;
+    }
     return ORBIS_OK;
 }
 
@@ -1729,6 +1763,11 @@ s64 PS4_SYSV_ABI posix_pwritev(s32 fd, const OrbisKernelIovec* iov, s32 iovcnt, 
         return -1;
     }
 
+    if (file->IsReadOnly()) {
+        *__Error() = POSIX_EBADF;
+        return -1;
+    }
+
     const s64 pos = file->Tell();
     SCOPE_EXIT {
         file->Seek(pos);
@@ -1768,17 +1807,22 @@ s64 PS4_SYSV_ABI sceKernelPwritev(s32 fd, const OrbisKernelIovec* iov, s32 iovcn
 }
 
 s32 PS4_SYSV_ABI posix_unlink(const char* path) {
-    if (strlen(path) > 255) {
-        *__Error() = POSIX_ENAMETOOLONG;
+    if (path == nullptr) {
+        *__Error() = POSIX_EFAULT;
         return -1;
     }
-    if (path == nullptr) {
-        *__Error() = POSIX_EINVAL;
+    if (strlen(path) > 255) {
+        *__Error() = POSIX_ENAMETOOLONG;
         return -1;
     }
 
     auto* h = Common::Singleton<Core::FileSys::HandleTable>::Instance();
     auto* mnt = Common::Singleton<Core::FileSys::MntPoints>::Instance();
+
+    if (!mnt->Exists(path)) {
+        *__Error() = POSIX_ENOENT;
+        return -1;
+    }
 
     bool ro = false;
     const auto host_path = mnt->GetHostPath(path, &ro);

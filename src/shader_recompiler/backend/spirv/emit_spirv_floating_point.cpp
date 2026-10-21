@@ -11,7 +11,12 @@ namespace Shader::Backend::SPIRV {
 // throughout this file. (From the SotC 0.2.8 community build, commit d471a277.)
 
 Id Decorate(EmitContext& ctx, IR::Inst* inst, Id op) {
-    ctx.Decorate(op, spv::Decoration::NoContraction);
+    // Pre-rasterization stages keep it, so position math stays the same across pipelines.
+    const bool can_contract = ctx.profile.fast_shader_math && (ctx.sw_stage == SwStage::Fragment ||
+                                                               ctx.sw_stage == SwStage::Compute);
+    if (!can_contract) {
+        ctx.Decorate(op, spv::Decoration::NoContraction);
+    }
     return op;
 }
 

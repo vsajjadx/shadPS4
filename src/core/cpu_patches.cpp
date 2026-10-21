@@ -1133,8 +1133,6 @@ static bool TryExecuteIllegalInstruction(void* ctx, void* code_address) {
 
 static bool TryPatchJit(void* code_address) {
     auto* code = static_cast<u8*>(code_address);
-    // A floor lookup alone also accepts host code and the gaps between guest modules, where the
-    // decode length underflows and the decoder faults.
     auto* module = GetContainingModule(code);
     if (module == nullptr) {
         return false;
