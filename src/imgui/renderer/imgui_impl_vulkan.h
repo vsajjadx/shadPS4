@@ -10,6 +10,10 @@
 
 struct ImDrawData;
 
+namespace Vulkan {
+class Scheduler;
+}
+
 namespace ImGui {
 struct Texture {
     vk::DescriptorSet descriptor_set{nullptr};
@@ -63,6 +67,9 @@ void RemoveTexture(ImTextureID descriptor_set);
 
 bool Init(InitInfo info);
 void Shutdown();
+// Waits for the GPU to finish with the oldest in-flight frame's resources and hands them to the
+// frame recorded on the scheduler's current command buffer; call before UpdateTextures().
+void BeginFrame(::Vulkan::Scheduler& scheduler);
 // Records the font atlas texture requests of this frame; call outside a render pass, before the
 // RenderDrawData() that samples them.
 void UpdateTextures(ImDrawData& draw_data, vk::CommandBuffer command_buffer);
