@@ -1,0 +1,394 @@
+From e53a011f9aeaabda8fc8543c839b57fcaff2fff8 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 20 Oct 2026 21:55:52 +0000
+Subject: [PATCH 2/2] Scan every drive for PS4 games without asking for a
+ folder
+
+File > Scan for PS4 games searches all local and removable drives at once, one thread
+per drive, with a cancel button. The Windows folder, the recycle bin and the other
+system folders are skipped, a game folder is not searched any further and update
+folders are ignored. The folders that hold the games found are added to the library.
+---
+ CMakeLists.txt              |   2 +
+ src/qt_gui/game_scanner.cpp | 198 ++++++++++++++++++++++++++++++++++++
+ src/qt_gui/game_scanner.h   |  29 ++++++
+ src/qt_gui/main_window.cpp  |  67 +++++++++---
+ 4 files changed, 282 insertions(+), 14 deletions(-)
+ create mode 100644 src/qt_gui/game_scanner.cpp
+ create mode 100644 src/qt_gui/game_scanner.h
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index fe98427..1adf34a 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -385,6 +385,8 @@ set(QT_GUI src/qt_gui/about_dialog.cpp
+            src/qt_gui/game_list_utils.h
+            src/qt_gui/game_info.cpp
+            src/qt_gui/game_info.h
++           src/qt_gui/game_scanner.cpp
++           src/qt_gui/game_scanner.h
+            src/qt_gui/game_list_frame.cpp
+            src/qt_gui/game_list_frame.h
+            src/qt_gui/game_grid_frame.cpp
+diff --git a/src/qt_gui/game_scanner.cpp b/src/qt_gui/game_scanner.cpp
+new file mode 100644
+index 0000000..8cf0b9f
+--- /dev/null
++++ b/src/qt_gui/game_scanner.cpp
+@@ -0,0 +1,198 @@
++// SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include <algorithm>
++#include <cctype>
++#include <mutex>
++#include <string>
++#include <system_error>
++#include <thread>
++
++#include <QStorageInfo>
++
++#include "common/path_util.h"
++#include "game_scanner.h"
++
++#ifdef Q_OS_WIN
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#include <windows.h>
++#endif
++
++namespace fs = std::filesystem;
++
++namespace GameScanner {
++
++namespace {
++
++std::string Lower(std::string text) {
++    std::transform(text.begin(), text.end(), text.begin(),
++                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
++    return text;
++}
++
++// Folders of the system that never hold a game and are expensive or impossible to read.
++bool IsSystemFolder(const fs::path& folder, const std::string& lower_name, bool at_root) {
++    static constexpr const char* skipped[] = {
++        "$recycle.bin", "system volume information", "$winreagent", "recovery", "windowsapps",
++        "$windows.~bt", "$windows.~ws",
++    };
++    if (std::any_of(std::begin(skipped), std::end(skipped),
++                    [&](const char* name) { return lower_name == name; })) {
++        return true;
++    }
++    std::error_code error;
++    if (lower_name == "windows" && fs::exists(folder / "System32", error)) {
++        return true;
++    }
++#ifndef Q_OS_WIN
++    if (at_root && (lower_name == "proc" || lower_name == "sys" || lower_name == "dev" ||
++                    lower_name == "run")) {
++        return true;
++    }
++#else
++    (void)at_root;
++#endif
++    return false;
++}
++
++bool IsPatchFolder(const std::string& lower_name) {
++    return lower_name.ends_with("-update") || lower_name.ends_with("-patch");
++}
++
++void ScanRoot(const fs::path& root, std::vector<fs::path>& games, std::mutex& games_mutex,
++              std::atomic_int& found, const std::atomic_bool& cancel) {
++    std::vector<fs::path> pending{root};
++    const auto options = fs::directory_options::skip_permission_denied;
++    while (!pending.empty() && !cancel) {
++        const fs::path dir = std::move(pending.back());
++        pending.pop_back();
++
++        std::error_code error;
++        std::vector<fs::path> subfolders;
++        bool has_eboot = false;
++        for (fs::directory_iterator it(dir, options, error), end; !error && it != end;
++             it.increment(error)) {
++            std::error_code entry_error;
++            if (it->is_directory(entry_error)) {
++                if (!entry_error && !it->is_symlink(entry_error)) {
++                    subfolders.push_back(it->path());
++                }
++            } else if (!has_eboot && Lower(it->path().filename().string()) == "eboot.bin") {
++                has_eboot = true;
++            }
++        }
++
++        if (has_eboot && !IsPatchFolder(Lower(dir.filename().string())) &&
++            fs::exists(dir / "sce_sys" / "param.sfo", error)) {
++            {
++                std::scoped_lock lock{games_mutex};
++                games.push_back(dir);
++            }
++            ++found;
++            // Nothing below a game folder is another game.
++            continue;
++        }
++
++        for (auto& subfolder : subfolders) {
++            if (!IsSystemFolder(subfolder, Lower(subfolder.filename().string()), dir == root)) {
++                pending.push_back(std::move(subfolder));
++            }
++        }
++    }
++}
++
++} // namespace
++
++std::vector<fs::path> GetScanRoots() {
++    std::vector<fs::path> roots;
++    for (const QStorageInfo& volume : QStorageInfo::mountedVolumes()) {
++        if (!volume.isValid() || !volume.isReady()) {
++            continue;
++        }
++        const fs::path root = Common::FS::PathFromQString(volume.rootPath());
++#ifdef Q_OS_WIN
++        const std::wstring native = root.wstring();
++        const UINT type = GetDriveTypeW(native.c_str());
++        // Network drives, optical drives and RAM disks are not searched.
++        if (type != DRIVE_FIXED && type != DRIVE_REMOVABLE) {
++            continue;
++        }
++#else
++        const std::string type = volume.fileSystemType().toStdString();
++        if (type == "tmpfs" || type == "proc" || type == "sysfs" || type == "devtmpfs" ||
++            type == "devpts" || type == "cgroup" || type == "cgroup2" || type == "squashfs") {
++            continue;
++        }
++#endif
++        if (std::find(roots.begin(), roots.end(), root) == roots.end()) {
++            roots.push_back(root);
++        }
++    }
++    return roots;
++}
++
++std::vector<fs::path> FindGames(const std::vector<fs::path>& roots, std::atomic_int& found,
++                                const std::atomic_bool& cancel) {
++    std::vector<fs::path> games;
++    std::mutex games_mutex;
++    std::vector<std::thread> threads;
++    threads.reserve(roots.size());
++    for (const fs::path& root : roots) {
++        threads.emplace_back([&] {
++            ScanRoot(root, games, games_mutex, found, cancel);
++        });
++    }
++    for (std::thread& thread : threads) {
++        thread.join();
++    }
++    std::sort(games.begin(), games.end());
++    games.erase(std::unique(games.begin(), games.end()), games.end());
++    return games;
++}
++
++std::vector<fs::path> LibraryFolders(const std::vector<fs::path>& games,
++                                     const std::vector<fs::path>& existing) {
++    const auto is_inside = [](const fs::path& folder, const fs::path& parent) {
++        auto folder_it = folder.begin();
++        for (auto parent_it = parent.begin(); parent_it != parent.end();
++             ++parent_it, ++folder_it) {
++            if (folder_it == folder.end() || *folder_it != *parent_it) {
++                return false;
++            }
++        }
++        return true;
++    };
++
++    // A folder that holds several games is added as it is, so the library keeps one entry for a
++    // collection. A game on its own, or at the top of a drive, is added by itself, because the
++    // library searches everything below the folders it has.
++    std::vector<fs::path> candidates;
++    for (const fs::path& game : games) {
++        const fs::path parent = game.parent_path();
++        const auto in_parent = std::count_if(games.begin(), games.end(), [&](const fs::path& other) {
++            return other.parent_path() == parent;
++        });
++        const bool is_drive_root = parent.empty() || parent == parent.root_path();
++        candidates.push_back(in_parent >= 2 && !is_drive_root ? parent : game);
++    }
++
++    std::vector<fs::path> folders;
++    for (const fs::path& candidate : candidates) {
++        const bool known =
++            std::any_of(existing.begin(), existing.end(),
++                        [&](const fs::path& dir) { return is_inside(candidate, dir); }) ||
++            std::any_of(folders.begin(), folders.end(),
++                        [&](const fs::path& dir) { return is_inside(candidate, dir); });
++        if (!known) {
++            folders.push_back(candidate);
++        }
++    }
++    return folders;
++}
++
++} // namespace GameScanner
+diff --git a/src/qt_gui/game_scanner.h b/src/qt_gui/game_scanner.h
+new file mode 100644
+index 0000000..a451418
+--- /dev/null
++++ b/src/qt_gui/game_scanner.h
+@@ -0,0 +1,29 @@
++// SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <atomic>
++#include <filesystem>
++#include <vector>
++
++namespace GameScanner {
++
++/// The roots to search: every local and removable drive, or the mounted volumes elsewhere.
++std::vector<std::filesystem::path> GetScanRoots();
++
++/// Looks for PS4 game folders (a folder with eboot.bin and sce_sys/param.sfo) below the given
++/// roots, one thread per root. The Windows folder and the recycle bin are never entered, and a
++/// game folder is not searched any further. Returns the game folders that were found.
++/// `found` counts them while the search runs and `cancel` stops it.
++std::vector<std::filesystem::path> FindGames(const std::vector<std::filesystem::path>& roots,
++                                             std::atomic_int& found,
++                                             const std::atomic_bool& cancel);
++
++/// The folders to add to the game library for the found games, left out when one of the
++/// `existing` folders already contains them.
++std::vector<std::filesystem::path> LibraryFolders(
++    const std::vector<std::filesystem::path>& games,
++    const std::vector<std::filesystem::path>& existing);
++
++} // namespace GameScanner
+diff --git a/src/qt_gui/main_window.cpp b/src/qt_gui/main_window.cpp
+index e0f0d68..324f2e7 100644
+--- a/src/qt_gui/main_window.cpp
++++ b/src/qt_gui/main_window.cpp
+@@ -2,11 +2,15 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include <algorithm>
++#include <atomic>
++#include <filesystem>
++#include <vector>
+ #include <QComboBox>
+ #include <QCoreApplication>
+ #include <QDateTime>
+ #include <QDir>
+ #include <QDockWidget>
++#include <QEventLoop>
+ #include <QFileDialog>
+ #include <QFileInfo>
+ #include <QKeyEvent>
+@@ -14,6 +18,8 @@
+ #include <QPlainTextEdit>
+ #include <QProgressDialog>
+ #include <QStatusBar>
++#include <QThread>
++#include <QtConcurrent>
+ 
+ #include "about_dialog.h"
+ #include "cheats_patches.h"
+@@ -26,6 +32,7 @@
+ #include "common/scm_rev.h"
+ #include "common/versions.h"
+ #include "control_settings.h"
++#include "game_scanner.h"
+ #include "core/emulator_state.h"
+ #include "core/emulator_settings.h"
+ #include "core/file_sys/game_backend.h"
+@@ -890,7 +897,7 @@ void MainWindow::CreateConnects() {
+     ui->menuFile->insertAction(ui->bootGameAct, installPkgAct);
+     connect(installPkgAct, &QAction::triggered, this, &MainWindow::InstallPkg);
+ 
+-    auto* scanGamesAct = new QAction(tr("Scan for PS4 games..."), this);
++    auto* scanGamesAct = new QAction(tr("Scan for PS4 games"), this);
+     scanGamesAct->setObjectName("scanGamesAct");
+     ui->menuFile->insertAction(ui->bootGameAct, scanGamesAct);
+     connect(scanGamesAct, &QAction::triggered, this, &MainWindow::ScanGames);
+@@ -1217,28 +1224,60 @@ void MainWindow::InstallDirectory() {
+ }
+ 
+ void MainWindow::ScanGames() {
+-    const QString selectedPath =
+-        QFileDialog::getExistingDirectory(this, tr("Select a folder to scan for PS4 games"),
+-                                          QDir::homePath());
+-    if (selectedPath.isEmpty()) {
++    const std::vector<std::filesystem::path> roots = GameScanner::GetScanRoots();
++    if (roots.empty()) {
++        QMessageBox::warning(this, tr("Scan for PS4 games"),
++                             tr("No drive could be found to search."));
+         return;
+     }
+ 
+-    const QString scanPath = QDir(selectedPath).canonicalPath();
+-    if (scanPath.isEmpty()) {
+-        QMessageBox::warning(this, tr("Scan for PS4 games"),
+-                             tr("The selected folder could not be accessed."));
++    std::atomic_int found{0};
++    std::atomic_bool cancel{false};
++    QProgressDialog dialog(tr("Searching all drives for PS4 games..."), tr("Cancel"), 0, 0, this);
++    dialog.setWindowTitle(tr("Scan for PS4 games"));
++    dialog.setWindowModality(Qt::WindowModal);
++    dialog.setAutoClose(false);
++    dialog.setAutoReset(false);
++    dialog.setMinimumDuration(0);
++    connect(&dialog, &QProgressDialog::canceled, this, [&cancel] { cancel = true; });
++    dialog.show();
++
++    auto search = QtConcurrent::run(
++        [&] { return GameScanner::FindGames(roots, found, cancel); });
++    while (!search.isFinished()) {
++        dialog.setLabelText(
++            tr("Searching all drives for PS4 games...\n%1 found so far").arg(found.load()));
++        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
++        QThread::msleep(30);
++    }
++    const std::vector<std::filesystem::path> games = search.result();
++    dialog.hide();
++    if (cancel) {
+         return;
+     }
+ 
+-    EmulatorSettings.AddGameInstallDir(Common::FS::PathFromQString(scanPath));
+-    EmulatorSettings.Save();
+-    ReloadGameTable(false);
++    if (games.empty()) {
++        QMessageBox::information(this, tr("Scan complete"),
++                                 tr("No PS4 games were found on %1 drive(s).").arg(roots.size()));
++        return;
++    }
++
++    const std::vector<std::filesystem::path> folders =
++        GameScanner::LibraryFolders(games, EmulatorSettings.GetGameInstallDirs());
++    for (const auto& folder : folders) {
++        EmulatorSettings.AddGameInstallDir(folder);
++    }
++    if (!folders.empty()) {
++        EmulatorSettings.Save();
++        ReloadGameTable(false);
++    }
+ 
+     QMessageBox::information(
+         this, tr("Scan complete"),
+-        tr("Found %1 PS4 game(s) with CUSA title IDs in the library.")
+-            .arg(m_game_info->m_games_backup.size()));
++        tr("Found %1 PS4 game(s) on %2 drive(s). %3 new folder(s) added to the library.")
++            .arg(games.size())
++            .arg(roots.size())
++            .arg(folders.size()));
+ }
+ 
+ void MainWindow::SetLastUsedTheme() {
+-- 
+2.43.0
+

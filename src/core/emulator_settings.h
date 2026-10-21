@@ -438,7 +438,6 @@ struct GPUSettings {
     Setting<bool> hdr_allowed{false};
     Setting<bool> fsr_enabled{false};
     Setting<bool> frame_generation_enabled{false};
-    Setting<std::string> frame_generation_toggle_hotkey{"1"};
     // Windows: the GPU command thread gets a physical core of its own.
     Setting<bool> gpu_thread_core_reserve{true};
     Setting<bool> rcas_enabled{true};
@@ -465,8 +464,6 @@ struct GPUSettings {
             make_override<GPUSettings>("fsr_enabled", &GPUSettings::fsr_enabled),
             make_override<GPUSettings>("frame_generation_enabled",
                                        &GPUSettings::frame_generation_enabled),
-            make_override<GPUSettings>("frame_generation_toggle_hotkey",
-                                       &GPUSettings::frame_generation_toggle_hotkey),
             make_override<GPUSettings>("gpu_thread_core_reserve",
                                        &GPUSettings::gpu_thread_core_reserve),
             make_override<GPUSettings>("rcas_enabled", &GPUSettings::rcas_enabled),
@@ -495,7 +492,6 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GPUSettings, window_width, window_height, int
                                    hdr_allowed, fsr_enabled, rcas_enabled, rcas_attenuation,
                                    userfaultfd, inline_fetch_shader, anisotropic_filtering,
                                    texture_lod_bias, frame_generation_enabled,
-                                   frame_generation_toggle_hotkey,
                                    gpu_thread_core_reserve)
 
 // -------------------------------
@@ -790,7 +786,6 @@ public:
     SETTING_FORWARD_BOOL(m_gpu, HdrAllowed, hdr_allowed)
     SETTING_FORWARD_BOOL(m_gpu, FsrEnabled, fsr_enabled)
     SETTING_FORWARD_BOOL(m_gpu, FrameGenerationEnabled, frame_generation_enabled)
-    SETTING_FORWARD(m_gpu, FrameGenerationToggleHotkey, frame_generation_toggle_hotkey)
     SETTING_FORWARD_BOOL(m_gpu, GpuThreadCoreReserve, gpu_thread_core_reserve)
     SETTING_FORWARD_BOOL(m_gpu, RcasEnabled, rcas_enabled)
     SETTING_FORWARD(m_gpu, RcasAttenuation, rcas_attenuation)

@@ -11,7 +11,11 @@ The patches add:
   downloaded and replaces the launcher and the emulator, then the launcher restarts.
 - The included `shadPS4.exe` is listed and selected as the emulator version.
 - A list of common window sizes instead of typing the width and height.
-- A frame generation (FSR 3.1) switch and configurable in-game toggle hotkey in the Graphics tab.
+- A frame generation (FSR 3.1) switch in the Graphics tab, and a Toggle Frame Generation hotkey in
+  the Hotkeys window that turns it on and off in game (default: 1).
+- File > Scan for PS4 games searches every local and removable drive at once, without asking for a
+  folder, and adds the folders that hold the games it finds to the library. The Windows folder and
+  the other system folders are skipped.
 - The compatibility list comes from the official database, with the games listed in
   `compatibility/overrides.json` on the `main` branch shown with the fork's status.
 - About links only to this repository.

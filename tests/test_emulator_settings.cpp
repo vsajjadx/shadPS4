@@ -311,7 +311,6 @@ TEST_F(EmulatorSettingsTest, RoundTripAllGroups) {
     temp_settings->SetGpuId(1);
     temp_settings->SetCursorState(HideCursorState::Always);
     temp_settings->SetAudioBackend(AudioBackend::OpenAL);
-    temp_settings->SetFrameGenerationToggleHotkey("Ctrl+1");
     temp_settings->Save();
 
     auto f = std::make_shared<EmulatorSettingsImpl>();
@@ -323,7 +322,6 @@ TEST_F(EmulatorSettingsTest, RoundTripAllGroups) {
     EXPECT_EQ(f->GetGpuId(), 1);
     EXPECT_EQ(f->GetCursorState(), static_cast<int>(HideCursorState::Always));
     EXPECT_EQ(f->GetAudioBackend(), static_cast<u32>(AudioBackend::OpenAL));
-    EXPECT_EQ(f->GetFrameGenerationToggleHotkey(), "Ctrl+1");
 }
 
 TEST_F(EmulatorSettingsTest, LoadMissingFileCreatesDefaultsOnDisk) {
@@ -470,14 +468,6 @@ TEST_F(EmulatorSettingsTest, SaveSerialWritesBaseValueWhenNoOverrideSet) {
 
     json saved = ReadJson(GameConfig("CUSA01234"));
     EXPECT_EQ(saved["GPU"]["window_width"].get<unsigned>(), 2560);
-}
-
-TEST_F(EmulatorSettingsTest, SaveSerialWritesFrameGenerationToggleHotkeyOverride) {
-    temp_settings->SetFrameGenerationToggleHotkey("Ctrl+1", true);
-    ASSERT_TRUE(temp_settings->Save("CUSA01234"));
-
-    const json saved = ReadJson(GameConfig("CUSA01234"));
-    EXPECT_EQ(saved["GPU"]["frame_generation_toggle_hotkey"], "Ctrl+1");
 }
 
 TEST_F(EmulatorSettingsTest, MultipleSerialsDoNotInterfere) {

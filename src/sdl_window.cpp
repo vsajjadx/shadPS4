@@ -1,8 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <cctype>
-#include <string>
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_hints.h>
 #include <SDL3/SDL_init.h>
@@ -49,98 +47,6 @@ CMRC_DECLARE(res);
 namespace Frontend {
 
 using namespace Libraries::Pad;
-
-#ifdef ENABLE_FSR_FRAMEGEN
-namespace {
-bool MatchesFrameGenerationToggleHotkey(const SDL_KeyboardEvent& event) {
-    std::string binding = EmulatorSettings.GetFrameGenerationToggleHotkey();
-    if (binding.empty()) {
-        return false;
-    }
-
-    // QKeySequence::PortableText uses "+" between modifiers and the key. "Ctrl++" is
-    // the portable representation of Ctrl+plus, so preserve the final plus as the key.
-    std::string key_name;
-    if (binding == "+" ||
-        (binding.size() >= 2 && binding.compare(binding.size() - 2, 2, "++") == 0)) {
-        key_name = "+";
-        binding.pop_back();
-    }
-
-    SDL_Keymod required_modifiers = SDL_KMOD_NONE;
-    bool keypad = false;
-    std::size_t start = 0;
-    while (start <= binding.size()) {
-        const std::size_t separator = binding.find('+', start);
-        std::string token = binding.substr(
-            start, separator == std::string::npos ? std::string::npos : separator - start);
-        for (char& ch : token) {
-            ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
-        }
-
-        if (token == "CTRL" || token == "CONTROL") {
-            required_modifiers = static_cast<SDL_Keymod>(required_modifiers | SDL_KMOD_CTRL);
-        } else if (token == "ALT" || token == "OPTION") {
-            required_modifiers = static_cast<SDL_Keymod>(required_modifiers | SDL_KMOD_ALT);
-        } else if (token == "SHIFT") {
-            required_modifiers = static_cast<SDL_Keymod>(required_modifiers | SDL_KMOD_SHIFT);
-        } else if (token == "META" || token == "CMD" || token == "SUPER") {
-            required_modifiers = static_cast<SDL_Keymod>(required_modifiers | SDL_KMOD_GUI);
-        } else if (token == "NUM") {
-            keypad = true;
-        } else if (!token.empty()) {
-            if (!key_name.empty()) {
-                return false;
-            }
-            key_name = token;
-        }
-
-        if (separator == std::string::npos) {
-            break;
-        }
-        start = separator + 1;
-    }
-
-    if (key_name.empty()) {
-        return false;
-    }
-
-    if (keypad) {
-        key_name = "KP " + key_name;
-    } else if (key_name == "ESC") {
-        key_name = "ESCAPE";
-    } else if (key_name == "DEL") {
-        key_name = "DELETE";
-    } else if (key_name == "INS") {
-        key_name = "INSERT";
-    } else if (key_name == "PGUP") {
-        key_name = "PAGEUP";
-    } else if (key_name == "PGDOWN" || key_name == "PGDN") {
-        key_name = "PAGEDOWN";
-    } else if (key_name == "ENTER") {
-        key_name = "RETURN";
-    }
-
-    SDL_Keycode key = SDL_GetKeyFromName(key_name.c_str());
-    if (key == SDLK_UNKNOWN) {
-        return false;
-    }
-
-    const auto has_modifier = [](SDL_Keymod modifiers, SDL_Keymod group) {
-        return (modifiers & group) != SDL_KMOD_NONE;
-    };
-    return event.key == key &&
-           has_modifier(event.mod, SDL_KMOD_CTRL) ==
-               has_modifier(required_modifiers, SDL_KMOD_CTRL) &&
-           has_modifier(event.mod, SDL_KMOD_ALT) ==
-               has_modifier(required_modifiers, SDL_KMOD_ALT) &&
-           has_modifier(event.mod, SDL_KMOD_SHIFT) ==
-               has_modifier(required_modifiers, SDL_KMOD_SHIFT) &&
-           has_modifier(event.mod, SDL_KMOD_GUI) ==
-               has_modifier(required_modifiers, SDL_KMOD_GUI);
-}
-} // namespace
-#endif
 
 static OrbisPadButtonDataOffset SDLGamepadToOrbisButton(u8 button) {
     using OPBDO = OrbisPadButtonDataOffset;
@@ -340,20 +246,6 @@ void WindowSDL::WaitEvent() {
             Libraries::Kernel::DumpThreadsForHang("requested with Ctrl+L");
             break;
         }
-#ifdef ENABLE_FSR_FRAMEGEN
-        if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat &&
-            MatchesFrameGenerationToggleHotkey(event.key)) {
-            const bool enable = !Vulkan::FrameGeneration::IsEnabled();
-            Vulkan::FrameGeneration::SetEnabled(enable);
-            const char* message = !Vulkan::FrameGeneration::IsAvailable()
-                                      ? "FSR frame generation is not available on this GPU"
-                                  : enable ? "FSR frame generation: ON"
-                                           : "FSR frame generation: OFF";
-            LOG_INFO(Frontend, "{}", message);
-            shadNotifications::QueueNotification(message, 2.0f,
-                                                 shadNotifications::position::BottomRight);
-        }
-#endif
         OnKeyboardMouseInput(&event);
         break;
     case SDL_EVENT_GAMEPAD_ADDED:
@@ -401,6 +293,20 @@ void WindowSDL::WaitEvent() {
     case SDL_EVENT_TOGGLE_FRIENDS:
         ImGui::Friends::Toggle();
         break;
+    case SDL_EVENT_TOGGLE_FRAME_GENERATION: {
+#ifdef ENABLE_FSR_FRAMEGEN
+        const bool enable = !Vulkan::FrameGeneration::IsEnabled();
+        Vulkan::FrameGeneration::SetEnabled(enable);
+        const char* message = !Vulkan::FrameGeneration::IsAvailable()
+                                  ? "FSR frame generation is not available on this GPU"
+                              : enable ? "FSR frame generation: ON"
+                                       : "FSR frame generation: OFF";
+        LOG_INFO(Frontend, "{}", message);
+        shadNotifications::QueueNotification(message, 2.0f,
+                                             shadNotifications::position::BottomRight);
+#endif
+        break;
+    }
     case SDL_EVENT_RELOAD_INPUTS:
         Input::ParseInputConfig(std::string(Common::ElfInfo::Instance().GameSerial()));
         break;
