@@ -19,6 +19,8 @@
 #include <future>
 #include <mutex>
 #include <queue>
+#include <system_error>
+#include <vector>
 
 namespace {
 
@@ -98,14 +100,23 @@ static void MigrateFlatCache(const std::filesystem::path& game_dir,
                             : game_dir / (cached_build.size() >= 16 ? cached_build.substr(0, 16)
                                                                     : std::string{"old"});
     std::filesystem::create_directories(target, ec);
-    for (const auto& entry : std::filesystem::directory_iterator{game_dir, ec}) {
-        if (!entry.is_regular_file(ec)) {
+    // The files are listed first: moving them while the folder is being iterated is not safe, and
+    // the iterator's own increment would throw on an error instead of reporting it.
+    std::vector<std::filesystem::path> files;
+    ec.clear();
+    for (std::filesystem::directory_iterator it{game_dir, ec}, end; !ec && it != end;
+         it.increment(ec)) {
+        std::error_code entry_ec{};
+        if (!it->is_regular_file(entry_ec)) {
             continue;
         }
-        const auto ext = entry.path().extension().string();
+        const auto ext = it->path().extension().string();
         if (ext == ".key" || ext == ".meta" || ext == ".spv" || ext == ".bin") {
-            std::filesystem::rename(entry.path(), target / entry.path().filename(), ec);
+            files.push_back(it->path());
         }
+    }
+    for (const auto& file : files) {
+        std::filesystem::rename(file, target / file.filename(), ec);
     }
 }
 
@@ -270,13 +281,22 @@ void DataBase::ForEachBlob(BlobType type, const std::function<void(std::vector<u
             }
         }
     } else {
-        for (const auto& file_name : std::filesystem::directory_iterator{cache_path}) {
-            if (file_name.path().extension().string().ends_with(ext)) {
-                using namespace Common::FS;
-                const auto& file = IOFile{file_name, FileAccessMode::Read};
-                if (file.IsOpen()) {
-                    std::vector<u8> data(file.GetSize());
-                    file.Read(data);
+        // The files are listed first so a file that is removed, or an error while walking the
+        // folder, cannot throw out of the iterator and take the emulator down while it warms up.
+        std::vector<std::filesystem::path> files;
+        std::error_code ec{};
+        for (std::filesystem::directory_iterator it{cache_path, ec}, end; !ec && it != end;
+             it.increment(ec)) {
+            if (it->path().extension().string().ends_with(ext)) {
+                files.push_back(it->path());
+            }
+        }
+        for (const auto& path : files) {
+            using namespace Common::FS;
+            const auto& file = IOFile{path, FileAccessMode::Read};
+            if (file.IsOpen()) {
+                std::vector<u8> data(file.GetSize());
+                if (file.Read(data) == data.size()) {
                     func(std::move(data));
                 }
             }
@@ -289,11 +309,16 @@ bool DataBase::Reset() {
         return false;
     }
     std::error_code ec{};
-    for (const auto& entry : std::filesystem::directory_iterator{cache_path, ec}) {
-        const auto ext = entry.path().extension().string();
+    std::vector<std::filesystem::path> files;
+    for (std::filesystem::directory_iterator it{cache_path, ec}, end; !ec && it != end;
+         it.increment(ec)) {
+        const auto ext = it->path().extension().string();
         if (ext == ".key" || ext == ".meta" || ext == ".spv" || ext == ".bin") {
-            std::filesystem::remove(entry.path(), ec);
+            files.push_back(it->path());
         }
+    }
+    for (const auto& file : files) {
+        std::filesystem::remove(file, ec);
     }
     return true;
 }

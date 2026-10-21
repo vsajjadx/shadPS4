@@ -164,7 +164,13 @@ bool PipelineCache::LoadComputePipeline(Serialization::Archive& ar) {
     }
 
     const auto [it, is_new] = compute_pipelines.try_emplace(compute_key);
-    ASSERT(is_new);
+    if (!is_new) {
+        // The same pipeline is in the cache twice, which an archive can hold. The first one
+        // is kept and the extra entry is ignored instead of stopping the emulator.
+        infos.fill(nullptr);
+        modules.fill(nullptr);
+        return false;
+    }
 
     it.value() =
         std::make_unique<ComputePipeline>(instance, scheduler, desc_heap, profile, *pipeline_cache,
@@ -244,7 +250,12 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar) {
     }
 
     const auto [it, is_new] = graphics_pipelines.try_emplace(graphics_key);
-    ASSERT(is_new);
+    if (!is_new) {
+        infos.fill(nullptr);
+        modules.fill(nullptr);
+        fetch_shader = nullptr;
+        return false;
+    }
 
     // The driver compilation runs on the workers, WarmUp waits for all of them.
     it.value() = std::make_unique<GraphicsPipeline>(

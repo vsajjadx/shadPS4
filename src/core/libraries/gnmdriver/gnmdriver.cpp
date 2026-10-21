@@ -1372,6 +1372,9 @@ s32 PS4_SYSV_ABI sceGnmRegisterResource(void* res_handle, void* owner_handle, co
 // thread until the presenter is within kMaxFlipsInFlight flips of it.
 static std::atomic<u64> cpu_flip_submits{0};
 
+// Waits until the presenter is close enough to the flips that were submitted. The flip is counted
+// by the caller once it is queued, so a submit that fails never leaves the count ahead of the
+// presenter, which would make every later submit wait out the whole timeout.
 static void ThrottleFlipSubmit(u32 vo_handle) {
     constexpr u64 kMaxFlipsInFlight = 2;
     constexpr auto kMaxWait = std::chrono::milliseconds(200);
@@ -1388,13 +1391,12 @@ static void ThrottleFlipSubmit(u32 vo_handle) {
         std::this_thread::sleep_for(std::chrono::microseconds(250));
         ++polls;
     }
-    static u32 reports = 0;
-    if (polls != 0 && reports < 5) {
+    static std::atomic<u32> reports{0};
+    if (polls != 0 && reports.load() < 5) {
         ++reports;
         LOG_INFO(Lib_GnmDriver, "flip throttle: waited {} polls (cpu_submits={} presented={})",
                  polls, cpu_flip_submits.load(), status.count);
     }
-    ++cpu_flip_submits;
 }
 
 static inline s32 PatchFlipRequest(u32* cmdbuf, u32 size, u32 vo_handle, u32 buf_idx, u32 flip_mode,
@@ -2484,6 +2486,8 @@ s32 PS4_SYSV_ABI sceGnmSubmitAndFlipCommandBuffersForWorkload(
     if (patch_result != ORBIS_OK) {
         return patch_result;
     }
+    // The flip is queued now and the presenter will count it.
+    ++cpu_flip_submits;
 
     return PerformSubmit(count, const_cast<const u32**>(dcb_gpu_addrs), dcb_sizes_in_bytes,
                          const_cast<const u32**>(ccb_gpu_addrs), ccb_sizes_in_bytes);
