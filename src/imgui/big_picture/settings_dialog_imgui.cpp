@@ -1,6 +1,7 @@
 //  SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
 //  SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
 #include <map>
 #include <ranges>
 #include <ImGuiFileDialog.h>
@@ -66,6 +67,27 @@ void SettingsWindow::LoadSettings(std::string profile) {
     fsrEnabledSetting = EmulatorSettings.IsFsrEnabled();
     rcasEnabledSetting = EmulatorSettings.IsRcasEnabled();
     rcasAttenuationSetting = static_cast<float>(EmulatorSettings.GetRcasAttenuation() * 0.001f);
+    fxaaSetting = EmulatorSettings.IsFxaaEnabled();
+    {
+        // Each option shows the resolution the game is told about.
+        const u32 base_width = EmulatorSettings.GetInternalScreenWidth();
+        const u32 base_height = EmulatorSettings.GetInternalScreenHeight();
+        resolutionScaleOptions.clear();
+        for (const int percent : resolutionScalePercents) {
+            resolutionScaleOptions.push_back(
+                fmt::format("{}% ({}x{})", percent, (u64{base_width} * percent / 100) & ~u64{1},
+                            (u64{base_height} * percent / 100) & ~u64{1}));
+        }
+        // A scale that is not in the list (edited by hand) shows as the closest one.
+        const int current = EmulatorSettings.GetResolutionScale();
+        resolutionScaleSetting = 0;
+        for (size_t i = 1; i < resolutionScalePercents.size(); ++i) {
+            if (std::abs(resolutionScalePercents[i] - current) <
+                std::abs(resolutionScalePercents[resolutionScaleSetting] - current)) {
+                resolutionScaleSetting = static_cast<int>(i);
+            }
+        }
+    }
     {
         const u32 aniso = EmulatorSettings.GetAnisotropicFiltering();
         anisotropySetting = aniso >= 16 ? 4 : aniso >= 8 ? 3 : aniso >= 4 ? 2 : aniso >= 2 ? 1 : 0;
@@ -130,6 +152,9 @@ void SettingsWindow::SaveSettings(std::string profile) {
     EmulatorSettings.SetFsrEnabled(fsrEnabledSetting, isSpecific);
     EmulatorSettings.SetRcasEnabled(rcasEnabledSetting, isSpecific);
     EmulatorSettings.SetRcasAttenuation(static_cast<int>(rcasAttenuationSetting * 1000),
+                                        isSpecific);
+    EmulatorSettings.SetFxaaEnabled(fxaaSetting, isSpecific);
+    EmulatorSettings.SetResolutionScale(resolutionScalePercents.at(resolutionScaleSetting),
                                         isSpecific);
     EmulatorSettings.SetAnisotropicFiltering(anisotropySetting == 0 ? 0u : 1u << anisotropySetting,
                                              isSpecific);
@@ -739,6 +764,9 @@ void SettingsWindow::DrawSettingsTable(SettingsCategory category) {
             AddSettingCombo("Present Mode", presentModeSetting, presentModeOptions);
             AddSettingSliderInt("Window Width", windowWidthSetting, 0, 8000);
             AddSettingSliderInt("Window Height", windowHeightSetting, 0, 7000);
+            AddSettingCombo("Resolution Scaling (applies on next launch)", resolutionScaleSetting,
+                            resolutionScaleOptions);
+            AddSettingCheckbox("Anti-Aliasing (FXAA)", fxaaSetting);
             AddSettingCheckbox("Enable HDR", hdrAllowedSetting);
             AddSettingCheckbox("Enable FSR", fsrEnabledSetting);
 

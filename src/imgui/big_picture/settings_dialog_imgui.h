@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <functional>
 #include <map>
 #include <variant>
@@ -118,6 +119,9 @@ private:
     const std::vector<std::string> trophySideOptions = {"left", "right", "top", "bottom"};
     const std::vector<std::string> readbacksModeOptions = {"Disabled", "Relaxed", "Precise"};
     const std::vector<std::string> anisotropyOptions = {"Game Default", "2x", "4x", "8x", "16x"};
+    static constexpr std::array<int, 8> resolutionScalePercents = {50,  75,  100, 125,
+                                                                   150, 200, 300, 400};
+    std::vector<std::string> resolutionScaleOptions; // built from the internal resolution
 
     //////////////// Setting Variables
     //////////////// Note:: Use int for all comboboxes as needed by ImGui
@@ -137,6 +141,8 @@ private:
     bool fsrEnabledSetting;
     bool rcasEnabledSetting;
     float rcasAttenuationSetting;
+    bool fxaaSetting;
+    int resolutionScaleSetting;
     int anisotropySetting;
     bool dualsenseSpeakerSetting;
     int dualsenseSpeakerVolumeSetting;

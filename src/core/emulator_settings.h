@@ -442,6 +442,11 @@ struct GPUSettings {
     Setting<bool> gpu_thread_core_reserve{true};
     Setting<bool> rcas_enabled{true};
     Setting<int> rcas_attenuation{250};
+    // FXAA applied to the final frame, before it is scaled to the window.
+    Setting<bool> fxaa_enabled{false};
+    // Percent of the internal screen resolution that is reported to the game as its output
+    // resolution (100 = as configured). Read when the game starts.
+    Setting<int> resolution_scale{100};
     Setting<bool> userfaultfd{false};
     Setting<bool> inline_fetch_shader{false};
     // 0 = as the game sets it; 2, 4, 8 or 16 forces that anisotropy on filtered, mipmapped
@@ -468,6 +473,8 @@ struct GPUSettings {
                                        &GPUSettings::gpu_thread_core_reserve),
             make_override<GPUSettings>("rcas_enabled", &GPUSettings::rcas_enabled),
             make_override<GPUSettings>("rcas_attenuation", &GPUSettings::rcas_attenuation),
+            make_override<GPUSettings>("fxaa_enabled", &GPUSettings::fxaa_enabled),
+            make_override<GPUSettings>("resolution_scale", &GPUSettings::resolution_scale),
             make_override<GPUSettings>("dump_shaders", &GPUSettings::dump_shaders),
             make_override<GPUSettings>("patch_shaders", &GPUSettings::patch_shaders),
             make_override<GPUSettings>("readbacks_mode", &GPUSettings::readbacks_mode),
@@ -492,7 +499,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GPUSettings, window_width, window_height, int
                                    hdr_allowed, fsr_enabled, rcas_enabled, rcas_attenuation,
                                    userfaultfd, inline_fetch_shader, anisotropic_filtering,
                                    texture_lod_bias, frame_generation_enabled,
-                                   gpu_thread_core_reserve)
+                                   gpu_thread_core_reserve, fxaa_enabled, resolution_scale)
 
 // -------------------------------
 // Vulkan settings
@@ -789,6 +796,8 @@ public:
     SETTING_FORWARD_BOOL(m_gpu, GpuThreadCoreReserve, gpu_thread_core_reserve)
     SETTING_FORWARD_BOOL(m_gpu, RcasEnabled, rcas_enabled)
     SETTING_FORWARD(m_gpu, RcasAttenuation, rcas_attenuation)
+    SETTING_FORWARD_BOOL(m_gpu, FxaaEnabled, fxaa_enabled)
+    SETTING_FORWARD(m_gpu, ResolutionScale, resolution_scale)
     SETTING_FORWARD(m_gpu, ReadbacksMode, readbacks_mode)
     SETTING_FORWARD_BOOL(m_gpu, ReadbackLinearImagesEnabled, readback_linear_images_enabled)
     SETTING_FORWARD_BOOL(m_gpu, DirectMemoryAccessEnabled, direct_memory_access_enabled)
