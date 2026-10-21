@@ -1366,23 +1366,13 @@ s32 PS4_SYSV_ABI sceGnmRegisterResource(void* res_handle, void* owner_handle, co
     return ORBIS_GNM_ERROR_FAILURE;
 }
 
-// nhlport: emulate the flip latency of real hardware. The emulated GPU thread and the presenter
-// can run several frames behind the CPU; NHL 24 counts the flips it submitted and its RenderLoop
-// thread only resumes while at most 3 of them are still outstanding. With 4 or more it waits
-// forever: the 3D scene is never rendered (black ice, HUD only) and the game stops reacting to
-// input. Hold the submitting thread until the presenter is within kMaxFlipsInFlight flips of it.
+// Emulate the flip latency of real hardware. The emulated GPU thread and the presenter can run
+// several frames behind the CPU, while games count the flips they submitted and only continue
+// while a few of them are outstanding (NHL 24 waits forever with 4 or more). Hold the submitting
+// thread until the presenter is within kMaxFlipsInFlight flips of it.
 static std::atomic<u64> cpu_flip_submits{0};
 
-// The flip EOP interrupt and flip back-pressure are only enabled for NHL 24 for now.
-static bool IsNhl24() {
-    static const bool is_nhl24 = Common::ElfInfo::Instance().GameSerial() == "CUSA37933";
-    return is_nhl24;
-}
-
 static void ThrottleFlipSubmit(u32 vo_handle) {
-    if (!IsNhl24()) {
-        return;
-    }
     constexpr u64 kMaxFlipsInFlight = 2;
     constexpr auto kMaxWait = std::chrono::milliseconds(200);
     const auto t0 = std::chrono::steady_clock::now();
@@ -1448,13 +1438,11 @@ static inline s32 PatchFlipRequest(u32* cmdbuf, u32 size, u32 vo_handle, u32 buf
 
     if (backup[1] == PM4CmdNop::PayloadType::PrepareFlip) {
         nop->header = PM4Type3Header{PM4ItOpcode::Nop, 0x39};
-        nop->data_block[0] = IsNhl24() ? PM4CmdNop::PayloadType::PatchedFlipEop
-                                       : PM4CmdNop::PayloadType::PatchedFlip;
+        nop->data_block[0] = PM4CmdNop::PayloadType::PatchedFlipEop;
     } else {
         if (backup[1] == PM4CmdNop::PayloadType::PrepareFlipLabel) {
             nop->header = PM4Type3Header{PM4ItOpcode::Nop, 0x34};
-            nop->data_block[0] = IsNhl24() ? PM4CmdNop::PayloadType::PatchedFlipEop
-                                           : PM4CmdNop::PayloadType::PatchedFlip;
+            nop->data_block[0] = PM4CmdNop::PayloadType::PatchedFlipEop;
 
             // Write event to update label
             auto* write_label = reinterpret_cast<PM4CmdWriteData*>(cmdbuf + 0x3b);

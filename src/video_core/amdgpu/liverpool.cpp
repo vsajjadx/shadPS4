@@ -363,12 +363,10 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     break;
                 }
                 case PM4CmdNop::PayloadType::PatchedFlipEop: {
-                    // nhlport: on real hardware the flip is driven by an end-of-pipe interrupt
-                    // that is also delivered to every equeue registered for kEqEventGfxEop.
-                    // NHL 24 (Frostbite) writes all of its GPU fences without interrupts and
-                    // relies on that per-flip EOP event to wake its GfxEopEventLoop thread,
-                    // which processes the fences; without it the ice, players and textures
-                    // never arrive and the game eventually deadlocks.
+                    // On real hardware the flip is driven by an end-of-pipe interrupt that is
+                    // also delivered to every equeue registered for kEqEventGfxEop. Games that
+                    // write their GPU fences without interrupts rely on that per-flip event to
+                    // wake the thread that processes the fences.
                     Platform::IrqC::Instance()->Signal(Platform::InterruptId::GfxFlip);
                     Platform::IrqC::Instance()->Signal(Platform::InterruptId::GfxEop);
                     break;
