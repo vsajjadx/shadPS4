@@ -420,8 +420,26 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
         .fast_shader_math = EmulatorSettings.IsFastShaderMath(),
     };
     // Created before the warm-up so the preloaded pipelines share it with the ones compiled
-    // at run time.
-    auto [cache_result, cache] = instance.GetDevice().createPipelineCacheUnique({});
+    // at run time. It starts from the driver's data saved by an earlier session, so pipelines
+    // built before come from the driver's cache instead of compiling again. (After HayatoG/iss_pc
+    // BP08 and Mrsuss60/bloodborne_pc_windows_port b972798.)
+    std::vector<u8> driver_cache_data;
+    if (const auto path = DriverCachePath(); std::filesystem::exists(path)) {
+        const Common::FS::IOFile file{path, Common::FS::FileAccessMode::Read};
+        driver_cache_data.resize(file.GetSize());
+        file.Read(driver_cache_data);
+    }
+    auto [cache_result, cache] = instance.GetDevice().createPipelineCacheUnique({
+        .initialDataSize = driver_cache_data.size(),
+        .pInitialData = driver_cache_data.data(),
+    });
+    if (cache_result != vk::Result::eSuccess && !driver_cache_data.empty()) {
+        LOG_WARNING(Render_Vulkan, "Saved driver pipeline cache rejected: {}",
+                    vk::to_string(cache_result));
+        auto [empty_result, empty_cache] = instance.GetDevice().createPipelineCacheUnique({});
+        cache_result = empty_result;
+        cache = std::move(empty_cache);
+    }
     ASSERT_MSG(cache_result == vk::Result::eSuccess, "Failed to create pipeline cache: {}",
                vk::to_string(cache_result));
     pipeline_cache = std::move(cache);
@@ -429,10 +447,80 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
     WarmUp();
 }
 
-PipelineCache::~PipelineCache() = default;
+PipelineCache::~PipelineCache() {
+    compile_workers.WaitIdle();
+    if (num_new_pipelines != driver_cache_saved_pipelines) {
+        SaveDriverCache();
+    }
+}
+
+std::filesystem::path PipelineCache::DriverCachePath() const {
+    // The driver checks the blob's header and ignores data of another GPU or driver version.
+    const auto& uuid = instance.GetPipelineCacheUUID();
+    std::string uuid_str;
+    for (const u8 byte : uuid) {
+        uuid_str += fmt::format("{:02x}", byte);
+    }
+    return Common::FS::GetUserPath(Common::FS::PathType::CacheDir) /
+           fmt::format("vk_pipeline_cache_{:04x}_{:04x}_{}.bin", instance.GetVendorID(),
+                       instance.GetDeviceID(), uuid_str);
+}
+
+void PipelineCache::SaveDriverCache() {
+    const auto [result, data] = instance.GetDevice().getPipelineCacheData(*pipeline_cache);
+    if (result != vk::Result::eSuccess || data.empty()) {
+        return;
+    }
+    const auto path = DriverCachePath();
+    auto temp_path = path;
+    temp_path += ".tmp";
+    {
+        const Common::FS::IOFile file{temp_path, Common::FS::FileAccessMode::Create};
+        if (file.WriteSpan(std::span<const u8>{data}) != data.size()) {
+            return;
+        }
+    }
+    std::error_code ec;
+    std::filesystem::rename(temp_path, path, ec);
+}
+
+bool PipelineCache::IsDrawSkippable() {
+    // A draw left out while its shaders or pipeline build goes unnoticed only when its pass is
+    // drawn again the next frame. One-off passes (light probes, exposure, full-screen effects),
+    // indirect draws and light frames such as loading screens are built at once instead.
+    // (After HayatoG/iss_pc BP07 and deadinside/bloodborne_pc 10baf9d.)
+    constexpr u32 MinIndices = 12;
+    constexpr float MinFrameDraws = 300.0f;
+    constexpr u32 MinStreakFrames = 8;
+    constexpr size_t MaxTrackedTargets = 4096;
+
+    const auto& regs = liverpool->regs;
+    VAddr target = regs.depth_buffer.DepthAddress();
+    for (s32 cb = 0; cb < AmdGpu::NUM_COLOR_BUFFERS; ++cb) {
+        if (regs.color_buffers[cb] && regs.color_target_mask.GetMask(cb)) {
+            target = regs.color_buffers[cb].Address();
+            break;
+        }
+    }
+    if (target_streaks.size() >= MaxTrackedTargets) {
+        target_streaks.clear();
+    }
+    const u32 frame = DebugState.GetFrameNum();
+    auto& streak = target_streaks[target];
+    if (streak.last_frame + 1 == frame) {
+        ++streak.frames;
+    } else if (streak.last_frame != frame) {
+        streak.frames = 1;
+    }
+    streak.last_frame = frame;
+
+    return !draw_indirect_params.is_indirect && regs.num_indices > MinIndices &&
+           DebugState.GetDrawCallsAvg() >= MinFrameDraws && streak.frames >= MinStreakFrames;
+}
 
 const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectParams params) {
     draw_indirect_params = params;
+    draw_skippable = EmulatorSettings.IsAsyncPipelineCompilation() && IsDrawSkippable();
     if (!RefreshGraphicsKey()) {
         return nullptr;
     }
@@ -449,7 +537,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         // With asynchronous compilation the guest-dependent part of the pipeline is set up here
         // and the driver compilation, which is what stalls the GPU thread for tens of
         // milliseconds, runs on a worker. Draws using it are skipped until it is ready.
-        const bool async_build = EmulatorSettings.IsAsyncPipelineCompilation();
+        const bool async_build = draw_skippable;
         GraphicsPipeline::SerializationSupport sdata{};
         it.value() = std::make_unique<GraphicsPipeline>(
             instance, scheduler, desc_heap, profile, graphics_key, *pipeline_cache, infos,
@@ -472,6 +560,11 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         }
     }
     const GraphicsPipeline* pipeline = it->second.get();
+    if (!pipeline->IsReady() && !draw_skippable) {
+        while (!pipeline->IsReady()) {
+            std::this_thread::yield();
+        }
+    }
     if (!pipeline->IsReady()) {
         // Most pipelines build in a few milliseconds (driver cache hits). Give a pending one a
         // short wait, within a small budget per 100 ms, so objects aren't left undrawn for frames
@@ -666,9 +759,18 @@ bool PipelineCache::RefreshGraphicsStages() {
 
     Shader::Backend::Bindings binding{};
     bool stage_failed = false;
-    const bool async_translation = EmulatorSettings.IsAsyncPipelineCompilation();
-    if (async_translation) {
+    if (EmulatorSettings.IsAsyncPipelineCompilation()) {
         CollectTranslations();
+    }
+    const bool async_translation = draw_skippable;
+
+    // The process can end without destructors, so new pipelines are saved now and then.
+    using namespace std::chrono_literals;
+    if (const auto now = std::chrono::steady_clock::now();
+        now - driver_cache_saved_at > 120s && num_new_pipelines != driver_cache_saved_pipelines) {
+        driver_cache_saved_at = now;
+        driver_cache_saved_pipelines = num_new_pipelines;
+        compile_workers.Submit([this] { SaveDriverCache(); });
     }
     const auto bind_stage = [&](HwStage stage_in, SwStage stage_out) -> bool {
         const auto stage_in_idx = static_cast<u32>(stage_in);
@@ -908,6 +1010,19 @@ void PipelineCache::SubmitTranslation(HwStage hw_stage, SwStage sw_stage,
     });
 }
 
+void PipelineCache::WaitTranslations(u64 hash) {
+    const auto it = pending_translations.find(hash);
+    if (it == pending_translations.end()) {
+        return;
+    }
+    for (const auto& translation : it->second) {
+        while (!translation->done.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+    }
+    CollectTranslations();
+}
+
 void PipelineCache::CollectTranslations() {
     for (auto it = pending_translations.begin(); it != pending_translations.end();) {
         auto& queue = it.value();
@@ -946,6 +1061,10 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
                                                 const Shader::ShaderParams& params,
                                                 Shader::Backend::Bindings& binding, bool async) {
     auto runtime_info = BuildRuntimeInfo(hw_stage, sw_stage);
+    if (!async) {
+        // A shader built now must not race a translation already queued for it.
+        WaitTranslations(params.hash);
+    }
     if (async && !program_cache.contains(params.hash)) {
         if (!pending_translations.contains(params.hash)) {
             SubmitTranslation(hw_stage, sw_stage, params, runtime_info, binding, 0, std::nullopt);

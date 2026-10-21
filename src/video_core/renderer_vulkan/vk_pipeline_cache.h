@@ -8,6 +8,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <filesystem>
 #include <functional>
 #include <mutex>
 #include <thread>
@@ -143,6 +144,7 @@ private:
     bool RefreshGraphicsKey();
     bool RefreshGraphicsStages();
     bool RefreshComputeKey();
+    bool IsDrawSkippable();
 
     struct ModuleBuild {
         vk::ShaderModule module{};
@@ -172,6 +174,9 @@ private:
                            const Shader::Backend::Bindings& start_binding, size_t perm_idx,
                            std::optional<Shader::StageSpecialization> spec);
     void CollectTranslations();
+    void WaitTranslations(u64 hash);
+    std::filesystem::path DriverCachePath() const;
+    void SaveDriverCache();
     const Shader::RuntimeInfo& BuildRuntimeInfo(Shader::HwStage stage, Shader::SwStage l_stage);
 
     [[nodiscard]] bool IsPipelineCacheDirty() const {
@@ -208,6 +213,14 @@ private:
 
     u32 num_pending_draws_skipped{};
     u32 num_pending_translations_skipped{};
+    bool draw_skippable{};
+    struct TargetStreak {
+        u32 last_frame{~0u};
+        u32 frames{};
+    };
+    tsl::robin_map<VAddr, TargetStreak> target_streaks;
+    u32 driver_cache_saved_pipelines{};
+    std::chrono::steady_clock::time_point driver_cache_saved_at{};
     tsl::robin_map<u64, std::deque<std::unique_ptr<PendingTranslation>>> pending_translations;
     std::chrono::steady_clock::time_point pending_wait_window_start{};
     std::chrono::microseconds pending_wait_spent{};
