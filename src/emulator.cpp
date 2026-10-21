@@ -453,12 +453,12 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         EmulatorSettings.SetPipelineCacheEnabled(true, true);
         LOG_INFO(Config, "Pipeline cache forced on to precompile shaders at boot");
     }
-    // NHL 24 (Frostbite) reads GPU-written culling/visibility data back on the CPU. With
-    // readbacks disabled the CPU sees stale memory and the ice and arena floor go black after
-    // the first frames of a match (the NHL 24 PC port ships with readbacks_mode = Relaxed).
-    if (id == "CUSA37933" && EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Disabled) {
+    // Games read GPU-written data back on the CPU (culling and visibility results, query data).
+    // With readbacks disabled the CPU sees stale memory, so every game runs with at least
+    // relaxed readbacks. A game-specific config can still choose Precise.
+    if (EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Disabled) {
         EmulatorSettings.SetReadbacksMode(GpuReadbacksMode::Relaxed, true);
-        LOG_INFO(Config, "NHL 24: GPU readbacks forced to Relaxed");
+        LOG_INFO(Config, "GPU readbacks forced to Relaxed");
     }
     // Compiling a new pipeline on the GPU thread freezes the game for tens of milliseconds, so
     // pipelines are built on worker threads for every game. A game-specific config can still turn
