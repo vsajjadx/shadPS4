@@ -73,6 +73,9 @@ void Semaphore::Wait(u64 tick) {
         if (result == vk::Result::eSuccess) {
             break;
         }
+        if (result == vk::Result::eErrorDeviceLost) {
+            instance.LogDeviceFault();
+        }
         ASSERT_MSG(result == vk::Result::eTimeout, "Failed to wait for the GPU: vk::Result={}",
                    vk::to_string(result));
         waited_s += 2;

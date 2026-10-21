@@ -363,6 +363,14 @@ bool Instance::CreateDevice() {
                 .pageableDeviceLocalMemory;
         LOG_INFO(Render_Vulkan, "- pageableDeviceLocalMemory: {}", pageable_device_local_memory);
     }
+    device_fault = add_extension(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+    if (device_fault) {
+        device_fault =
+            physical_device
+                .getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceFaultFeaturesEXT>()
+                .get<vk::PhysicalDeviceFaultFeaturesEXT>()
+                .deviceFault;
+    }
     shader_clock = add_extension(VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
     if (shader_clock) {
         shader_clock_features = feature_chain.get<vk::PhysicalDeviceShaderClockFeaturesKHR>();
@@ -551,6 +559,9 @@ bool Instance::CreateDevice() {
         vk::PhysicalDevicePageableDeviceLocalMemoryFeaturesEXT{
             .pageableDeviceLocalMemory = true,
         },
+        vk::PhysicalDeviceFaultFeaturesEXT{
+            .deviceFault = true,
+        },
     };
 
     if (!custom_border_color) {
@@ -608,6 +619,9 @@ bool Instance::CreateDevice() {
     if (!pageable_device_local_memory) {
         device_chain.unlink<vk::PhysicalDeviceMemoryPriorityFeaturesEXT>();
         device_chain.unlink<vk::PhysicalDevicePageableDeviceLocalMemoryFeaturesEXT>();
+    }
+    if (!device_fault) {
+        device_chain.unlink<vk::PhysicalDeviceFaultFeaturesEXT>();
     }
 
     auto [device_result, dev] = physical_device.createDeviceUnique(device_chain.get());
@@ -815,6 +829,42 @@ u64 Instance::GetDeviceMemoryUsage() const {
         total_usage += memory_budget_props.heapUsage[heap];
     }
     return total_usage;
+}
+
+void Instance::LogDeviceFault() const {
+    if (!device_fault) {
+        return;
+    }
+    vk::DeviceFaultCountsEXT counts{};
+    if (device->getFaultInfoEXT(&counts, nullptr) != vk::Result::eSuccess) {
+        return;
+    }
+    counts.vendorBinarySize = 0;
+    std::vector<vk::DeviceFaultAddressInfoEXT> address_infos(counts.addressInfoCount);
+    std::vector<vk::DeviceFaultVendorInfoEXT> vendor_infos(counts.vendorInfoCount);
+    vk::DeviceFaultInfoEXT fault_info{
+        .pAddressInfos = address_infos.data(),
+        .pVendorInfos = vendor_infos.data(),
+    };
+    const vk::Result result = device->getFaultInfoEXT(&counts, &fault_info);
+    if (result != vk::Result::eSuccess && result != vk::Result::eIncomplete) {
+        LOG_CRITICAL(Render_Vulkan, "Failed to query the device fault: {}", vk::to_string(result));
+        return;
+    }
+    LOG_CRITICAL(Render_Vulkan, "Device fault: {}", fault_info.description.data());
+    for (u32 i = 0; i < counts.addressInfoCount; i++) {
+        const auto& info = address_infos[i];
+        const u64 precision = std::max<u64>(info.addressPrecision, 1);
+        const u64 base = info.reportedAddress & ~(precision - 1);
+        LOG_CRITICAL(Render_Vulkan, "- {} at {:#x} (within {:#x}-{:#x})",
+                     vk::to_string(info.addressType), info.reportedAddress, base,
+                     base + precision);
+    }
+    for (u32 i = 0; i < counts.vendorInfoCount; i++) {
+        const auto& info = vendor_infos[i];
+        LOG_CRITICAL(Render_Vulkan, "- vendor fault {:#x} (data {:#x}): {}", info.vendorFaultCode,
+                     info.vendorFaultData, info.description.data());
+    }
 }
 
 vk::FormatFeatureFlags2 Instance::GetFormatFeatureFlags(vk::Format format) const {
