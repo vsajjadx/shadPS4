@@ -1198,7 +1198,7 @@ void Presenter::PresentImage(Frame* frame, bool is_reusing_frame, bool is_game_f
             ImGui::PopStyleVar(3);
             ImGui::PopStyleColor();
         }
-        ImGui::Core::Render(cmdbuf, swapchain_image_view, swapchain.GetExtent());
+        ImGui::Core::Render(scheduler, cmdbuf, swapchain_image_view, swapchain.GetExtent());
 
         if (capture_with_overlays_count > 0) {
             auto& readback = pending_screenshot.emplace(

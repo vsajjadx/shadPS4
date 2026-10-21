@@ -9,6 +9,7 @@
 #include <imgui.h>
 
 #include "imgui_impl_vulkan.h"
+#include "video_core/renderer_vulkan/vk_scheduler.h"
 
 #ifndef IM_MAX
 #define IM_MAX(A, B) (((A) >= (B)) ? (A) : (B))
@@ -24,19 +25,6 @@ struct RenderBuffer {
     vk::Buffer buffer{};
 };
 
-// Reusable buffers used for rendering 1 current in-flight frame, for RenderDrawData()
-struct FrameRenderBuffers {
-    RenderBuffer vertex;
-    RenderBuffer index;
-};
-
-// Each viewport will hold 1 WindowRenderBuffers
-struct WindowRenderBuffers {
-    uint32_t index{};
-    uint32_t count{};
-    std::vector<FrameRenderBuffers> frame_render_buffers{};
-};
-
 struct StagingBuffer {
     vk::Buffer buffer{};
     vk::DeviceMemory memory{};
@@ -47,6 +35,27 @@ struct AtlasTexture {
     vk::Image image{};
     vk::DeviceMemory memory{};
     vk::ImageView view{};
+};
+
+struct RetiredTexture {
+    AtlasTexture* backend_tex{};
+    ImTextureID tex_id{};
+};
+
+// Resources of one in-flight frame, reused once the GPU reaches the tick that last used them
+struct FrameRenderBuffers {
+    RenderBuffer vertex;
+    RenderBuffer index;
+    std::vector<StagingBuffer> staging_buffers;
+    std::vector<RetiredTexture> retired_textures;
+    u64 tick{};
+};
+
+// Each viewport will hold 1 WindowRenderBuffers
+struct WindowRenderBuffers {
+    uint32_t index{};
+    uint32_t count{};
+    std::vector<FrameRenderBuffers> frame_render_buffers{};
 };
 
 // Vulkan data
@@ -65,10 +74,6 @@ struct VkData {
     vk::CommandPool command_pool{};
     vk::Sampler simple_sampler{};
 
-    // Font atlas uploads. A frame's staging buffers live until its slot comes round again
-    std::vector<std::vector<StagingBuffer>> upload_buffers{};
-    uint32_t upload_index{};
-
     // Render buffers
     WindowRenderBuffers render_buffers{};
     bool enabled_blending{true};
@@ -76,7 +81,6 @@ struct VkData {
     VkData(const InitInfo init_info) : init_info(init_info) {
         render_buffers.count = init_info.image_count;
         render_buffers.frame_render_buffers.resize(render_buffers.count);
-        upload_buffers.resize(render_buffers.count);
     }
 };
 
@@ -661,9 +665,7 @@ void RenderDrawData(ImDrawData& draw_data, vk::CommandBuffer command_buffer,
         pipeline = bd->pipeline;
     }
 
-    // Allocate array to store enough vertex/index buffers
     WindowRenderBuffers& wrb = bd->render_buffers;
-    wrb.index = (wrb.index + 1) % wrb.count;
     FrameRenderBuffers& frb = wrb.frame_render_buffers[wrb.index];
 
     if (draw_data.TotalVtxCount > 0) {
@@ -799,23 +801,42 @@ static void DestroyStagingBuffers(std::vector<StagingBuffer>& buffers) {
     buffers.clear();
 }
 
-static void DestroyTexture(ImTextureData* tex) {
-    if (auto* backend_tex = static_cast<AtlasTexture*>(tex->BackendUserData)) {
-        VkData* bd = GetBackendData();
-        const InitInfo& v = bd->init_info;
-        RemoveTexture(tex->TexID);
-        v.device.destroyImageView(backend_tex->view, v.allocator);
-        v.device.destroyImage(backend_tex->image, v.allocator);
-        v.device.freeMemory(backend_tex->memory, v.allocator);
-        IM_DELETE(backend_tex);
-
-        tex->SetTexID(ImTextureID_Invalid);
-        tex->BackendUserData = nullptr;
-    }
-    tex->SetStatus(ImTextureStatus_Destroyed);
+static void DestroyAtlasTexture(const RetiredTexture& retired) {
+    VkData* bd = GetBackendData();
+    const InitInfo& v = bd->init_info;
+    RemoveTexture(retired.tex_id);
+    v.device.destroyImageView(retired.backend_tex->view, v.allocator);
+    v.device.destroyImage(retired.backend_tex->image, v.allocator);
+    v.device.freeMemory(retired.backend_tex->memory, v.allocator);
+    IM_DELETE(retired.backend_tex);
 }
 
-static void UpdateTexture(ImTextureData* tex, vk::CommandBuffer cmdbuf) {
+static void DestroyRetiredTextures(std::vector<RetiredTexture>& textures) {
+    for (const RetiredTexture& retired : textures) {
+        DestroyAtlasTexture(retired);
+    }
+    textures.clear();
+}
+
+static RetiredTexture DetachTexture(ImTextureData* tex) {
+    const RetiredTexture retired{
+        .backend_tex = static_cast<AtlasTexture*>(tex->BackendUserData),
+        .tex_id = tex->TexID,
+    };
+    tex->SetTexID(ImTextureID_Invalid);
+    tex->BackendUserData = nullptr;
+    tex->SetStatus(ImTextureStatus_Destroyed);
+    return retired;
+}
+
+static void DestroyTexture(ImTextureData* tex) {
+    const RetiredTexture retired = DetachTexture(tex);
+    if (retired.backend_tex != nullptr) {
+        DestroyAtlasTexture(retired);
+    }
+}
+
+static void UpdateTexture(ImTextureData* tex, vk::CommandBuffer cmdbuf, FrameRenderBuffers& frb) {
     VkData* bd = GetBackendData();
     const InitInfo& v = bd->init_info;
 
@@ -960,28 +981,42 @@ static void UpdateTexture(ImTextureData* tex, vk::CommandBuffer cmdbuf) {
                                vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {},
                                {use_barrier});
 
-        bd->upload_buffers[bd->upload_index].push_back(staging);
+        frb.staging_buffers.push_back(staging);
         tex->SetStatus(ImTextureStatus_OK);
     }
 
-    // Unused for as many frames as can be in flight, so no pending frame samples it.
-    if (tex->Status == ImTextureStatus_WantDestroy &&
-        tex->UnusedFrames >= static_cast<int>(bd->render_buffers.count)) {
-        DestroyTexture(tex);
+    // Frames still in flight may sample the texture, so it lives as long as this frame's slot.
+    if (tex->Status == ImTextureStatus_WantDestroy) {
+        const RetiredTexture retired = DetachTexture(tex);
+        if (retired.backend_tex != nullptr) {
+            frb.retired_textures.push_back(retired);
+        }
     }
 }
 
-void UpdateTextures(ImDrawData& draw_data, vk::CommandBuffer command_buffer) {
+void BeginFrame(::Vulkan::Scheduler& scheduler) {
     VkData* bd = GetBackendData();
-    // The slot last served the frame image_count presents ago, which has completed.
-    bd->upload_index = (bd->upload_index + 1) % bd->render_buffers.count;
-    DestroyStagingBuffers(bd->upload_buffers[bd->upload_index]);
+    WindowRenderBuffers& wrb = bd->render_buffers;
+    wrb.index = (wrb.index + 1) % wrb.count;
+    FrameRenderBuffers& frb = wrb.frame_render_buffers[wrb.index];
+    if (frb.tick != 0) {
+        scheduler.Wait(frb.tick);
+    }
+    frb.tick = scheduler.CurrentTick();
+    DestroyStagingBuffers(frb.staging_buffers);
+    DestroyRetiredTextures(frb.retired_textures);
+}
+
+void UpdateTextures(ImDrawData& draw_data, vk::CommandBuffer command_buffer) {
     if (draw_data.Textures == nullptr) {
         return;
     }
+    VkData* bd = GetBackendData();
+    WindowRenderBuffers& wrb = bd->render_buffers;
+    FrameRenderBuffers& frb = wrb.frame_render_buffers[wrb.index];
     for (ImTextureData* tex : *draw_data.Textures) {
         if (tex->Status != ImTextureStatus_OK) {
-            UpdateTexture(tex, command_buffer);
+            UpdateTexture(tex, command_buffer, frb);
         }
     }
 }
@@ -1005,6 +1040,8 @@ static void DestroyWindowRenderBuffers(vk::Device device, WindowRenderBuffers& b
         auto& frb = buffers.frame_render_buffers[n];
         DestroyFrameRenderBuffers(device, frb.index, allocator);
         DestroyFrameRenderBuffers(device, frb.vertex, allocator);
+        DestroyStagingBuffers(frb.staging_buffers);
+        DestroyRetiredTextures(frb.retired_textures);
     }
     buffers = {};
 }
@@ -1264,9 +1301,6 @@ void ImGuiImplVulkanDestroyDeviceObjects() {
         if (tex->RefCount == 1) {
             DestroyTexture(tex);
         }
-    }
-    for (auto& buffers : bd->upload_buffers) {
-        DestroyStagingBuffers(buffers);
     }
     if (bd->command_pool) {
         std::unique_lock lk(bd->command_pool_mutex);

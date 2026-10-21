@@ -253,10 +253,11 @@ ImGuiID NewFrame(bool is_reusing_frame) {
     return dockId;
 }
 
-void Render(const vk::CommandBuffer& cmdbuf, const vk::ImageView& image_view,
-            const vk::Extent2D& extent) {
+void Render(::Vulkan::Scheduler& scheduler, const vk::CommandBuffer& cmdbuf,
+            const vk::ImageView& image_view, const vk::Extent2D& extent) {
     ImGui::Render();
     ImDrawData* draw_data = GetDrawData();
+    Vulkan::BeginFrame(scheduler);
     // Font atlas uploads are recorded ahead of the render pass that samples them.
     Vulkan::UpdateTextures(*draw_data, cmdbuf);
     if (draw_data->CmdListsCount == 0) {
