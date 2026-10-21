@@ -7,8 +7,9 @@ commit.
 
 The patches add:
 
-- Update notifications from this repository's latest GitHub release. On confirmation the zip is
-  downloaded and replaces the launcher and the emulator, then the launcher restarts.
+- Updates from this repository's latest GitHub release, looked for only from Help > Check for
+  Updates (the Version Manager still lists the official builds when opened). On confirmation the
+  zip is downloaded and replaces the launcher and the emulator, then the launcher restarts.
 - The included `shadPS4.exe` is listed and selected as the emulator version.
 - A list of common window sizes instead of typing the width and height.
 - A frame generation (FSR 3.1) switch in the Graphics tab, and a Toggle Frame Generation key in the
