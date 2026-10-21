@@ -1,8 +1,8 @@
-From 7d1286a4a8a3d7ab5f8ec46e564fe539b7cb54dc Mon Sep 17 00:00:00 2001
+From ae7352543cbb6aaa50f51dc187635a58bc3573c5 Mon Sep 17 00:00:00 2001
 From: vsajjadx <noreply@github.com>
 Date: Wed, 21 Oct 2026 04:44:42 +0330
-Subject: [PATCH] Select the included emulator again after it is replaced by an
- update
+Subject: [PATCH 8/8] Select the included emulator again after it is replaced
+ by an update
 
 ---
  src/qt_gui/main_window.cpp | 11 +++++++----
@@ -38,3 +38,6 @@ index 9dcb151..ebb6fa9 100644
      }
  }
  
+-- 
+2.43.0
+

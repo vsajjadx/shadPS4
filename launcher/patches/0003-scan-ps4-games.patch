@@ -1,7 +1,7 @@
-From 9d6029e12982fd661256223cba8c056c0718fb32 Mon Sep 17 00:00:00 2001
+From b80d5db4924f47406ef67a4f0fec1a1dcefa1724 Mon Sep 17 00:00:00 2001
 From: Replit Agent <agent@replit.com>
 Date: Tue, 20 Oct 2026 17:04:59 +0000
-Subject: [PATCH] Add PS4 game scanning to launcher
+Subject: [PATCH 3/8] Add PS4 game scanning to launcher
 
 ---
  src/qt_gui/game_info.cpp   | 51 +++++++++++++++++++++++++++-----------
@@ -188,5 +188,5 @@ index 5f05771..cb10564 100644
      void InstallPkgFile(const std::filesystem::path& file, const std::filesystem::path& install_dir,
                          int pkg_num, int pkg_count);
 -- 
-2.54.0
+2.43.0
 

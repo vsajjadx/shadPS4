@@ -1,7 +1,7 @@
-From 6ed6a8a703a0323e01cd5cf98c7d0085edf3243a Mon Sep 17 00:00:00 2001
+From b7adfc35270891a3d3b1347ff8446f4b87bfb730 Mon Sep 17 00:00:00 2001
 From: ci <ci@localhost>
 Date: Sun, 18 Oct 2026 12:47:37 +0000
-Subject: [PATCH] Allow Crypto++ to build with clang-cl
+Subject: [PATCH 2/8] Allow Crypto++ to build with clang-cl
 
 ---
  CMakeLists.txt | 33 +++++++++++++++++++++++++++++++++

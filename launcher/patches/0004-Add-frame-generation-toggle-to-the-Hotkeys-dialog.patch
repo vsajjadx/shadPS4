@@ -1,7 +1,7 @@
-From 407bc51b640d4b71590ca7e2ec79e0615ddc36ac Mon Sep 17 00:00:00 2001
+From 20bf0ddc2aea69ed91909e49edddfd09e644fbeb Mon Sep 17 00:00:00 2001
 From: ci <ci@localhost>
 Date: Wed, 21 Oct 2026 01:51:38 +0330
-Subject: [PATCH 4/5] Add frame generation toggle to the Hotkeys dialog
+Subject: [PATCH 4/8] Add frame generation toggle to the Hotkeys dialog
 
 ---
  src/qt_gui/hotkeys.cpp | 15 ++++++++--

@@ -1,7 +1,7 @@
-From 9cf0e265d4bd55fcfecc42d8b57b9bbf1b39d7e1 Mon Sep 17 00:00:00 2001
+From 27b2bfc07a8311132d73ca01cc0ac3784e21bbf5 Mon Sep 17 00:00:00 2001
 From: vsajjadx <noreply@github.com>
 Date: Wed, 21 Oct 2026 04:34:23 +0330
-Subject: [PATCH] Add Anti-Aliasing, Resolution Scaling and Anisotropic
+Subject: [PATCH 7/8] Add Anti-Aliasing, Resolution Scaling and Anisotropic
  Filtering to the Graphics tab
 
 ---
@@ -56,7 +56,7 @@ index 992aab3..a0519a5 100644
      u32 GetVblankFrequency() {
          if (m_gpu.vblank_frequency.value < 30) {
 diff --git a/src/qt_gui/settings_dialog.cpp b/src/qt_gui/settings_dialog.cpp
-index 6832882..1af3f87 100644
+index 8083d7c..10e687e 100644
 --- a/src/qt_gui/settings_dialog.cpp
 +++ b/src/qt_gui/settings_dialog.cpp
 @@ -10,6 +10,9 @@
@@ -69,7 +69,7 @@ index 6832882..1af3f87 100644
  #include <QHoverEvent>
  #include <QMessageBox>
  #include <QSignalBlocker>
-@@ -553,6 +556,9 @@ SettingsDialog::SettingsDialog(std::shared_ptr<gui_settings> gui_settings,
+@@ -567,6 +570,9 @@ SettingsDialog::SettingsDialog(std::shared_ptr<gui_settings> gui_settings,
          ui->graphicsAdapterGroupBox->installEventFilter(this);
          ui->windowSizeGroupBox->installEventFilter(this);
          frameGenCheckBox->installEventFilter(this);
@@ -79,7 +79,7 @@ index 6832882..1af3f87 100644
          ui->presentModeGroupBox->installEventFilter(this);
          ui->heightDivider->installEventFilter(this);
          ui->nullGpuCheckBox->installEventFilter(this);
-@@ -760,6 +766,8 @@ void SettingsDialog::LoadValuesFromConfig() {
+@@ -781,6 +787,8 @@ void SettingsDialog::LoadValuesFromConfig() {
      ui->enableHDRCheckBox->setChecked(EmulatorSettings.IsHdrAllowed());
      SyncResolutionComboBox();
      frameGenCheckBox->setChecked(EmulatorSettings.IsFrameGenerationEnabled());
@@ -88,7 +88,7 @@ index 6832882..1af3f87 100644
  
      ui->FSRCheckBox->setChecked(EmulatorSettings.IsFsrEnabled());
      ui->RCASCheckBox->setChecked(EmulatorSettings.IsRcasEnabled());
-@@ -1017,6 +1025,12 @@ void SettingsDialog::updateNoteTextEdit(const QString& elementName) {
+@@ -1038,6 +1046,12 @@ void SettingsDialog::updateNoteTextEdit(const QString& elementName) {
                    "Immediate: Frames immediately present to your screen when ready. May result in tearing.");
      } else if (elementName == "windowSizeGroupBox") {
          text = tr("Window Size:\\nPick the size of the emulator window at launch. It can be resized during gameplay.\\nThis is different from the in-game resolution.");
@@ -101,7 +101,7 @@ index 6832882..1af3f87 100644
      } else if (elementName == "frameGenCheckBox") {
          text = tr("Enable Frame Generation:\\nAdds a generated frame between every two game frames with AMD FSR 3.1, so the game looks smoother.\\nWorks best when the game already runs at 30 FPS or more. The key that turns it on and off while playing is set in Hotkeys (default: 1).");
      } else if (elementName == "heightDivider") {
-@@ -1178,6 +1192,11 @@ void SettingsDialog::UpdateSettings(bool is_specific) {
+@@ -1203,6 +1217,11 @@ void SettingsDialog::UpdateSettings(bool is_specific) {
      EmulatorSettings.SetHdrAllowed(ui->enableHDRCheckBox->isChecked(), is_specific);
      EmulatorSettings.SetFsrEnabled(ui->FSRCheckBox->isChecked(), is_specific);
      EmulatorSettings.SetFrameGenerationEnabled(frameGenCheckBox->isChecked(), is_specific);
@@ -113,7 +113,7 @@ index 6832882..1af3f87 100644
      EmulatorSettings.SetRcasEnabled(ui->RCASCheckBox->isChecked(), is_specific);
      EmulatorSettings.SetRcasAttenuation(ui->RCASSlider->value(), is_specific);
  
-@@ -1588,6 +1607,54 @@ void SettingsDialog::SetupGraphicsExtras() {
+@@ -1613,6 +1632,54 @@ void SettingsDialog::SetupGraphicsExtras() {
      frameGenCheckBox = new QCheckBox(tr("Enable Frame Generation (FSR 3.1)"), ui->FSRGroupBox);
      frameGenCheckBox->setObjectName("frameGenCheckBox");
      ui->verticalLayout_5->insertWidget(0, frameGenCheckBox);
@@ -191,3 +191,6 @@ index 20fd4ad..2218a62 100644
  
      std::unique_ptr<Ui::SettingsDialog> ui;
      std::shared_ptr<gui_settings> m_gui_settings;
+-- 
+2.43.0
+

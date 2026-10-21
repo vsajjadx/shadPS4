@@ -1,7 +1,7 @@
-From 33cb1f0b2350c7dcd976f0d40a0dfec6e480088b Mon Sep 17 00:00:00 2001
+From cbb2d9144685e5c9bfeadaa24eaccf3a49ee6cf2 Mon Sep 17 00:00:00 2001
 From: vsajjadx <noreply@github.com>
 Date: Sun, 18 Oct 2026 14:12:10 +0330
-Subject: [PATCH] Bundle with shadPS4 Anti-Crash
+Subject: [PATCH 1/8] Bundle with shadPS4 Anti-Crash
 
 Fork updater, bundled emulator, resolution list, frame generation switch, existing user
 folders first, compatibility overrides from the fork, About links to the fork, and PKG
@@ -2884,7 +2884,7 @@ index 0000000..057d71f
 +    }
 +}
 diff --git a/src/qt_gui/settings_dialog.cpp b/src/qt_gui/settings_dialog.cpp
-index 0a58c7a..53cb76e 100644
+index baa4b03..8083d7c 100644
 --- a/src/qt_gui/settings_dialog.cpp
 +++ b/src/qt_gui/settings_dialog.cpp
 @@ -1,6 +1,7 @@
@@ -2911,7 +2911,7 @@ index 0a58c7a..53cb76e 100644
      GetPhysicalDevices();
  
      initialHeight = this->height();
-@@ -549,6 +552,7 @@ SettingsDialog::SettingsDialog(std::shared_ptr<gui_settings> gui_settings,
+@@ -563,6 +566,7 @@ SettingsDialog::SettingsDialog(std::shared_ptr<gui_settings> gui_settings,
          // Graphics
          ui->graphicsAdapterGroupBox->installEventFilter(this);
          ui->windowSizeGroupBox->installEventFilter(this);
@@ -2919,7 +2919,7 @@ index 0a58c7a..53cb76e 100644
          ui->presentModeGroupBox->installEventFilter(this);
          ui->heightDivider->installEventFilter(this);
          ui->nullGpuCheckBox->installEventFilter(this);
-@@ -754,6 +758,8 @@ void SettingsDialog::LoadValuesFromConfig() {
+@@ -775,6 +779,8 @@ void SettingsDialog::LoadValuesFromConfig() {
      ui->widthSpinBox->setValue(EmulatorSettings.GetWindowWidth());
      ui->heightSpinBox->setValue(EmulatorSettings.GetWindowHeight());
      ui->enableHDRCheckBox->setChecked(EmulatorSettings.IsHdrAllowed());
@@ -2928,7 +2928,7 @@ index 0a58c7a..53cb76e 100644
  
      ui->FSRCheckBox->setChecked(EmulatorSettings.IsFsrEnabled());
      ui->RCASCheckBox->setChecked(EmulatorSettings.IsRcasEnabled());
-@@ -1010,7 +1016,9 @@ void SettingsDialog::updateNoteTextEdit(const QString& elementName) {
+@@ -1031,7 +1037,9 @@ void SettingsDialog::updateNoteTextEdit(const QString& elementName) {
                    "Fifo: Frames synchronize with your screen's refresh rate. New frames will be queued behind pending frames. Ensures all frames are presented but may increase latency.\\n"
                    "Immediate: Frames immediately present to your screen when ready. May result in tearing.");
      } else if (elementName == "windowSizeGroupBox") {
@@ -2939,7 +2939,7 @@ index 0a58c7a..53cb76e 100644
      } else if (elementName == "heightDivider") {
          text = tr("Vblank Frequency:\\nThe frame rate at which the emulator refreshes at (60hz is the baseline, whether the game runs at 30 or 60fps). Changing this may have adverse effects, such as increasing the game speed, or breaking critical game functionality that does not expect this to change!");
      } else if (elementName == "dumpShadersCheckBox") {
-@@ -1169,6 +1177,7 @@ void SettingsDialog::UpdateSettings(bool is_specific) {
+@@ -1194,6 +1202,7 @@ void SettingsDialog::UpdateSettings(bool is_specific) {
      EmulatorSettings.SetWindowHeight(ui->heightSpinBox->value(), is_specific);
      EmulatorSettings.SetHdrAllowed(ui->enableHDRCheckBox->isChecked(), is_specific);
      EmulatorSettings.SetFsrEnabled(ui->FSRCheckBox->isChecked(), is_specific);
@@ -2947,7 +2947,7 @@ index 0a58c7a..53cb76e 100644
      EmulatorSettings.SetRcasEnabled(ui->RCASCheckBox->isChecked(), is_specific);
      EmulatorSettings.SetRcasAttenuation(ui->RCASSlider->value(), is_specific);
  
-@@ -1338,7 +1347,7 @@ void SettingsDialog::SetDefaultValues() {
+@@ -1363,7 +1372,7 @@ void SettingsDialog::SetDefaultValues() {
          m_gui_settings->SetValue(gui::gl_backgroundImageOpacity, 50);
          m_gui_settings->SetValue(gui::gl_playBackgroundMusic, false);
          m_gui_settings->SetValue(gui::gl_backgroundMusicVolume, 50);
@@ -2956,7 +2956,7 @@ index 0a58c7a..53cb76e 100644
          m_gui_settings->SetValue(gui::gen_showChangeLog, false);
          m_gui_settings->SetValue(gui::gen_guiLanguage, "en_US");
          m_gui_settings->SetValue(gui::glc_showLoadGameSizeEnabled, true);
-@@ -1528,3 +1537,68 @@ void SettingsDialog::GetPhysicalDevices() {
+@@ -1553,3 +1562,68 @@ void SettingsDialog::GetPhysicalDevices() {
      m_physical_devices.push_back(QString::fromStdString(gpuName));
  #endif
  }

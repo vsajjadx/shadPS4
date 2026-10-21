@@ -1,7 +1,7 @@
-From 24ecb25810e4fd5900bffef57fc20cb72c21d34e Mon Sep 17 00:00:00 2001
+From c4c5fd899db0b39be6270b3da99d2bef2fcb5ca2 Mon Sep 17 00:00:00 2001
 From: vsajjadx <vsajjadx@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 01:53:55 +0330
-Subject: [PATCH 5/5] Scan every drive for PS4 games without asking for a
+Subject: [PATCH 5/8] Scan every drive for PS4 games without asking for a
  folder
 
 ---

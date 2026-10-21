@@ -1,8 +1,8 @@
-From 81e6249de35392731c3fd1a74c4bfabf3afc3a44 Mon Sep 17 00:00:00 2001
+From 79d21fff2c13040c385131f7b04d7ded1a89be7c Mon Sep 17 00:00:00 2001
 From: ci <ci@localhost>
 Date: Tue, 20 Oct 2026 23:38:36 +0000
-Subject: [PATCH] Recognise the DualSense touchpad as left / middle / right in
- the controller and Hotkeys dialogs
+Subject: [PATCH 6/8] Recognise the DualSense touchpad as left / middle / right
+ in the controller and Hotkeys dialogs
 
 A touchpad click was dropped by the capture code (SDL reports it as SDL_GAMEPAD_BUTTON_TOUCHPAD, which
 had no case), so the field kept showing its old value, usually 'back'. The SDL event wrapper now
