@@ -145,6 +145,9 @@ private:
     bool RefreshGraphicsStages();
     bool RefreshComputeKey();
     bool IsDrawSkippable();
+    bool IsDispatchSkippable();
+    template <typename PipelineType>
+    bool AwaitPipeline(const PipelineType* pipeline, bool skippable);
 
     struct ModuleBuild {
         vk::ShaderModule module{};
@@ -221,6 +224,7 @@ private:
         u32 frames{};
     };
     tsl::robin_map<VAddr, TargetStreak> target_streaks;
+    tsl::robin_map<u64, TargetStreak> compute_streaks;
     u32 driver_cache_saved_pipelines{};
     std::chrono::steady_clock::time_point driver_cache_saved_at{};
     tsl::robin_map<u64, std::deque<std::unique_ptr<PendingTranslation>>> pending_translations;

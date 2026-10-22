@@ -484,15 +484,16 @@ void PipelineCache::SaveDriverCache() {
     std::filesystem::rename(temp_path, path, ec);
 }
 
+// A draw left out while its shaders or pipeline build goes unnoticed only when its pass is drawn
+// again the next frame. One-off passes (light probes, exposure, full-screen effects), indirect
+// draws and light frames such as loading screens are built at once instead.
+// (After HayatoG/iss_pc BP07 and deadinside/bloodborne_pc 10baf9d.)
+constexpr float MinFrameDraws = 300.0f;
+constexpr u32 MinStreakFrames = 8;
+constexpr size_t MaxTrackedStreaks = 4096;
+
 bool PipelineCache::IsDrawSkippable() {
-    // A draw left out while its shaders or pipeline build goes unnoticed only when its pass is
-    // drawn again the next frame. One-off passes (light probes, exposure, full-screen effects),
-    // indirect draws and light frames such as loading screens are built at once instead.
-    // (After HayatoG/iss_pc BP07 and deadinside/bloodborne_pc 10baf9d.)
     constexpr u32 MinIndices = 12;
-    constexpr float MinFrameDraws = 300.0f;
-    constexpr u32 MinStreakFrames = 8;
-    constexpr size_t MaxTrackedTargets = 4096;
 
     const auto& regs = liverpool->regs;
     VAddr target = regs.depth_buffer.DepthAddress();
@@ -502,7 +503,7 @@ bool PipelineCache::IsDrawSkippable() {
             break;
         }
     }
-    if (target_streaks.size() >= MaxTrackedTargets) {
+    if (target_streaks.size() >= MaxTrackedStreaks) {
         target_streaks.clear();
     }
     const u32 frame = DebugState.GetFrameNum();
@@ -516,6 +517,53 @@ bool PipelineCache::IsDrawSkippable() {
 
     return !draw_indirect_params.is_indirect && regs.num_indices > MinIndices &&
            DebugState.GetDrawCallsAvg() >= MinFrameDraws && streak.frames >= MinStreakFrames;
+}
+
+bool PipelineCache::IsDispatchSkippable() {
+    // A compute pass run every frame (particle simulation, culling, post effects) only loses a
+    // few frames of its effect while its pipeline builds; one-off passes are built at once.
+    if (compute_streaks.size() >= MaxTrackedStreaks) {
+        compute_streaks.clear();
+    }
+    const u32 frame = DebugState.GetFrameNum();
+    auto& streak = compute_streaks[compute_key.value];
+    if (streak.last_frame + 1 == frame) {
+        ++streak.frames;
+    } else if (streak.last_frame != frame) {
+        streak.frames = 1;
+    }
+    streak.last_frame = frame;
+    return DebugState.GetDrawCallsAvg() >= MinFrameDraws && streak.frames >= MinStreakFrames;
+}
+
+template <typename PipelineType>
+bool PipelineCache::AwaitPipeline(const PipelineType* pipeline, bool skippable) {
+    if (!pipeline->IsReady() && !skippable) {
+        while (!pipeline->IsReady()) {
+            std::this_thread::yield();
+        }
+    }
+    if (!pipeline->IsReady()) {
+        // Most pipelines build in a few milliseconds (driver cache hits). Give a pending one a
+        // short wait, within a small budget per 100 ms, so objects aren't left undrawn for frames
+        // while still never stalling the GPU thread for a full compile.
+        using namespace std::chrono;
+        constexpr auto WaitPerPipeline = microseconds(3000);
+        constexpr auto WaitBudget = microseconds(6000);
+        const auto now = steady_clock::now();
+        if (now - pending_wait_window_start > milliseconds(100)) {
+            pending_wait_window_start = now;
+            pending_wait_spent = {};
+        }
+        if (pending_wait_spent < WaitBudget) {
+            const auto deadline = now + std::min(WaitPerPipeline, WaitBudget - pending_wait_spent);
+            while (!pipeline->IsReady() && steady_clock::now() < deadline) {
+                std::this_thread::yield();
+            }
+            pending_wait_spent += duration_cast<microseconds>(steady_clock::now() - now);
+        }
+    }
+    return pipeline->IsReady();
 }
 
 const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectParams params) {
@@ -560,32 +608,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         }
     }
     const GraphicsPipeline* pipeline = it->second.get();
-    if (!pipeline->IsReady() && !draw_skippable) {
-        while (!pipeline->IsReady()) {
-            std::this_thread::yield();
-        }
-    }
-    if (!pipeline->IsReady()) {
-        // Most pipelines build in a few milliseconds (driver cache hits). Give a pending one a
-        // short wait, within a small budget per 100 ms, so objects aren't left undrawn for frames
-        // while still never stalling the GPU thread for a full compile.
-        using namespace std::chrono;
-        constexpr auto WaitPerPipeline = microseconds(3000);
-        constexpr auto WaitBudget = microseconds(6000);
-        const auto now = steady_clock::now();
-        if (now - pending_wait_window_start > milliseconds(100)) {
-            pending_wait_window_start = now;
-            pending_wait_spent = {};
-        }
-        if (pending_wait_spent < WaitBudget) {
-            const auto deadline = now + std::min(WaitPerPipeline, WaitBudget - pending_wait_spent);
-            while (!pipeline->IsReady() && steady_clock::now() < deadline) {
-                std::this_thread::yield();
-            }
-            pending_wait_spent += duration_cast<microseconds>(steady_clock::now() - now);
-        }
-    }
-    if (!pipeline->IsReady()) {
+    if (!AwaitPipeline(pipeline, draw_skippable)) {
         if ((num_pending_draws_skipped++ % 256) == 0) {
             LOG_INFO(Render_Vulkan, "Skipping draws while pipelines compile ({} so far)",
                      num_pending_draws_skipped);
@@ -601,6 +624,7 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
     if (!RefreshComputeKey()) {
         return nullptr;
     }
+    const bool skippable = EmulatorSettings.IsAsyncPipelineCompilation() && IsDispatchSkippable();
     const auto [it, is_new] = compute_pipelines.try_emplace(compute_key);
     if (is_new) {
         const auto pipeline_hash = std::hash<ComputePipelineKey>{}(compute_key);
@@ -609,7 +633,11 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
         ComputePipeline::SerializationSupport sdata{};
         it.value() = std::make_unique<ComputePipeline>(instance, scheduler, desc_heap, profile,
                                                        *pipeline_cache, compute_key, *infos[0],
-                                                       modules[0], sdata, false);
+                                                       modules[0], sdata, false, skippable);
+        if (skippable) {
+            auto* pipeline = it.value().get();
+            compile_workers.Submit([pipeline] { pipeline->Build(); });
+        }
         RegisterPipelineData(compute_key, sdata);
         ++num_new_pipelines;
 
@@ -618,7 +646,12 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
             module_related_pipelines[m].emplace_back(compute_key);
         }
     }
-    return it->second.get();
+    const ComputePipeline* pipeline = it->second.get();
+    if (!AwaitPipeline(pipeline, skippable) && (num_pending_draws_skipped++ % 256) == 0) {
+        LOG_INFO(Render_Vulkan, "Skipping dispatches while pipelines compile ({} so far)",
+                 num_pending_draws_skipped);
+    }
+    return pipeline;
 }
 
 bool PipelineCache::RefreshGraphicsKey() {

@@ -339,6 +339,9 @@ void Rasterizer::DispatchDirect() {
     if (ExecuteShaderHLE(cs, liverpool->regs, cs_program, *this)) {
         return;
     }
+    if (!pipeline->IsReady()) {
+        return;
+    }
 
     if (!BindResources(pipeline)) {
         return;
@@ -366,7 +369,7 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
 
     const auto& cs_program = liverpool->GetCsRegs();
     const ComputePipeline* pipeline = pipeline_cache.GetComputePipeline();
-    if (!pipeline) {
+    if (!pipeline || !pipeline->IsReady()) {
         return;
     }
 
