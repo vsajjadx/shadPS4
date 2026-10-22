@@ -5,6 +5,8 @@
 
 #include <deque>
 #include <span>
+#include <unordered_map>
+#include <unordered_set>
 #include <boost/container/small_vector.hpp>
 
 #include "common/enum.h"
@@ -103,6 +105,10 @@ public:
     void ReadMemory(VAddr device_addr, u64 size, bool is_write = false, bool async = false,
                     bool assume_locks = false);
 
+    /// Starts downloading GPU writes to the pages the CPU reads back, so the data is in guest
+    /// memory by the time the CPU reads it instead of stalling the CPU, the GPU thread and the GPU.
+    void PrefetchReadbacks();
+
     /// Flushes GPU modified ranges of the uncovered part of the edge pages of an image.
     void ReadEdgeImagePages(const Image& image);
 
@@ -156,6 +162,9 @@ private:
 
     static constexpr u64 MaxUploadPartBytes = 256_MB;
     static constexpr u64 ReadWatchMaxBytes = 64_KB;
+    static constexpr u64 ReadbackPageBits = 12;
+
+    void NoteGpuWrite(VAddr device_addr, u64 size);
 
     void UploadInParts(const Buffer* arena, std::span<const vk::BufferCopy> ranges);
 
@@ -174,6 +183,10 @@ private:
     Buffer gds_buffer;
     std::unique_ptr<Buffer> null_index_buffer;
     RangeSet gpu_modified_ranges;
+    std::unordered_set<u64> readback_pages;
+    std::unordered_map<u64, u64> readback_page_write_seq;
+    u64 readback_write_seq{};
+    IntervalList<Interval> pending_prefetches;
 
     std::unique_ptr<FaultManager> fault_manager;
     std::unique_ptr<Buffer> bda_pagetable_buffer;

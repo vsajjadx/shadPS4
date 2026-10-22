@@ -134,7 +134,16 @@ void BufferCache::UnmarkRegionAsGpuModified(VAddr device_addr, u64 size, bool is
 
 void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool async,
                              bool assume_locks) {
-    const auto flush_request = [this, device_addr, size, is_write, async] {
+    const bool cpu_read = !is_write && !async && !assume_locks;
+    const auto flush_request = [this, device_addr, size, is_write, async, cpu_read] {
+        if (cpu_read) {
+            for (u64 page = device_addr >> ReadbackPageBits;
+                 page <= (device_addr + size - 1) >> ReadbackPageBits; ++page) {
+                readback_pages.insert(page);
+            }
+            // A prefetch the GPU has finished only needs its data written back.
+            scheduler.PopPendingOperations();
+        }
         const u32 first_block = device_addr >> block_shift;
         const u32 last_block = (device_addr + size - 1) >> block_shift;
         const auto* arena = GetArena(first_block, last_block);
@@ -182,7 +191,10 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
         // The tracker still has these pages GPU modified (and protected) but there is nothing
         // left to download, e.g. their ranges were taken by an asynchronous readback. Returning
         // without unmarking them leaves the faulting access retrying forever, which on the GPU
-        // thread freezes the game.
+        // thread freezes the game. A readback still in flight writes the data on completion.
+        if (!async && memory_tracker->IsRegionGpuModified(device_addr, size)) {
+            scheduler.Finish();
+        }
         if (!async && memory_tracker->IsRegionGpuModified(device_addr, size)) {
             memory_tracker->UnmarkRegionAsGpuModified(device_addr, size, false);
             if (is_write) {
@@ -199,20 +211,39 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
     runtime.CopyBuffer(arena, download.buffer, copies);
 
     const auto write_data = [this, arena_base, device_addr, size, download, is_write, async,
-                             copies = std::move(copies)] {
+                             copies = std::move(copies), seq = readback_write_seq] {
         download.Invalidate();
+        // The GPU may have written a range again after an asynchronous download of it was
+        // recorded; that range keeps its newer GPU data.
+        const auto written_since = [&](VAddr addr, u64 bytes) {
+            for (u64 page = addr >> ReadbackPageBits;
+                 page <= (addr + bytes - 1) >> ReadbackPageBits; ++page) {
+                const auto it = readback_page_write_seq.find(page);
+                if (it != readback_page_write_seq.end() && it->second > seq) {
+                    return true;
+                }
+            }
+            return false;
+        };
         for (const auto& copy : copies) {
-            auto* dst_addr = std::bit_cast<u8*>(arena_base + copy.srcOffset);
-            memory->TryWriteBacking(dst_addr, download.mapped + (copy.dstOffset - download.offset),
+            const VAddr addr = arena_base + copy.srcOffset;
+            if (async && written_since(addr, copy.size)) {
+                continue;
+            }
+            memory->TryWriteBacking(std::bit_cast<u8*>(addr),
+                                    download.mapped + (copy.dstOffset - download.offset),
                                     copy.size);
+            if (async) {
+                memory_tracker->UnmarkRegionAsGpuModified(addr, copy.size, false);
+            }
+        }
+        if (async) {
+            staging_pool.FreeDeferred(download);
+            return;
         }
         memory_tracker->UnmarkRegionAsGpuModified(device_addr, size, false);
         if (is_write) {
             memory_tracker->MarkRegionAsCpuModified(device_addr, size);
-        }
-
-        if (async) {
-            staging_pool.FreeDeferred(download);
         }
     };
 
@@ -247,6 +278,7 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     SynchronizeMemory(arena, device_addr, size, is_written, is_texel_buffer);
     if (is_written) {
         gpu_modified_ranges.Add(device_addr, size);
+        NoteGpuWrite(device_addr, size);
     }
     return {arena, arena->Offset(device_addr)};
 }
@@ -274,6 +306,39 @@ void BufferCache::MarkRegionAsGpuModified(VAddr addr, size_t size) {
     texture_cache.MarkAsMaybeGpuDirty(addr, size);
     memory_tracker->MarkRegionAsGpuModified(addr, size, size <= ReadWatchMaxBytes);
     gpu_modified_ranges.Add(addr, size);
+    NoteGpuWrite(addr, size);
+}
+
+void BufferCache::NoteGpuWrite(VAddr device_addr, u64 size) {
+    if (readback_pages.empty() || size == 0 || size > ReadWatchMaxBytes) {
+        return;
+    }
+    bool read_back = false;
+    ++readback_write_seq;
+    for (u64 page = device_addr >> ReadbackPageBits;
+         page <= (device_addr + size - 1) >> ReadbackPageBits; ++page) {
+        if (readback_pages.contains(page)) {
+            readback_page_write_seq[page] = readback_write_seq;
+            read_back = true;
+        }
+    }
+    if (read_back) {
+        pending_prefetches.Add({device_addr, device_addr + size});
+    }
+}
+
+void BufferCache::PrefetchReadbacks() {
+    for (const auto& range : pending_prefetches) {
+        const u64 first_block = range.start >> block_shift;
+        const u64 last_block = (range.end - 1) >> block_shift;
+        DownloadMemory(GetArena(first_block, last_block), range.start, range.end - range.start,
+                       false, true);
+    }
+    if (!pending_prefetches.Empty()) {
+        // The CPU reads the data soon after the fence, so the copies start now.
+        scheduler.Flush();
+    }
+    pending_prefetches.Clear();
 }
 
 void BufferCache::ReadEdgeImagePages(const Image& image) {
