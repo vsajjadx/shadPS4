@@ -5,9 +5,9 @@ on:
     paths: [.github/workflows/fork-release.yml]
 
 env:
-  RUN_ID: "39762072080"
-  TAG: perf-recorder-2026-10-22
-  TARGET: 551f6e7336f33f00c224cd2c55d4902c1c0ea47c
+  RUN_ID: "39769845392"
+  TAG: fix-cutscene-freeze-2026-10-22
+  TARGET: bb41627e98d34610016507ff648995c3b0077716
 
 permissions:
   contents: write
@@ -30,25 +30,24 @@ jobs:
       - name: Write release notes
         run: |
           cat > notes.md <<'EOF'
-          ## Performance: Vulkan commands recorded on their own thread
+          ## Fix: intermittent freezes in cutscenes (event flag lost wakeup)
 
-          The GPU command processor thread was the bottleneck: besides translating the PS4 command stream it spent about a fifth of its time inside the Vulkan driver recording commands, while the game thread mostly waited for it. Command recording now runs on a separate thread.
+          The Grand Tour Game sometimes froze for good in the middle of its Bink cutscenes: the picture stopped, the game kept running, and buttons did nothing. It happened only some of the time, and it was a bug in the emulator, not in the game.
 
-          ### What changed
-          - **Recording thread.** The main renderer now writes each Vulkan command, together with the arrays it uses, into a compact command chunk instead of calling the driver directly. A dedicated thread (`shadPS4:GpuCommandRecorder`) replays the chunks in order into the command buffer and submits it to the GPU. Translating the next commands and recording the previous ones now happen at the same time on two CPU cores.
-          - **Ordering is preserved.** Host passes that need the command buffer itself (FSR, post processing, frame generation) first wait for every queued command, so nothing is reordered. A frame is only handed to presentation after its commands are submitted.
-          - Presentation and flip work still record directly, as before.
+          ### Cause
+          The game's audio engine (Wwise) waits on an event flag that is cleared automatically when a waiter takes it. When the flag was set, the waiter was marked as satisfied but stayed in the waiter list until its thread actually ran again. If the flag was set a second time in that short window, the emulator matched the already satisfied waiter again and cleared the bits once more, so the second event was consumed by a thread that had already taken the first one. The next wait never saw it and slept forever, which stopped the sound bank loader, the video waiting on it, and the game waiting on the video.
 
-          ### Result
-          - **inFAMOUS First Light (RTX 3080):** 28-29 FPS to 35-36 FPS at the same spot, measured with the same build with the recording thread turned on and off.
-          - The Order: 1886, Driveclub and NHL 24 were tested and run without errors.
+          On the PS4 a satisfied waiter leaves the queue at once. Now sets, cancels and the single waiter check only count waiters that have not been woken yet, which matches that behavior.
 
-          ### Also included (from the previous release)
+          This can also fix random hangs in other games that use event flags with auto-clear, including games that use the Wwise audio engine.
+
+          ### Also included
+          - Vulkan commands recorded on their own thread (about 20-25% more FPS in inFAMOUS First Light).
           - Readback prefetch: no more full GPU stalls when games read GPU results back on the CPU.
           - Fixes for black blotches on faces in The Order: 1886, NHL 24 cutscene shadow jitter, and a crash while loading with an empty shader cache.
 
           ### Notes
-          - This is a large change to how commands reach the GPU. If a game crashes or shows rendering errors with this build but not with `perf-2026-10-22`, please report it.
+          - Tested on The Grand Tour Game (CUSA13903) with an RTX 3080: the cutscene that froze plays through.
           - Requirements: Windows 64-bit and a GPU with Vulkan 1.3 support. Extract the zip and run `shadPS4.exe`.
 
           EOF
@@ -60,5 +59,5 @@ jobs:
         run: |
           gh release create "${{ env.TAG }}" shadps4-win64-sdl-${{ env.TAG }}.zip \
             --repo ${{ github.repository }} \
-            --title "Performance: recording thread (${{ env.TAG }})" \
+            --title "Fix: cutscene freezes from lost event flag wakeups (${{ env.TAG }})" \
             --notes-file notes.md
