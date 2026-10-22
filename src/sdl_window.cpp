@@ -23,6 +23,7 @@
 #include "core/libraries/pad/pad.h"
 #include "core/libraries/system/userservice.h"
 #include "core/user_settings.h"
+#include "imgui/brightness_layer.h"
 #include "imgui/friends_layer.h"
 #include "imgui/notifications_layer.h"
 #include "imgui/renderer/imgui_core.h"
@@ -31,6 +32,10 @@
 #include "input/input_mouse.h"
 #include "sdl_window.h"
 #include "video_core/renderdoc.h"
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #ifdef ENABLE_FSR_FRAMEGEN
 #include "video_core/renderer_vulkan/vk_frame_generation.h"
 #endif
@@ -100,6 +105,35 @@ static Uint32 SDLCALL PollControllerLightColour(void* userdata, SDL_TimerID time
     return interval;
 }
 
+#if defined(SDL_PLATFORM_WIN32)
+namespace {
+
+constexpr UINT_PTR BrightnessMenuId = 0x5100;
+WNDPROC sdl_window_proc{};
+
+LRESULT CALLBACK TitleBarMenuProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+    if (msg == WM_SYSCOMMAND && (wparam & 0xFFF0) == BrightnessMenuId) {
+        ImGui::BrightnessLayer::Toggle();
+        return 0;
+    }
+    return CallWindowProcW(sdl_window_proc, hwnd, msg, wparam, lparam);
+}
+
+// Right-clicking the title bar opens the window menu, where the brightness slider is offered.
+void AddTitleBarMenu(HWND hwnd) {
+    const HMENU menu = GetSystemMenu(hwnd, FALSE);
+    if (!menu) {
+        return;
+    }
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, BrightnessMenuId, L"Brightness...");
+    sdl_window_proc = reinterpret_cast<WNDPROC>(
+        SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(TitleBarMenuProc)));
+}
+
+} // namespace
+#endif
+
 WindowSDL::WindowSDL(s32 width_, s32 height_, Input::GameControllers* controllers_,
                      std::string_view window_title)
     : width{width_}, height{height_}, controllers{*controllers_} {
@@ -167,6 +201,7 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, Input::GameControllers* controller
     window_info.type = WindowSystemType::Windows;
     window_info.render_surface = SDL_GetPointerProperty(SDL_GetWindowProperties(window),
                                                         SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+    AddTitleBarMenu(static_cast<HWND>(window_info.render_surface));
 #elif defined(SDL_PLATFORM_LINUX) || defined(__FreeBSD__)
     // SDL doesn't have a platform define for FreeBSD AAAAAAAAAA
     if (SDL_strcmp(SDL_GetCurrentVideoDriver(), "x11") == 0) {

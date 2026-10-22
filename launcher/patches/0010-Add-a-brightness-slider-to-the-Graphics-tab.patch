@@ -1,0 +1,145 @@
+From 3938a18636e59c98011299e0bbb7bb0a0e3ecf7c Mon Sep 17 00:00:00 2001
+From: vsajjadx <noreply@github.com>
+Date: Thu, 22 Oct 2026 20:16:35 +0330
+Subject: [PATCH] Add a brightness slider to the Graphics tab
+
+The emulator scales the presented image by the brightness setting, globally or per game.
+The slider sits with the other image quality options and is saved the same way.
+---
+ src/core/emulator_settings.h   |  6 +++++-
+ src/qt_gui/settings_dialog.cpp | 25 +++++++++++++++++++++++++
+ src/qt_gui/settings_dialog.h   |  2 ++
+ 3 files changed, 32 insertions(+), 1 deletion(-)
+
+diff --git a/src/core/emulator_settings.h b/src/core/emulator_settings.h
+index a0519a5..35326f7 100644
+--- a/src/core/emulator_settings.h
++++ b/src/core/emulator_settings.h
+@@ -436,6 +436,7 @@ struct GPUSettings {
+     Setting<bool> anti_aliasing{false};
+     Setting<u32> resolution_scale{100};
+     Setting<u32> anisotropic_filtering{0};
++    Setting<int> brightness{100};
+ 
+     std::vector<OverrideItem> GetOverrideableFields() const {
+         return std::vector<OverrideItem>{
+@@ -466,6 +467,7 @@ struct GPUSettings {
+             make_override<GPUSettings>("resolution_scale", &GPUSettings::resolution_scale),
+             make_override<GPUSettings>("anisotropic_filtering",
+                                        &GPUSettings::anisotropic_filtering),
++            make_override<GPUSettings>("brightness", &GPUSettings::brightness),
+         };
+     }
+ };
+@@ -476,7 +478,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GPUSettings, window_width, window_height, int
+                                    vblank_frequency, full_screen, full_screen_mode, present_mode,
+                                    hdr_allowed, fsr_enabled, rcas_enabled, rcas_attenuation,
+                                    userfaultfd, inline_fetch_shader, frame_generation_enabled,
+-                                   anti_aliasing, resolution_scale, anisotropic_filtering)
++                                   anti_aliasing, resolution_scale, anisotropic_filtering,
++                                   brightness)
+ 
+ // -------------------------------
+ // Vulkan settings
+@@ -759,6 +762,7 @@ public:
+     SETTING_FORWARD_BOOL(m_gpu, AntiAliasing, anti_aliasing)
+     SETTING_FORWARD(m_gpu, ResolutionScale, resolution_scale)
+     SETTING_FORWARD(m_gpu, AnisotropicFiltering, anisotropic_filtering)
++    SETTING_FORWARD(m_gpu, Brightness, brightness)
+ 
+     u32 GetVblankFrequency() {
+         if (m_gpu.vblank_frequency.value < 30) {
+diff --git a/src/qt_gui/settings_dialog.cpp b/src/qt_gui/settings_dialog.cpp
+index 10e687e..5414914 100644
+--- a/src/qt_gui/settings_dialog.cpp
++++ b/src/qt_gui/settings_dialog.cpp
+@@ -16,6 +16,7 @@
+ #include <QHoverEvent>
+ #include <QMessageBox>
+ #include <QSignalBlocker>
++#include <QSlider>
+ #include <SDL3/SDL.h>
+ #include <fmt/format.h>
+ 
+@@ -573,6 +574,7 @@ SettingsDialog::SettingsDialog(std::shared_ptr<gui_settings> gui_settings,
+         antiAliasingCheckBox->installEventFilter(this);
+         resolutionScaleComboBox->installEventFilter(this);
+         anisotropicComboBox->installEventFilter(this);
++        brightnessSlider->installEventFilter(this);
+         ui->presentModeGroupBox->installEventFilter(this);
+         ui->heightDivider->installEventFilter(this);
+         ui->nullGpuCheckBox->installEventFilter(this);
+@@ -789,6 +791,7 @@ void SettingsDialog::LoadValuesFromConfig() {
+     frameGenCheckBox->setChecked(EmulatorSettings.IsFrameGenerationEnabled());
+     antiAliasingCheckBox->setChecked(EmulatorSettings.IsAntiAliasing());
+     SyncImageQualityComboBoxes();
++    brightnessSlider->setValue(EmulatorSettings.GetBrightness());
+ 
+     ui->FSRCheckBox->setChecked(EmulatorSettings.IsFsrEnabled());
+     ui->RCASCheckBox->setChecked(EmulatorSettings.IsRcasEnabled());
+@@ -1050,6 +1053,8 @@ void SettingsDialog::updateNoteTextEdit(const QString& elementName) {
+         text = tr("Anti-Aliasing (FXAA):\\nSmooths jagged edges in the final image. It is applied after the game is drawn, so it works in every game and costs very little performance.");
+     } else if (elementName == "resolutionScaleComboBox") {
+         text = tr("Resolution Scaling:\\nScales the screen resolution that the emulator reports to the game. Games that choose their render resolution from it draw at the scaled size; games that always draw at a fixed size are not changed. Applies the next time a game starts.");
++    } else if (elementName == "brightnessSlider") {
++        text = tr("Brightness:\\nMakes the image brighter or darker. 100% shows it as the game draws it. Black and white stay as they are; the tones in between change, so dark scenes become easier to see without washing out bright areas. It can also be changed while playing: right-click the game window's title bar and choose Brightness.");
+     } else if (elementName == "anisotropicComboBox") {
+         text = tr("Anisotropic Filtering:\\nMakes textures sharper on surfaces seen at a steep angle, such as roads and floors. Higher values look better and cost a little GPU time. Off leaves it as the game sets it.");
+     } else if (elementName == "frameGenCheckBox") {
+@@ -1222,6 +1227,7 @@ void SettingsDialog::UpdateSettings(bool is_specific) {
+                                         is_specific);
+     EmulatorSettings.SetAnisotropicFiltering(anisotropicComboBox->currentData().toUInt(),
+                                              is_specific);
++    EmulatorSettings.SetBrightness(brightnessSlider->value(), is_specific);
+     EmulatorSettings.SetRcasEnabled(ui->RCASCheckBox->isChecked(), is_specific);
+     EmulatorSettings.SetRcasAttenuation(ui->RCASSlider->value(), is_specific);
+ 
+@@ -1662,6 +1668,25 @@ void SettingsDialog::SetupGraphicsExtras() {
+     anisotropicLayout->addWidget(anisotropicComboBox, 1);
+     imageQualityLayout->addLayout(anisotropicLayout);
+ 
++    auto* brightnessLayout = new QHBoxLayout();
++    brightnessLayout->addWidget(new QLabel(tr("Brightness:"), imageQualityGroupBox));
++    brightnessSlider = new QSlider(Qt::Horizontal, imageQualityGroupBox);
++    brightnessSlider->setObjectName("brightnessSlider");
++    brightnessSlider->setRange(25, 300);
++    brightnessSlider->setSingleStep(5);
++    brightnessSlider->setPageStep(25);
++    auto* brightnessValueLabel = new QLabel(imageQualityGroupBox);
++    brightnessValueLabel->setMinimumWidth(40);
++    connect(brightnessSlider, &QSlider::valueChanged, brightnessValueLabel,
++            [brightnessValueLabel](int value) {
++                brightnessValueLabel->setText(QStringLiteral("%1%").arg(value));
++            });
++    brightnessSlider->setValue(100);
++    brightnessValueLabel->setText(QStringLiteral("100%"));
++    brightnessLayout->addWidget(brightnessSlider, 1);
++    brightnessLayout->addWidget(brightnessValueLabel);
++    imageQualityLayout->addLayout(brightnessLayout);
++
+     ui->graphicsTabLayoutRight->insertWidget(
+         ui->graphicsTabLayoutRight->indexOf(ui->FSRGroupBox) + 1, imageQualityGroupBox);
+ }
+diff --git a/src/qt_gui/settings_dialog.h b/src/qt_gui/settings_dialog.h
+index 2218a62..16e69d3 100644
+--- a/src/qt_gui/settings_dialog.h
++++ b/src/qt_gui/settings_dialog.h
+@@ -10,6 +10,7 @@
+ #include <QDialog>
+ #include <QGroupBox>
+ #include <QPushButton>
++#include <QSlider>
+ 
+ #include "common/path_util.h"
+ #include "core/emulator_settings.h"
+@@ -75,6 +76,7 @@ private:
+     QCheckBox* antiAliasingCheckBox{};
+     QComboBox* resolutionScaleComboBox{};
+     QComboBox* anisotropicComboBox{};
++    QSlider* brightnessSlider{};
+     QGroupBox* imageQualityGroupBox{};
+ 
+     std::unique_ptr<Ui::SettingsDialog> ui;
+-- 
+2.56.0.windows.2
+

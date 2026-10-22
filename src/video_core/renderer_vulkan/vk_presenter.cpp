@@ -844,6 +844,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     pp_settings.srgb_input =
         attribute.attrib.pixel_format == Libraries::VideoOut::PixelFormat::A2R10G10B10Srgb;
     pp_settings.anti_aliasing = EmulatorSettings.IsAntiAliasing() ? 1 : 0;
+    pp_settings.brightness = std::clamp(EmulatorSettings.GetBrightness(), 25, 400) / 100.0f;
     pp_pass.Render(cmdbuf, image_view, image_size, *frame, pp_settings);
 
     frame->prepared_at = std::chrono::steady_clock::now();

@@ -628,6 +628,7 @@ bool EmulatorSettingsImpl::TransferSettings() {
         setFromToml(s.gpu_thread_core_reserve, gpu, "gpuThreadCoreReserve");
         setFromToml(s.rcas_enabled, gpu, "rcasEnabled");
         setFromToml(s.rcas_attenuation, gpu, "rcasAttenuation");
+        setFromToml(s.brightness, gpu, "brightness");
     }
 
     if (og_data.contains("Vulkan")) {

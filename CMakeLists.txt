@@ -1289,6 +1289,8 @@ set(IMGUI src/imgui/imgui_config.h
           src/imgui/shadnet_notifications_layer.h
           src/imgui/notifications_layer.cpp
           src/imgui/notifications_layer.h
+          src/imgui/brightness_layer.cpp
+          src/imgui/brightness_layer.h
           src/imgui/renderer/imgui_core.cpp
           src/imgui/renderer/imgui_core.h
           src/imgui/renderer/imgui_impl_sdl3.cpp

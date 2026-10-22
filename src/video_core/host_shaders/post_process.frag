@@ -13,6 +13,7 @@ layout (push_constant) uniform settings {
     bool hdr;
     bool srgb_input;
     bool anti_aliasing;
+    float brightness;
 } pp;
 
 const float cutoff = 0.0031308, a = 1.055, b = 0.055, d = 12.92;
@@ -34,13 +35,19 @@ vec3 degamma(vec3 rgb) {
     );
 }
 
+// A power curve on the encoded signal keeps black and white in place and moves the tones in
+// between, so raising brightness shows dark scenes without washing out highlights.
+vec3 adjust_brightness(vec3 rgb) {
+    return pow(max(rgb, vec3(0.0)), vec3(1.0 / pp.brightness));
+}
+
 vec3 display_color(vec2 coord) {
     vec3 rgb = texture(texSampler, coord).rgb;
     if (pp.hdr) {
-        return rgb;
+        return rgb * pp.brightness;
     }
     if (pp.srgb_input) rgb = degamma(rgb);
-    return gamma(rgb);
+    return adjust_brightness(gamma(rgb));
 }
 
 float luma(vec3 rgb) {
