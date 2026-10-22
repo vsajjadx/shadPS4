@@ -304,6 +304,30 @@ void DataBase::ForEachBlob(BlobType type, const std::function<void(std::vector<u
     }
 }
 
+void DataBase::ForEachBlobName(BlobType type,
+                               const std::function<void(std::string_view name)>& func) {
+    const auto ext = "." + GetBlobFileExtension(type);
+    if (EmulatorSettings.IsPipelineCacheArchived()) {
+        const auto num_files = mz_zip_reader_get_num_files(&zip_ar);
+        for (int index = 0; index < num_files; ++index) {
+            std::array<char, MZ_ZIP_MAX_ARCHIVE_FILENAME_SIZE> file_name{};
+            mz_zip_reader_get_filename(&zip_ar, index, file_name.data(), file_name.size());
+            const std::string_view name{file_name.data()};
+            if (name.ends_with(ext)) {
+                func(name.substr(0, name.size() - ext.size()));
+            }
+        }
+        return;
+    }
+    std::error_code ec{};
+    for (std::filesystem::directory_iterator it{cache_path, ec}, end; !ec && it != end;
+         it.increment(ec)) {
+        if (it->path().extension().string() == ext) {
+            func(it->path().stem().string());
+        }
+    }
+}
+
 bool DataBase::Reset() {
     if (!opened || EmulatorSettings.IsPipelineCacheArchived()) {
         return false;

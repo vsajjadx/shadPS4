@@ -1010,6 +1010,16 @@ void PipelineCache::SubmitTranslation(HwStage hw_stage, SwStage sw_stage,
     });
 }
 
+size_t PipelineCache::NewPermutationIndex(u64 hash, size_t num_modules) {
+    // A permutation compiled in game takes an index no cached one has. Reusing the index of a
+    // cached permutation the warm-up did not load overwrote it on disk, and the pipelines naming
+    // it were rejected and compiled again in every session. (After HayatoG/iss_pc a88bbc13.)
+    auto& next = next_permutation[hash];
+    const size_t index = std::max(next, num_modules);
+    next = index + 1;
+    return index;
+}
+
 void PipelineCache::WaitTranslations(u64 hash) {
     const auto it = pending_translations.find(hash);
     if (it == pending_translations.end()) {
@@ -1067,7 +1077,8 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
     }
     if (async && !program_cache.contains(params.hash)) {
         if (!pending_translations.contains(params.hash)) {
-            SubmitTranslation(hw_stage, sw_stage, params, runtime_info, binding, 0, std::nullopt);
+            SubmitTranslation(hw_stage, sw_stage, params, runtime_info, binding,
+                              NewPermutationIndex(params.hash, 0), std::nullopt);
         }
         if ((num_pending_translations_skipped++ % 256) == 0) {
             LOG_INFO(Render_Vulkan, "Skipping draws while shaders translate ({} so far)",
@@ -1080,15 +1091,17 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
         it_pgm.value() = std::make_unique<Program>(hw_stage, sw_stage, params);
         auto& program = it_pgm.value();
         auto start = binding;
-        const auto module = CompileModule(program->info, runtime_info, params.code, 0, binding);
+        const size_t perm_idx = NewPermutationIndex(params.hash, 0);
+        const auto module =
+            CompileModule(program->info, runtime_info, params.code, perm_idx, binding);
         auto spec = Shader::StageSpecialization(program->info, runtime_info, profile, start);
-        const auto perm_hash = HashCombine(params.hash, 0);
+        const auto perm_hash = HashCombine(params.hash, perm_idx);
 
         if (module) {
-            RegisterShaderMeta(program->info, spec.fetch_shader_data, spec, perm_hash, 0);
+            RegisterShaderMeta(program->info, spec.fetch_shader_data, spec, perm_hash, perm_idx);
         }
-        program->AddPermut(module, std::move(spec));
-        if (auto& fetch = program->modules[0].spec.fetch_shader_data; !fetch.Empty()) {
+        program->InsertPermut(module, std::move(spec), perm_idx);
+        if (auto& fetch = program->modules[perm_idx].spec.fetch_shader_data; !fetch.Empty()) {
             fetch_shader = &fetch;
         }
         return std::make_tuple(&program->info, module, perm_hash);
@@ -1134,7 +1147,8 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
             queue, [&](const auto& translation) { return *translation->spec == spec; });
         if (!queued) {
             SubmitTranslation(hw_stage, sw_stage, params, runtime_info, binding,
-                              program->modules.size() + queue.size(), std::move(spec));
+                              NewPermutationIndex(params.hash, program->modules.size()),
+                              std::move(spec));
         }
         if ((num_pending_translations_skipped++ % 256) == 0) {
             LOG_INFO(Render_Vulkan, "Skipping draws while shaders translate ({} so far)",
@@ -1143,6 +1157,8 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
         return {};
     }
     if (it == program->modules.end()) {
+        perm_idx = NewPermutationIndex(params.hash, program->modules.size());
+        perm_hash = HashCombine(params.hash, perm_idx);
         if (perm_idx >= 8) {
             // Many permutations of one shader usually means it specializes on garbage sharps.
             LOG_WARNING(Render_Vulkan, "{} shader {:#x} permutation {} differs in {}", hw_stage,
@@ -1155,7 +1171,7 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
         if (module) {
             RegisterShaderMeta(info, spec.fetch_shader_data, spec, perm_hash, perm_idx);
         }
-        program->AddPermut(module, std::move(spec));
+        program->InsertPermut(module, std::move(spec), perm_idx);
     } else {
         info.AddBindings(binding);
         module = it->module;

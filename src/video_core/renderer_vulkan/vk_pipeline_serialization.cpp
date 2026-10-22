@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <charconv>
 #include <chrono>
 
 #include "common/scm_rev.h"
@@ -293,24 +294,19 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage) 
 
     vk::ShaderModule module{};
 
+    auto& next = next_permutation[program->info.pgm_hash];
+    next = std::max(next, perm_idx + 1);
+
     auto [it_pgm, new_program] = program_cache.try_emplace(program->info.pgm_hash);
     if (new_program) {
         module = CompileSPV(spv, instance.GetDevice());
         it_pgm.value() = std::move(program);
     } else {
+        // An equal specialization at another index is the same permutation compiled again in an
+        // earlier session. Its pipelines name this index, so it is kept here as well instead of
+        // leaving those pipelines to compile in game.
         const auto& it = std::ranges::find(it_pgm.value()->modules, spec, &Program::Module::spec);
         if (it != it_pgm.value()->modules.end()) {
-            // A matching permutation is valid only at its original index. A different index means
-            // the store holds entries from more than one cache generation, so this pipeline is
-            // left to compile at runtime.
-            const auto idx = std::distance(it_pgm.value()->modules.begin(), it);
-            if (perm_idx != idx) {
-                LOG_WARNING(Render_Vulkan,
-                            "Cached permutation {} of {}_{:x} conflicts with index {}, skipping "
-                            "preload",
-                            perm_idx, program->info.hw_stage, program->info.pgm_hash, idx);
-                return false;
-            }
             module = it->module;
         } else {
             module = CompileSPV(spv, instance.GetDevice());
@@ -388,6 +384,29 @@ void PipelineCache::WarmUp() {
     }
 
     const auto warm_up_start = std::chrono::steady_clock::now();
+
+    // New permutations go past the highest index on disk, loaded by the warm-up or not.
+    Storage::DataBase::Instance().ForEachBlobName(
+        Storage::BlobType::ShaderBinary, [&](std::string_view name) {
+            const auto separator = name.rfind('_');
+            if (separator == std::string_view::npos) {
+                return;
+            }
+            u64 hash{};
+            size_t index{};
+            const auto hash_str = name.substr(0, separator);
+            const auto index_str = name.substr(separator + 1);
+            const auto hash_digits = hash_str.starts_with("0x") ? hash_str.substr(2) : hash_str;
+            if (std::from_chars(hash_digits.data(), hash_digits.data() + hash_digits.size(), hash,
+                                16)
+                        .ec != std::errc{} ||
+                std::from_chars(index_str.data(), index_str.data() + index_str.size(), index).ec !=
+                    std::errc{}) {
+                return;
+            }
+            auto& next = next_permutation[hash];
+            next = std::max(next, index + 1);
+        });
 
     u32 num_pipelines{};
     u32 num_total_pipelines{};

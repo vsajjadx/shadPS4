@@ -8,6 +8,7 @@
 #include "common/types.h"
 
 #include <functional>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -45,6 +46,7 @@ public:
     void Load(BlobType type, const std::string& name, std::vector<u32>& data);
 
     void ForEachBlob(BlobType type, const std::function<void(std::vector<u8>&& data)>& func);
+    void ForEachBlobName(BlobType type, const std::function<void(std::string_view name)>& func);
 
 private:
     std::jthread io_worker{};

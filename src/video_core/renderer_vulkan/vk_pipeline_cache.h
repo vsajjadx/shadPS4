@@ -175,6 +175,7 @@ private:
                            std::optional<Shader::StageSpecialization> spec);
     void CollectTranslations();
     void WaitTranslations(u64 hash);
+    size_t NewPermutationIndex(u64 hash, size_t num_modules);
     std::filesystem::path DriverCachePath() const;
     void SaveDriverCache();
     const Shader::RuntimeInfo& BuildRuntimeInfo(Shader::HwStage stage, Shader::SwStage l_stage);
@@ -194,6 +195,7 @@ private:
     Shader::Pools pools;
     DrawIndirectParams draw_indirect_params{};
     tsl::robin_map<size_t, std::unique_ptr<Program>> program_cache;
+    tsl::robin_map<u64, size_t> next_permutation;
     tsl::robin_map<ComputePipelineKey, std::unique_ptr<ComputePipeline>> compute_pipelines;
     tsl::robin_map<GraphicsPipelineKey, std::unique_ptr<GraphicsPipeline>> graphics_pipelines;
     GraphicsPipelineKey last_graphics_key{};
