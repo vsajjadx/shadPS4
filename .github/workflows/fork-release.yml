@@ -60,6 +60,5 @@ jobs:
         run: |
           gh release create "${{ env.TAG }}" shadps4-win64-sdl-${{ env.TAG }}.zip \
             --repo ${{ github.repository }} \
-            --target ${{ env.TARGET }} \
             --title "Performance: recording thread (${{ env.TAG }})" \
             --notes-file notes.md
