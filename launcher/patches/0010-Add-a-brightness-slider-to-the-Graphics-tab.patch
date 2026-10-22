@@ -1,7 +1,7 @@
 From 3938a18636e59c98011299e0bbb7bb0a0e3ecf7c Mon Sep 17 00:00:00 2001
 From: vsajjadx <noreply@github.com>
 Date: Thu, 22 Oct 2026 20:16:35 +0330
-Subject: [PATCH] Add a brightness slider to the Graphics tab
+Subject: [PATCH 10/10] Add a brightness slider to the Graphics tab
 
 The emulator scales the presented image by the brightness setting, globally or per game.
 The slider sits with the other image quality options and is saved the same way.

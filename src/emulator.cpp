@@ -515,6 +515,12 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         if (!EmulatorSettings.IsReadbackLinearImagesEnabled()) {
             EmulatorSettings.SetReadbackLinearImagesEnabled(true, true);
         }
+        // Its dark interiors still show darker than on the console; a brightness chosen for the
+        // game or for all games is kept.
+        if (EmulatorSettings.GetBrightness() == 100) {
+            EmulatorSettings.SetBrightness(180, true);
+            LOG_INFO(Config, "inFAMOUS Second Son: brightness set to 180%");
+        }
     }
     game_info.title = title;
     game_info.app_ver = app_version;
