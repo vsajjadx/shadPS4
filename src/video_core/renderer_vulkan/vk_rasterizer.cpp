@@ -56,8 +56,8 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     });
     if (occlusion_counter.IsSupported()) {
         scheduler.SetRenderingCallbacks(
-            [this](vk::CommandBuffer cmdbuf) { occlusion_counter.OnRenderingBegin(cmdbuf); },
-            [this](vk::CommandBuffer cmdbuf) { occlusion_counter.OnRenderingEnd(cmdbuf); });
+            [this](CommandRecorder cmdbuf) { occlusion_counter.OnRenderingBegin(cmdbuf); },
+            [this](CommandRecorder cmdbuf) { occlusion_counter.OnRenderingEnd(cmdbuf); });
     }
 }
 

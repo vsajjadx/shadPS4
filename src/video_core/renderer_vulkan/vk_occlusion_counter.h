@@ -12,6 +12,7 @@
 
 namespace Vulkan {
 
+class CommandRecorder;
 class Instance;
 class Scheduler;
 
@@ -43,8 +44,8 @@ public:
         return !dumps.empty();
     }
 
-    void OnRenderingBegin(vk::CommandBuffer cmdbuf);
-    void OnRenderingEnd(vk::CommandBuffer cmdbuf);
+    void OnRenderingBegin(CommandRecorder cmdbuf);
+    void OnRenderingEnd(CommandRecorder cmdbuf);
 
 private:
     struct EndedQuery {
@@ -57,8 +58,8 @@ private:
         u64 num_queries_before;
     };
 
-    void BeginQuery(vk::CommandBuffer cmdbuf);
-    void EndQuery(vk::CommandBuffer cmdbuf);
+    void BeginQuery(CommandRecorder cmdbuf);
+    void EndQuery(CommandRecorder cmdbuf);
     void WriteDump(const PendingDump& dump) const;
 
     const Instance& instance;

@@ -94,15 +94,15 @@ void OcclusionCounter::TickFrame() {
     Resolve();
 }
 
-void OcclusionCounter::OnRenderingBegin(vk::CommandBuffer cmdbuf) {
+void OcclusionCounter::OnRenderingBegin(CommandRecorder cmdbuf) {
     BeginQuery(cmdbuf);
 }
 
-void OcclusionCounter::OnRenderingEnd(vk::CommandBuffer cmdbuf) {
+void OcclusionCounter::OnRenderingEnd(CommandRecorder cmdbuf) {
     EndQuery(cmdbuf);
 }
 
-void OcclusionCounter::BeginQuery(vk::CommandBuffer cmdbuf) {
+void OcclusionCounter::BeginQuery(CommandRecorder cmdbuf) {
     if (!counting || active_query || !query_pool) {
         return;
     }
@@ -121,7 +121,7 @@ void OcclusionCounter::BeginQuery(vk::CommandBuffer cmdbuf) {
     cmdbuf.beginQuery(*query_pool, *active_query, control_flags);
 }
 
-void OcclusionCounter::EndQuery(vk::CommandBuffer cmdbuf) {
+void OcclusionCounter::EndQuery(CommandRecorder cmdbuf) {
     if (!active_query) {
         return;
     }

@@ -469,7 +469,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     : window{window_}, liverpool{liverpool_},
       instance{window, EmulatorSettings.GetGpuId(), EmulatorSettings.IsVkValidationEnabled(),
                EmulatorSettings.IsVkCrashDiagnosticEnabled()},
-      draw_scheduler{instance}, present_scheduler{instance}, flip_scheduler{instance},
+      draw_scheduler{instance, true}, present_scheduler{instance}, flip_scheduler{instance},
       swapchain{instance, window}, runtime{instance, draw_scheduler},
       rasterizer{std::make_unique<Rasterizer>(instance, draw_scheduler, runtime, liverpool)},
       texture_cache{rasterizer->GetTextureCache()} {
@@ -519,9 +519,9 @@ Presenter::~Presenter() {
     draw_scheduler.Finish();
     present_scheduler.Finish();
     flip_scheduler.Finish();
-    Check(draw_scheduler.CommandBuffer().reset());
-    Check(present_scheduler.CommandBuffer().reset());
-    Check(flip_scheduler.CommandBuffer().reset());
+    Check(draw_scheduler.DirectCommandBuffer().reset());
+    Check(present_scheduler.DirectCommandBuffer().reset());
+    Check(flip_scheduler.DirectCommandBuffer().reset());
 
 #ifdef ENABLE_FSR_FRAMEGEN
     frame_generator.reset();
@@ -738,6 +738,7 @@ Frame* Presenter::PrepareLastFrame() {
     frame->ready_tick = scheduler.CurrentTick();
     SubmitInfo info{};
     scheduler.Flush(info);
+    scheduler.WaitSubmitted();
     return frame;
 }
 
@@ -874,6 +875,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     frame->ready_tick = draw_scheduler.CurrentTick();
     SubmitInfo info{};
     draw_scheduler.Flush(info);
+    draw_scheduler.WaitSubmitted();
     return frame;
 }
 
@@ -949,6 +951,7 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
     frame->ready_tick = scheduler.CurrentTick();
     SubmitInfo info{};
     scheduler.Flush(info);
+    scheduler.WaitSubmitted();
     return frame;
 }
 
