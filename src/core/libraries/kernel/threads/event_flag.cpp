@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <condition_variable>
 #include <list>
 #include <mutex>
@@ -64,6 +65,16 @@ public:
         m_destroy_cv.wait(lock, [&] { return m_waiters.empty(); });
     }
 
+    /// A waiter stays in the list until its thread runs again; one already woken must not take
+    /// the bits of a later set, or the event is lost for the thread that waits next.
+    static bool IsPending(const Waiter& waiter) {
+        return !waiter.ready && !waiter.canceled && !waiter.deleted && !waiter.timed_out;
+    }
+
+    bool HasPendingWaiters() const {
+        return std::ranges::any_of(m_waiters, [](const Waiter* w) { return IsPending(*w); });
+    }
+
     bool ConditionMet(const Waiter& waiter) const {
         return (waiter.wait_mode == WaitMode::And) ? (m_bits & waiter.bits) == waiter.bits
                                                    : (m_bits & waiter.bits) != 0;
@@ -111,7 +122,7 @@ public:
             return ORBIS_KERNEL_ERROR_EACCES;
         }
 
-        if (m_thread_mode == ThreadMode::Single && !m_waiters.empty()) {
+        if (m_thread_mode == ThreadMode::Single && HasPendingWaiters()) {
             return ORBIS_KERNEL_ERROR_EPERM;
         }
 
@@ -192,7 +203,7 @@ public:
         for (auto it : m_waiters) {
             Waiter* waiter = it;
 
-            if (!ConditionMet(*waiter)) {
+            if (!IsPending(*waiter) || !ConditionMet(*waiter)) {
                 continue;
             }
 
@@ -213,11 +224,15 @@ public:
         std::scoped_lock lock(m_mutex);
 
         if (num_waiters)
-            *num_waiters = static_cast<int>(m_waiters.size());
+            *num_waiters = static_cast<int>(
+                std::ranges::count_if(m_waiters, [](const Waiter* w) { return IsPending(*w); }));
 
         m_bits = pattern;
 
         for (Waiter* waiter : m_waiters) {
+            if (!IsPending(*waiter)) {
+                continue;
+            }
             waiter->result = pattern;
             waiter->canceled = true;
             waiter->cv.notify_one();
