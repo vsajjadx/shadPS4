@@ -627,12 +627,7 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
     if (!RefreshComputeKey()) {
         return nullptr;
     }
-    // A skipped pass that writes buffers can leave draw counts or indices it produces unset for
-    // the draws that read them, so only passes that write images alone are skipped.
-    const bool writes_buffers = std::ranges::any_of(
-        infos[0]->buffers, [](const auto& buffer) { return buffer.is_written; });
-    const bool skippable =
-        EmulatorSettings.IsAsyncPipelineCompilation() && !writes_buffers && IsDispatchSkippable();
+    const bool skippable = EmulatorSettings.IsAsyncPipelineCompilation() && IsDispatchSkippable();
     const auto [it, is_new] = compute_pipelines.try_emplace(compute_key);
     if (is_new) {
         const auto pipeline_hash = std::hash<ComputePipelineKey>{}(compute_key);
