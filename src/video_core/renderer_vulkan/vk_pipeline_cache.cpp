@@ -523,11 +523,29 @@ bool PipelineCache::IsDrawSkippable() {
 bool PipelineCache::IsDispatchSkippable() {
     // A compute pass run every frame (particle simulation, culling, post effects) only loses a
     // few frames of its effect while its pipeline builds; one-off passes are built at once.
+    // Like draws, a pass is known by what it writes: a shader seen for the first time that
+    // writes what another pass wrote every frame is a recurring pass too.
     if (compute_streaks.size() >= MaxTrackedStreaks) {
         compute_streaks.clear();
     }
+    const auto& info = *infos[0];
+    VAddr target = 0;
+    for (const auto& image : info.images) {
+        if (image.is_written) {
+            target = image.GetSharp(info).Address();
+            break;
+        }
+    }
+    for (const auto& buffer : info.buffers) {
+        if (target != 0) {
+            break;
+        }
+        if (buffer.is_written && !buffer.IsSpecial()) {
+            target = buffer.GetSharp(info).base_address;
+        }
+    }
     const u32 frame = DebugState.GetFrameNum();
-    auto& streak = compute_streaks[compute_key.value];
+    auto& streak = compute_streaks[target != 0 ? target : compute_key.value];
     if (streak.last_frame + 1 == frame) {
         ++streak.frames;
     } else if (streak.last_frame != frame) {
