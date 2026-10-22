@@ -42,6 +42,7 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
       texture_cache{instance, scheduler, runtime, liverpool_, buffer_cache, page_manager},
       liverpool{liverpool_}, memory{Core::Memory::Instance()},
       pipeline_cache{instance, scheduler, liverpool, buffer_cache.GetSparsePageShift()},
+      occlusion_counter{instance, scheduler},
       host_markers_enabled{EmulatorSettings.IsVkHostMarkersEnabled()},
       guest_markers_enabled{EmulatorSettings.IsVkGuestMarkersEnabled()} {
     if (!EmulatorSettings.IsNullGPU()) {
@@ -53,6 +54,11 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
         runtime.FlushBarriers();
         buffer_cache.SubmitPendingArenaBinds(info);
     });
+    if (occlusion_counter.IsSupported()) {
+        scheduler.SetRenderingCallbacks(
+            [this](vk::CommandBuffer cmdbuf) { occlusion_counter.OnRenderingBegin(cmdbuf); },
+            [this](vk::CommandBuffer cmdbuf) { occlusion_counter.OnRenderingEnd(cmdbuf); });
+    }
 }
 
 Rasterizer::~Rasterizer() = default;
@@ -398,7 +404,31 @@ void Rasterizer::Finish() {
     scheduler.Finish();
 }
 
+void Rasterizer::DumpOcclusionCounter(u64* results, u32 num_pairs) {
+    if (!occlusion_counter.IsSupported()) {
+        // Without host queries every sample counts as visible.
+        static constexpr u64 CounterValidMask = 0x8000000000000000ULL;
+        static constexpr u64 CounterStep = 0x2FFFFFFULL;
+        static u64 counter{};
+        for (u32 i = 0; i < num_pairs; ++i) {
+            results[i * 2] = counter | CounterValidMask;
+        }
+        counter += CounterStep;
+        return;
+    }
+    occlusion_counter.Dump(results, num_pairs);
+}
+
+bool Rasterizer::HasPendingOcclusionDumps() const noexcept {
+    return occlusion_counter.HasPendingDumps();
+}
+
+void Rasterizer::ResolveOcclusionDumps() {
+    occlusion_counter.Resolve();
+}
+
 void Rasterizer::OnSubmit() {
+    occlusion_counter.TickFrame();
     buffer_cache.TickFrame();
     texture_cache.ProcessDownloadImages();
     texture_cache.RunGarbageCollector();

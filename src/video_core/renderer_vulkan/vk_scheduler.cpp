@@ -81,11 +81,17 @@ void Scheduler::BeginRendering(const RenderState& new_state) {
     };
 
     CommandBuffer().beginRendering(rendering_info);
+    if (on_rendering_begin) {
+        on_rendering_begin(CommandBuffer());
+    }
 }
 
 void Scheduler::EndRendering() {
     if (!is_rendering) {
         return;
+    }
+    if (on_rendering_end) {
+        on_rendering_end(CommandBuffer());
     }
     is_rendering = false;
     CommandBuffer().endRendering();

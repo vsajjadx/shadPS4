@@ -214,8 +214,18 @@ void Liverpool::Process(std::stop_token stoken) {
     while (!stoken.stop_requested()) {
         {
             std::unique_lock lk{submit_mutex};
-            Common::CondvarWait(submit_cv, lk, stoken,
-                                [this] { return num_commands || num_submits || submit_done; });
+            const auto has_work = [this] { return num_commands || num_submits || submit_done; };
+            // A game can wait on the CPU for occlusion counters, which are written once the
+            // host GPU has run the draws before them, so they are resolved while idle.
+            if (rasterizer && rasterizer->HasPendingOcclusionDumps() && !has_work()) {
+                rasterizer->Flush();
+            }
+            while (rasterizer && rasterizer->HasPendingOcclusionDumps() && !has_work() &&
+                   !stoken.stop_requested()) {
+                submit_cv.wait_for(lk, std::chrono::milliseconds{1});
+                rasterizer->ResolveOcclusionDumps();
+            }
+            Common::CondvarWait(submit_cv, lk, stoken, has_work);
         }
         if (stoken.stop_requested()) {
             break;
@@ -790,14 +800,8 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb) {
                     // immediately
                     regs.cp_strmout_cntl.offset_update_done = 1;
                 } else if (event->event_index.Value() == EventIndex::ZpassDone) {
-                    if (event->event_type.Value() == EventType::PixelPipeStatDump) {
-                        static constexpr u64 OcclusionCounterValidMask = 0x8000000000000000ULL;
-                        static constexpr u64 OcclusionCounterStep = 0x2FFFFFFULL;
-                        u64* results = event->Address<u64*>();
-                        for (s32 i = 0; i < num_counter_pairs; ++i, results += 2) {
-                            *results = pixel_counter | OcclusionCounterValidMask;
-                        }
-                        pixel_counter += OcclusionCounterStep;
+                    if (event->event_type.Value() == EventType::PixelPipeStatDump && rasterizer) {
+                        rasterizer->DumpOcclusionCounter(event->Address<u64*>(), num_counter_pairs);
                     }
                 }
                 break;
@@ -963,6 +967,12 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb) {
                         LogWaitRegMemSpin("GFX", *wait_reg_mem, vo_port->IsVoLabel(wait_addr),
                                           num_submits, mapped_queues[GfxQueueId].submits.size(),
                                           num_mapped_queues);
+                    }
+                    if (rasterizer && rasterizer->HasPendingOcclusionDumps()) {
+                        // The wait may be for occlusion counters, which are only written once
+                        // the host GPU has run the draws before them.
+                        rasterizer->Flush();
+                        rasterizer->ResolveOcclusionDumps();
                     }
                     YIELD_GFX();
                 }

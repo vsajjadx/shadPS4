@@ -214,7 +214,6 @@ private:
 
     VAddr indirect_args_addr{};
     u32 num_counter_pairs{};
-    u64 pixel_counter{};
 
     struct ConstantEngine {
         [[nodiscard]] u32 Diff() const {

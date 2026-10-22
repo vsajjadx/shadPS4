@@ -349,6 +349,7 @@ struct DynamicState {
 
 using SessionFunc = Common::UniqueFunction<void>;
 using SubmitFunc = Common::UniqueFunction<void, SubmitInfo&>;
+using RenderingFunc = Common::UniqueFunction<void, vk::CommandBuffer>;
 
 class Scheduler {
 public:
@@ -392,6 +393,17 @@ public:
     /// Sets a function to be called on every scheduler submission.
     void SetSubmitCallback(SubmitFunc&& on_submit) {
         this->on_submit = std::move(on_submit);
+    }
+
+    /// Sets functions called with the command buffer after rendering begins and before it ends.
+    void SetRenderingCallbacks(RenderingFunc&& on_begin, RenderingFunc&& on_end) {
+        on_rendering_begin = std::move(on_begin);
+        on_rendering_end = std::move(on_end);
+    }
+
+    /// Returns true while a rendering pass is open in the current command buffer.
+    [[nodiscard]] bool IsRendering() const noexcept {
+        return is_rendering;
     }
 
     /// Returns the current render state.
@@ -461,6 +473,8 @@ private:
     DynamicState dynamic_state;
     SessionFunc on_session{};
     SubmitFunc on_submit{};
+    RenderingFunc on_rendering_begin{};
+    RenderingFunc on_rendering_end{};
     struct Session {
         vk::CommandBuffer upload{};
         vk::CommandBuffer primary{};

@@ -10,6 +10,7 @@
 #include "common/shared_first_mutex.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/page_manager.h"
+#include "video_core/renderer_vulkan/vk_occlusion_counter.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/texture_cache/texture_cache.h"
@@ -83,6 +84,9 @@ public:
     void UnmapMemory(VAddr addr, u64 size);
 
     u64 Flush();
+    void DumpOcclusionCounter(u64* results, u32 num_pairs);
+    [[nodiscard]] bool HasPendingOcclusionDumps() const noexcept;
+    void ResolveOcclusionDumps();
     void Finish();
     void OnSubmit();
     void OnFence();
@@ -158,6 +162,7 @@ private:
     u64 checked_ranges_generation{};
     std::unordered_map<VAddr, u64> checked_mapped_ranges;
     PipelineCache pipeline_cache;
+    OcclusionCounter occlusion_counter;
     const bool host_markers_enabled;
     const bool guest_markers_enabled;
 

@@ -114,6 +114,16 @@ public:
         return vk12_features.shaderInt8;
     }
 
+    /// Returns true if occlusion queries can count the exact number of samples
+    bool IsOcclusionQueryPreciseSupported() const {
+        return features.occlusionQueryPrecise;
+    }
+
+    /// Returns true if queries can be reset from the host
+    bool IsHostQueryResetSupported() const {
+        return vk12_features.hostQueryReset;
+    }
+
     bool IsMaintenance5Supported() const {
         return maintenance_5;
     }
