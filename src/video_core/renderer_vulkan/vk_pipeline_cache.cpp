@@ -64,6 +64,7 @@ struct PipelineCache::PendingTranslation {
     size_t perm_idx{};
     std::optional<Shader::StageSpecialization> spec;
     ModuleBuild build;
+    std::atomic_bool taken{};
     std::atomic_bool done{};
 };
 
@@ -537,8 +538,10 @@ bool PipelineCache::IsDispatchSkippable() {
 }
 
 template <typename PipelineType>
-bool PipelineCache::AwaitPipeline(const PipelineType* pipeline, bool skippable) {
+bool PipelineCache::AwaitPipeline(PipelineType* pipeline, bool skippable) {
     if (!pipeline->IsReady() && !skippable) {
+        // A queued pipeline is built here rather than after every compile ahead of it.
+        pipeline->TryBuild();
         while (!pipeline->IsReady()) {
             std::this_thread::yield();
         }
@@ -592,7 +595,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
             runtime_infos, fetch_shader, modules, sdata, false, async_build);
         if (async_build) {
             auto* pipeline = it.value().get();
-            compile_workers.Submit([pipeline] { pipeline->Build(); });
+            compile_workers.Submit([pipeline] { pipeline->TryBuild(); });
         }
 
         RegisterPipelineData(graphics_key, pipeline_hash, sdata);
@@ -607,7 +610,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
             }
         }
     }
-    const GraphicsPipeline* pipeline = it->second.get();
+    GraphicsPipeline* pipeline = it->second.get();
     if (!AwaitPipeline(pipeline, draw_skippable)) {
         if ((num_pending_draws_skipped++ % 256) == 0) {
             LOG_INFO(Render_Vulkan, "Skipping draws while pipelines compile ({} so far)",
@@ -624,7 +627,12 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
     if (!RefreshComputeKey()) {
         return nullptr;
     }
-    const bool skippable = EmulatorSettings.IsAsyncPipelineCompilation() && IsDispatchSkippable();
+    // A skipped pass that writes buffers can leave draw counts or indices it produces unset for
+    // the draws that read them, so only passes that write images alone are skipped.
+    const bool writes_buffers = std::ranges::any_of(
+        infos[0]->buffers, [](const auto& buffer) { return buffer.is_written; });
+    const bool skippable =
+        EmulatorSettings.IsAsyncPipelineCompilation() && !writes_buffers && IsDispatchSkippable();
     const auto [it, is_new] = compute_pipelines.try_emplace(compute_key);
     if (is_new) {
         const auto pipeline_hash = std::hash<ComputePipelineKey>{}(compute_key);
@@ -636,7 +644,7 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
                                                        modules[0], sdata, false, skippable);
         if (skippable) {
             auto* pipeline = it.value().get();
-            compile_workers.Submit([pipeline] { pipeline->Build(); });
+            compile_workers.Submit([pipeline] { pipeline->TryBuild(); });
         }
         RegisterPipelineData(compute_key, sdata);
         ++num_new_pipelines;
@@ -646,7 +654,7 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
             module_related_pipelines[m].emplace_back(compute_key);
         }
     }
-    const ComputePipeline* pipeline = it->second.get();
+    ComputePipeline* pipeline = it->second.get();
     if (!AwaitPipeline(pipeline, skippable) && (num_pending_draws_skipped++ % 256) == 0) {
         LOG_INFO(Render_Vulkan, "Skipping dispatches while pipelines compile ({} so far)",
                  num_pending_draws_skipped);
@@ -1032,16 +1040,22 @@ void PipelineCache::SubmitTranslation(HwStage hw_stage, SwStage sw_stage,
     compile_workers.Submit([this, translation] {
         thread_local Shader::Pools worker_pools;
         Shader::KeepSrtWalkersUnpatchedOnThisThread();
-        auto binding = translation->start_binding;
-        translation->build =
-            BuildModule(worker_pools, *translation->info, translation->runtime_info,
-                        translation->code, translation->perm_idx, binding);
-        if (!translation->spec) {
-            translation->spec.emplace(*translation->info, translation->runtime_info, profile,
-                                      translation->start_binding);
-        }
-        translation->done.store(true, std::memory_order_release);
+        RunTranslation(*translation, worker_pools);
     });
+}
+
+void PipelineCache::RunTranslation(PendingTranslation& translation, Shader::Pools& build_pools) {
+    if (translation.taken.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+    auto binding = translation.start_binding;
+    translation.build = BuildModule(build_pools, *translation.info, translation.runtime_info,
+                                    translation.code, translation.perm_idx, binding);
+    if (!translation.spec) {
+        translation.spec.emplace(*translation.info, translation.runtime_info, profile,
+                                 translation.start_binding);
+    }
+    translation.done.store(true, std::memory_order_release);
 }
 
 size_t PipelineCache::NewPermutationIndex(u64 hash, size_t num_modules) {
@@ -1060,6 +1074,8 @@ void PipelineCache::WaitTranslations(u64 hash) {
         return;
     }
     for (const auto& translation : it->second) {
+        // A translation still queued is done here rather than after everything queued before it.
+        RunTranslation(*translation, pools);
         while (!translation->done.load(std::memory_order_acquire)) {
             std::this_thread::yield();
         }

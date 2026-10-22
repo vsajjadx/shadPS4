@@ -104,6 +104,12 @@ GraphicsPipeline::GraphicsPipeline(
     pipeline_cache_handle = pipeline_cache;
 
     if (!defer_build) {
+        TryBuild();
+    }
+}
+
+void GraphicsPipeline::TryBuild() {
+    if (!build_started.exchange(true, std::memory_order_acq_rel)) {
         Build();
     }
 }

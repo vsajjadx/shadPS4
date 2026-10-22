@@ -147,7 +147,7 @@ private:
     bool IsDrawSkippable();
     bool IsDispatchSkippable();
     template <typename PipelineType>
-    bool AwaitPipeline(const PipelineType* pipeline, bool skippable);
+    bool AwaitPipeline(PipelineType* pipeline, bool skippable);
 
     struct ModuleBuild {
         vk::ShaderModule module{};
@@ -177,6 +177,7 @@ private:
                            const Shader::Backend::Bindings& start_binding, size_t perm_idx,
                            std::optional<Shader::StageSpecialization> spec);
     void CollectTranslations();
+    void RunTranslation(PendingTranslation& translation, Shader::Pools& build_pools);
     void WaitTranslations(u64 hash);
     size_t NewPermutationIndex(u64 hash, size_t num_modules);
     std::filesystem::path DriverCachePath() const;

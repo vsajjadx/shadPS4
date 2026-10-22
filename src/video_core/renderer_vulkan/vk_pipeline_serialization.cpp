@@ -263,7 +263,7 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar) {
         instance, scheduler, desc_heap, profile, graphics_key, *pipeline_cache, infos,
         runtime_infos, fetch_shader, modules, sdata, true, true);
     auto* pipeline = it.value().get();
-    compile_workers.Submit([pipeline] { pipeline->Build(); });
+    compile_workers.Submit([pipeline] { pipeline->TryBuild(); });
 
     infos.fill(nullptr);
     modules.fill(nullptr);

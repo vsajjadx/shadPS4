@@ -94,6 +94,12 @@ ComputePipeline::ComputePipeline(const Instance& instance, Scheduler& scheduler,
     SetObjectName(device, *pipeline_layout, "Compute PipelineLayout {}", debug_str);
 
     if (!defer_build) {
+        TryBuild();
+    }
+}
+
+void ComputePipeline::TryBuild() {
+    if (!build_started.exchange(true, std::memory_order_acq_rel)) {
         Build();
     }
 }
