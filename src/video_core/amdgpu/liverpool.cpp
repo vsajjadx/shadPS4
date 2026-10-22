@@ -962,6 +962,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb) {
                     break;
                 }
                 SpinDiag diag{};
+                bool flushed_for_occlusion = false;
                 while (!wait_reg_mem->Test(regs.reg_array)) {
                     if (diag.Tick()) {
                         LogWaitRegMemSpin("GFX", *wait_reg_mem, vo_port->IsVoLabel(wait_addr),
@@ -971,7 +972,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb) {
                     if (rasterizer && rasterizer->HasPendingOcclusionDumps()) {
                         // The wait may be for occlusion counters, which are only written once
                         // the host GPU has run the draws before them.
-                        rasterizer->Flush();
+                        if (!std::exchange(flushed_for_occlusion, true)) {
+                            rasterizer->Flush();
+                        }
                         rasterizer->ResolveOcclusionDumps();
                     }
                     YIELD_GFX();

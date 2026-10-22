@@ -67,6 +67,7 @@ private:
     vk::QueryControlFlags control_flags{};
     std::vector<u32> free_queries;
     std::optional<u32> active_query;
+    u64 active_query_tick{};
     std::deque<EndedQuery> ended_queries;
     std::deque<PendingDump> dumps;
     u64 num_ended_queries{};

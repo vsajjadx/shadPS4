@@ -115,6 +115,9 @@ void OcclusionCounter::BeginQuery(vk::CommandBuffer cmdbuf) {
     }
     active_query = free_queries.back();
     free_queries.pop_back();
+    // A query ends in the command buffer it began in. Its tick is read here because the end can
+    // be recorded while that command buffer is being submitted, after the tick has advanced.
+    active_query_tick = scheduler.CurrentTick();
     cmdbuf.beginQuery(*query_pool, *active_query, control_flags);
 }
 
@@ -125,7 +128,7 @@ void OcclusionCounter::EndQuery(vk::CommandBuffer cmdbuf) {
     cmdbuf.endQuery(*query_pool, *active_query);
     ended_queries.push_back({
         .index = *active_query,
-        .tick = scheduler.CurrentTick(),
+        .tick = active_query_tick,
     });
     active_query.reset();
     ++num_ended_queries;
