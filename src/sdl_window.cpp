@@ -119,14 +119,14 @@ LRESULT CALLBACK TitleBarMenuProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
     return CallWindowProcW(sdl_window_proc, hwnd, msg, wparam, lparam);
 }
 
-// Right-clicking the title bar opens the window menu, where the brightness slider is offered.
+// Right-clicking the title bar opens the window menu, where the picture sliders are offered.
 void AddTitleBarMenu(HWND hwnd) {
     const HMENU menu = GetSystemMenu(hwnd, FALSE);
     if (!menu) {
         return;
     }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, BrightnessMenuId, L"Brightness...");
+    AppendMenuW(menu, MF_STRING, BrightnessMenuId, L"Brightness / Contrast...");
     sdl_window_proc = reinterpret_cast<WNDPROC>(
         SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(TitleBarMenuProc)));
 }

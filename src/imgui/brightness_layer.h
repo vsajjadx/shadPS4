@@ -8,7 +8,7 @@
 
 namespace ImGui {
 
-/// Brightness slider opened from the window's title bar menu.
+/// Brightness and contrast sliders opened from the window's title bar menu.
 class BrightnessLayer final : public Layer {
 public:
     static void Toggle();

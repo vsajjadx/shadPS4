@@ -14,6 +14,7 @@ layout (push_constant) uniform settings {
     bool srgb_input;
     bool anti_aliasing;
     float brightness;
+    float contrast;
 } pp;
 
 const float cutoff = 0.0031308, a = 1.055, b = 0.055, d = 12.92;
@@ -41,13 +42,19 @@ vec3 adjust_brightness(vec3 rgb) {
     return pow(max(rgb, vec3(0.0)), vec3(1.0 / pp.brightness));
 }
 
+// Contrast stretches the encoded signal around mid-grey.
+vec3 adjust_contrast(vec3 rgb) {
+    return clamp((rgb - 0.5) * pp.contrast + 0.5, 0.0, 1.0);
+}
+
 vec3 display_color(vec2 coord) {
     vec3 rgb = texture(texSampler, coord).rgb;
     if (pp.hdr) {
-        return rgb * pp.brightness;
+        // Linear HDR values are stretched around a mid-grey of 0.18 instead.
+        return 0.18 * pow(max(rgb * pp.brightness, vec3(0.0)) / 0.18, vec3(pp.contrast));
     }
     if (pp.srgb_input) rgb = degamma(rgb);
-    return adjust_brightness(gamma(rgb));
+    return adjust_contrast(adjust_brightness(gamma(rgb)));
 }
 
 float luma(vec3 rgb) {

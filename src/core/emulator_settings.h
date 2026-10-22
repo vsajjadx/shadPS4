@@ -456,6 +456,8 @@ struct GPUSettings {
     // Percent applied to the presented image: 100 shows it as the game draws it, higher lifts
     // dark tones and lower darkens them, without clipping black or white.
     Setting<int> brightness{100};
+    // Percent applied around mid-grey: higher separates dark and bright tones further.
+    Setting<int> contrast{100};
 
     std::vector<OverrideItem> GetOverrideableFields() const {
         return std::vector<OverrideItem>{
@@ -491,6 +493,7 @@ struct GPUSettings {
             make_override<GPUSettings>("texture_lod_bias", &GPUSettings::texture_lod_bias),
             make_override<GPUSettings>("fast_shader_math", &GPUSettings::fast_shader_math),
             make_override<GPUSettings>("brightness", &GPUSettings::brightness),
+            make_override<GPUSettings>("contrast", &GPUSettings::contrast),
         };
     }
 };
@@ -503,7 +506,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GPUSettings, window_width, window_height, int
                                    userfaultfd, inline_fetch_shader, anisotropic_filtering,
                                    texture_lod_bias, frame_generation_enabled,
                                    gpu_thread_core_reserve, anti_aliasing, resolution_scale,
-                                   fast_shader_math, brightness)
+                                   fast_shader_math, brightness, contrast)
 
 // -------------------------------
 // Vulkan settings
@@ -803,6 +806,7 @@ public:
     SETTING_FORWARD_BOOL(m_gpu, RcasEnabled, rcas_enabled)
     SETTING_FORWARD(m_gpu, RcasAttenuation, rcas_attenuation)
     SETTING_FORWARD(m_gpu, Brightness, brightness)
+    SETTING_FORWARD(m_gpu, Contrast, contrast)
     SETTING_FORWARD(m_gpu, ReadbacksMode, readbacks_mode)
     SETTING_FORWARD_BOOL(m_gpu, ReadbackLinearImagesEnabled, readback_linear_images_enabled)
     SETTING_FORWARD_BOOL(m_gpu, DirectMemoryAccessEnabled, direct_memory_access_enabled)

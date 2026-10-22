@@ -30,6 +30,7 @@ The patches add:
   used before the standard ones, and the emulator runs in the same place, so saves and settings
   that already exist keep being used. New folders are only made when none exist.
 - Image quality options in the Graphics tab: anti-aliasing, resolution scaling, anisotropic
-  filtering and a brightness slider, saved for all games or for one game like the other settings.
+  filtering, and brightness and contrast sliders, saved for all games or for one game like the
+  other settings.
 
 To update the launcher, change `UPSTREAM_COMMIT` and refresh the patches against it.
