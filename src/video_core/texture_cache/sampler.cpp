@@ -10,14 +10,18 @@
 namespace VideoCore {
 
 Sampler::Sampler(const Vulkan::Instance& instance, const AmdGpu::Sampler& sampler,
-                 const AmdGpu::BorderColorBuffer border_color_base, const bool is_depth) {
+                 const AmdGpu::BorderColorBuffer border_color_base, const bool is_depth,
+                 const bool samples_mipmaps) {
     using namespace Vulkan;
     const bool game_aniso = AmdGpu::IsAnisoFilter(sampler.xy_mag_filter) ||
                             AmdGpu::IsAnisoFilter(sampler.xy_min_filter);
     // A forced anisotropy only applies to filtered, mipmapped colour textures: point-sampled
-    // lookups and depth compares must stay exact.
+    // lookups and depth compares must stay exact, and a texture without mips gains nothing from
+    // it. Post-processing reads its lookup tables (colour grading LUTs laid out as 2D slices)
+    // with linear samplers, and anisotropic taps across a slice edge mixed neighbouring slices
+    // into red and cyan speckles along every edge of the image.
     const u32 forced_aniso = EmulatorSettings.GetAnisotropicFiltering();
-    const bool force_aniso = forced_aniso > 1 && !is_depth &&
+    const bool force_aniso = forced_aniso > 1 && !is_depth && samples_mipmaps &&
                              sampler.xy_min_filter.Value() != AmdGpu::Filter::Point &&
                              sampler.mip_filter.Value() != AmdGpu::MipFilter::None;
     const bool anisotropy_enable =

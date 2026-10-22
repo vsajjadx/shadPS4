@@ -17,7 +17,8 @@ namespace VideoCore {
 class Sampler : public Common::LRUNode<> {
 public:
     explicit Sampler(const Vulkan::Instance& instance, const AmdGpu::Sampler& sampler,
-                     const AmdGpu::BorderColorBuffer border_color_base, bool is_depth);
+                     const AmdGpu::BorderColorBuffer border_color_base, bool is_depth,
+                     bool samples_mipmaps);
     ~Sampler();
 
     Sampler(const Sampler&) = delete;

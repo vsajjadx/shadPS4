@@ -1039,6 +1039,9 @@ bool Rasterizer::IsImageInfoUsable(const VideoCore::ImageInfo& info) {
 
 void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindings& binding) {
     const u32 first_image_idx = image_infos.size();
+    // S#s and T#s pair up per sample instruction, so a stage that samples no mipmapped texture
+    // keeps its samplers free of the forced anisotropy.
+    bool samples_mipmaps = false;
     // To emulate storing to explicit mip levels, build a descriptor array with each mip level.
     boost::container::small_vector<u32, 8> image_descriptor_array_sizes;
 
@@ -1195,6 +1198,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
             }
             image.usage.storage |= is_storage;
             image.usage.texture |= !is_storage;
+            samples_mipmaps |= !is_storage && image_view.info.range.extent.levels > 1;
 
             image_infos.emplace_back(VK_NULL_HANDLE, *image_view.image_view,
                                      image.backing->state.layout);
@@ -1234,8 +1238,8 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
                         liverpool->regs.ta_bc_base.Address());
             ssharp = AmdGpu::Sampler{};
         }
-        const auto vk_sampler =
-            texture_cache.GetSampler(ssharp, liverpool->regs.ta_bc_base, sampler.is_depth);
+        const auto vk_sampler = texture_cache.GetSampler(ssharp, liverpool->regs.ta_bc_base,
+                                                         sampler.is_depth, samples_mipmaps);
         image_infos.emplace_back(vk_sampler, VK_NULL_HANDLE, vk::ImageLayout::eGeneral);
         auto& set_write = set_writes[set_write_index++];
         set_write.dstSet = VK_NULL_HANDLE;
