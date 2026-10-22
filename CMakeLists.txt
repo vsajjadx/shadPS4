@@ -236,6 +236,9 @@ file(GLOB_RECURSE SHADER_CACHE_SOURCES CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/src/video_core/renderer_vulkan/vk_compute_pipeline.*"
      "${CMAKE_CURRENT_SOURCE_DIR}/src/video_core/renderer_vulkan/liverpool_to_vk.*"
      "${CMAKE_CURRENT_SOURCE_DIR}/src/common/hack_features.*")
+# The command processor submits work but does not shape the shaders or pipelines a build caches.
+list(REMOVE_ITEM SHADER_CACHE_SOURCES
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/video_core/amdgpu/liverpool.cpp")
 list(SORT SHADER_CACHE_SOURCES)
 set(SHADER_CACHE_DIGESTS "")
 foreach(SHADER_CACHE_SOURCE ${SHADER_CACHE_SOURCES})
