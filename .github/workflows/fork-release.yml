@@ -5,9 +5,9 @@ on:
     paths: [.github/workflows/fork-release.yml]
 
 env:
-  RUN_ID: "39749638563"
-  TAG: perf-2026-10-22
-  TARGET: a4691f0ad4e0c4c44175dfd55d40dd5a9ea6fa80
+  RUN_ID: "39762072080"
+  TAG: perf-recorder-2026-10-22
+  TARGET: 551f6e7336f33f00c224cd2c55d4902c1c0ea47c
 
 permissions:
   contents: write
@@ -30,24 +30,25 @@ jobs:
       - name: Write release notes
         run: |
           cat > notes.md <<'EOF'
-          ## Performance: no more GPU stalls on CPU readbacks
+          ## Performance: Vulkan commands recorded on their own thread
 
-          This build removes the main bottleneck in games that read GPU results back on the CPU every frame, and fixes several rendering bugs and crashes found while testing.
+          The GPU command processor thread was the bottleneck: besides translating the PS4 command stream it spent about a fifth of its time inside the Vulkan driver recording commands, while the game thread mostly waited for it. Command recording now runs on a separate thread.
 
-          ### Performance
-          - **Readback prefetch.** Every CPU read of a page the GPU had written stopped the game thread until the GPU thread had finished all submitted work and downloaded the page. inFAMOUS First Light does this about four times a frame, so the game thread, the GPU thread and the GPU took turns instead of running in parallel (about 30% of each thread's time was spent waiting and GPU load stayed around 30%). The emulator now remembers which pages the game reads back and starts downloading new GPU writes to them asynchronously at the next fence, so the data is already in memory when the game reads it. Blocking readbacks went from about 4 per frame to about 0.1.
-          - **Cheaper buffer barrier tracking.** Re-adding a range that was already tracked split it into a vector and merged it back, shifting every entry after it twice. With lists of more than ten thousand ranges this took about 10% of the GPU thread.
-          - **Result in inFAMOUS First Light (RTX 3080):** 26 FPS to 41 FPS standing still at the same spot. Other games that read GPU data back on the CPU (for example inFAMOUS Second Son, Driveclub, UFC 4) should benefit as well.
+          ### What changed
+          - **Recording thread.** The main renderer now writes each Vulkan command, together with the arrays it uses, into a compact command chunk instead of calling the driver directly. A dedicated thread (`shadPS4:GpuCommandRecorder`) replays the chunks in order into the command buffer and submits it to the GPU. Translating the next commands and recording the previous ones now happen at the same time on two CPU cores.
+          - **Ordering is preserved.** Host passes that need the command buffer itself (FSR, post processing, frame generation) first wait for every queued command, so nothing is reordered. A frame is only handed to presentation after its commands are submitted.
+          - Presentation and flip work still record directly, as before.
 
-          ### Rendering fixes
-          - **The Order: 1886:** black flickering blotches on character faces are fixed. The depth prepass and the color pass computed the same vertex position with different fp32 denormal handling on NVIDIA, so the color pass failed its depth test by one bit in scattered spots.
-          - **NHL 24:** player shadow jitter in the opening cutscene is gone with the same fix.
+          ### Result
+          - **inFAMOUS First Light (RTX 3080):** 28-29 FPS to 35-36 FPS at the same spot, measured with the same build with the recording thread turned on and off.
+          - The Order: 1886, Driveclub and NHL 24 were tested and run without errors.
 
-          ### Stability
-          - Fixed a GPU crash (device lost) and an assertion that could happen while loading with an empty shader cache: shader translation workers patched shared SRT walker code after reading stale game data.
+          ### Also included (from the previous release)
+          - Readback prefetch: no more full GPU stalls when games read GPU results back on the CPU.
+          - Fixes for black blotches on faces in The Order: 1886, NHL 24 cutscene shadow jitter, and a crash while loading with an empty shader cache.
 
           ### Notes
-          - The first launch of each game rebuilds its shader cache once, because the shader translator changed; expect some stutter the first time a scene is seen.
+          - This is a large change to how commands reach the GPU. If a game crashes or shows rendering errors with this build but not with `perf-2026-10-22`, please report it.
           - Requirements: Windows 64-bit and a GPU with Vulkan 1.3 support. Extract the zip and run `shadPS4.exe`.
 
           EOF
@@ -60,5 +61,5 @@ jobs:
           gh release create "${{ env.TAG }}" shadps4-win64-sdl-${{ env.TAG }}.zip \
             --repo ${{ github.repository }} \
             --target ${{ env.TARGET }} \
-            --title "Performance: readback prefetch (${{ env.TAG }})" \
+            --title "Performance: recording thread (${{ env.TAG }})" \
             --notes-file notes.md
