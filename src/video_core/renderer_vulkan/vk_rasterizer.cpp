@@ -1761,18 +1761,35 @@ void Rasterizer::UpdateDepthStencilState() const {
             regs.depth_control.backface_enable
                 ? uses_op_val(sc.stencil_fail_back, sc.stencil_zpass_back, sc.stencil_zfail_back)
                 : front_op;
-        const auto ref_conflict = [](AmdGpu::CompareFunc func, const AmdGpu::StencilRefMask& ref) {
-            return func != AmdGpu::CompareFunc::Always && func != AmdGpu::CompareFunc::Never &&
-                   ref.stencil_test_val != ref.stencil_op_val;
+        // Vulkan has one reference for both. The test only reads the bits of the compare mask
+        // and ReplaceOp only writes the bits of the write mask, so a reference with test_val in
+        // the first and op_val in the second does both whenever they agree on the bits the two
+        // masks share. Games test some bits and mark others, so that is the usual case.
+        const auto reference = [](bool uses_op, AmdGpu::CompareFunc func,
+                                  const AmdGpu::StencilRefMask& ref) -> u32 {
+            if (!uses_op) {
+                return ref.stencil_test_val;
+            }
+            if (func == AmdGpu::CompareFunc::Always || func == AmdGpu::CompareFunc::Never ||
+                ref.stencil_test_val == ref.stencil_op_val) {
+                return ref.stencil_op_val;
+            }
+            const u32 test_bits = ref.stencil_mask;
+            const u32 write_bits = ref.stencil_write_mask;
+            if (((ref.stencil_test_val ^ ref.stencil_op_val) & test_bits & write_bits) != 0) {
+                LOG_WARNING(Render_Vulkan,
+                            "Stencil test requires test_val while ReplaceOp requires op_val on "
+                            "the same bits; the stencil test will use op_val");
+                return ref.stencil_op_val;
+            }
+            return (ref.stencil_test_val & test_bits) | (ref.stencil_op_val & ~test_bits);
         };
-        if ((front_op && ref_conflict(regs.depth_control.stencil_ref_func, front)) ||
-            (back_op && regs.depth_control.backface_enable &&
-             ref_conflict(regs.depth_control.stencil_bf_func, back))) {
-            LOG_WARNING(Render_Vulkan, "Stencil test requires test_val while ReplaceOp requires "
-                                       "op_val; the stencil test will use op_val");
-        }
-        dynamic_state.SetStencilReferences(front_op ? front.stencil_op_val : front.stencil_test_val,
-                                           back_op ? back.stencil_op_val : back.stencil_test_val);
+        dynamic_state.SetStencilReferences(
+            reference(front_op, regs.depth_control.stencil_ref_func, front),
+            reference(back_op,
+                      regs.depth_control.backface_enable ? regs.depth_control.stencil_bf_func
+                                                         : regs.depth_control.stencil_ref_func,
+                      back));
         dynamic_state.SetStencilWriteMasks(!stencil_clear ? front.stencil_write_mask : 0U,
                                            !stencil_clear ? back.stencil_write_mask : 0U);
         dynamic_state.SetStencilCompareMasks(front.stencil_mask, back.stencil_mask);
