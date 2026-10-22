@@ -42,6 +42,10 @@ static std::recursive_mutex g_srt_codegen_mutex;
 // during a session ("code is too big") and the emulator stopped. Identical walkers are shared.
 static std::unordered_multimap<size_t, std::pair<const u8*, size_t>> g_srt_walkers;
 
+// Threads fault in the same walker at once; the second must see the first one's patch.
+static std::mutex g_srt_patch_mutex;
+static thread_local bool g_keep_srt_walkers_unpatched = false;
+
 static size_t SrtWalkerKey(const u8* code, size_t size) {
     return std::hash<std::string_view>{}({reinterpret_cast<const char*>(code), size});
 }
@@ -79,6 +83,10 @@ static void EnsureSrtWalkerHandler() {
 }
 
 namespace Shader {
+
+void KeepSrtWalkersUnpatchedOnThisThread() {
+    g_keep_srt_walkers_unpatched = true;
+}
 
 PFN_SrtWalker RegisterWalkerCode(const u8* ptr, size_t size) {
     std::scoped_lock lock{g_srt_codegen_mutex};
@@ -131,17 +139,31 @@ static bool SrtWalkerSignalHandler(void* context, void* fault_address) {
         return false; // Not in SRT code range
     }
 
+    std::scoped_lock lock{g_srt_patch_mutex};
+
     // Patch instruction to zero register
     ZydisDecodedInstruction instruction;
     ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
     ZyanStatus status = Common::Decoder::Instance()->decodeInstruction(instruction, operands,
                                                                        const_cast<void*>(code), 15);
 
+    if (ZYAN_SUCCESS(status) && instruction.mnemonic == ZYDIS_MNEMONIC_XOR) {
+        return true; // Another thread patched it while this one waited.
+    }
     ASSERT(ZYAN_SUCCESS(status) && instruction.mnemonic == ZYDIS_MNEMONIC_MOV &&
            operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
            operands[1].type == ZYDIS_OPERAND_TYPE_MEMORY);
 
     size_t len = instruction.length;
+    if (g_keep_srt_walkers_unpatched) {
+        // Writing the 32-bit r10d also clears the upper half of r10.
+        const bool is_rdi = operands[0].reg.value == ZYDIS_REGISTER_RDI;
+        ASSERT_MSG(is_rdi || operands[0].reg.value == ZYDIS_REGISTER_R10D,
+                   "Unsupported register for SRT walker patch");
+        *Common::GetGprPointer(context, is_rdi ? 7 : 10) = 0;
+        Common::IncrementRip(context, len);
+        return true;
+    }
     const size_t patch_size = 3;
     u8* code_patch = const_cast<u8*>(reinterpret_cast<const u8*>(code));
 

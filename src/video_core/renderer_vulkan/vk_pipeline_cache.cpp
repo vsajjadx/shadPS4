@@ -998,6 +998,7 @@ void PipelineCache::SubmitTranslation(HwStage hw_stage, SwStage sw_stage,
     pending_translations[params.hash].push_back(std::move(job));
     compile_workers.Submit([this, translation] {
         thread_local Shader::Pools worker_pools;
+        Shader::KeepSrtWalkersUnpatchedOnThisThread();
         auto binding = translation->start_binding;
         translation->build =
             BuildModule(worker_pools, *translation->info, translation->runtime_info,
