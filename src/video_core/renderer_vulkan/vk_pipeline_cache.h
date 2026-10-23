@@ -227,7 +227,9 @@ private:
     tsl::robin_map<VAddr, TargetStreak> target_streaks;
     u32 driver_cache_saved_pipelines{};
     std::chrono::steady_clock::time_point driver_cache_saved_at{};
-    tsl::robin_map<u64, std::deque<std::unique_ptr<PendingTranslation>>> pending_translations;
+    // Shared with the queued worker task, which may still run after the GPU thread did the
+    // translation itself and collected it.
+    tsl::robin_map<u64, std::deque<std::shared_ptr<PendingTranslation>>> pending_translations;
     std::chrono::steady_clock::time_point pending_wait_window_start{};
     std::chrono::microseconds pending_wait_spent{};
     // Declared last so the workers finish before the pipelines they build are destroyed.

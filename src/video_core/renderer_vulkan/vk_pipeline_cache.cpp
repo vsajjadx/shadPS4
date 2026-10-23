@@ -1010,7 +1010,7 @@ void PipelineCache::SubmitTranslation(HwStage hw_stage, SwStage sw_stage,
                                       size_t perm_idx,
                                       std::optional<Shader::StageSpecialization> spec) {
     // The user data registers change with the next draw, so the worker reads a copy of them.
-    auto job = std::make_unique<PendingTranslation>();
+    auto job = std::make_shared<PendingTranslation>();
     std::ranges::copy(params.user_data, job->user_data.begin());
     job->info.emplace(hw_stage, sw_stage,
                       Shader::ShaderParams{
@@ -1021,9 +1021,8 @@ void PipelineCache::SubmitTranslation(HwStage hw_stage, SwStage sw_stage,
     job->perm_idx = perm_idx;
     job->spec = std::move(spec);
 
-    auto* const translation = job.get();
-    pending_translations[params.hash].push_back(std::move(job));
-    compile_workers.Submit([this, translation] {
+    pending_translations[params.hash].push_back(job);
+    compile_workers.Submit([this, translation = std::move(job)] {
         thread_local Shader::Pools worker_pools;
         Shader::KeepSrtWalkersUnpatchedOnThisThread();
         RunTranslation(*translation, worker_pools);
