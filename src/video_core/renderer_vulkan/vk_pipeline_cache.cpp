@@ -14,6 +14,7 @@
 #include "common/thread.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
+#include "core/libraries/gnmdriver/gnmdriver.h"
 #include "core/memory.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/info.h"
@@ -766,7 +767,8 @@ bool PipelineCache::RefreshGraphicsStages() {
             const auto* pgm = regs.ProgramForStage(stage);
             const VAddr address = pgm ? pgm->Address<VAddr>() : 0;
             if (!regs.stage_enable.IsStageEnabled(stage) || address == 0 ||
-                address == checked[stage]) {
+                address == checked[stage] ||
+                Libraries::GnmDriver::IsEmbeddedShaderAddress(address)) {
                 continue;
             }
             auto* memory = Core::Memory::Instance();

@@ -1675,6 +1675,61 @@ s32 PS4_SYSV_ABI sceGnmSetCsShaderWithModifier(u32* cmdbuf, u32 size, const u32*
     return ORBIS_OK;
 }
 
+// clang-format off
+constexpr static std::array embedded_ps0_code alignas(256) = {
+    0xbeeb03ffu, 0x00000003u, // s_mov_b32     vcc_hi, $0x00000003
+    0x7e000280u,              // v_mov_b32     v0, 0
+    0x5e000100u,              // v_cvt_pkrtz_f16_f32 v0, v0, v0
+    0xbf800000u,              // s_nop
+    0xf8001c0fu, 0x00000000u, // exp           mrt0, v0, v0 compr vm done
+    0xbf810000u,              // s_endpgm
+
+    // Binary header
+    0x5362724fu, 0x07726468u, 0x00002043u, 0u, 0xb0a45b2bu, 0x1d39766du, 0x72044b7bu, 0x0000000fu,
+    // PS regs
+    0x0fe000f0u, 0u, 0xc0000u, 4u, 0u, 4u, 2u, 2u, 0u, 0u, 0x10u, 0xfu, 0xcu, 0u, 0u, 0u,
+};
+
+constexpr static std::array embedded_ps1_code alignas(256) = {
+    0xbeeb03ffu, 0x00000003u, // s_mov_b32     vcc_hi, $0x00000003
+    0x7e040280u,              // v_mov_b32     v2, 0
+    0xf8001803u, 0x02020202u, // exp           mrt0, v2, v2, off, off vm done
+    0xbf810000u,              // s_endpgm
+
+    // Binary header
+    0x5362724fu, 0x07726468u, 0x00001841u, 0x04080002u, 0x98b9cb94u, 0u, 0x6f130734u, 0x0000000fu,
+    // PS regs
+    0x0fe000f2u, 0u, 0x2000u, 0u, 0u, 2u, 2u, 2u, 0u, 0u, 0x10u, 3u, 0xcu,
+};
+
+// A fullscreen triangle with one uv set
+constexpr static std::array embedded_vs0_code alignas(256) = {
+    0xbeeb03ffu, 0x00000007u, // s_mov_b32     vcc_hi, $0x00000007
+    0x36020081u,              // v_and_b32     v1, 1, v0
+    0x34020281u,              // v_lshlrev_b32 v1, 1, v1
+    0x360000c2u,              // v_and_b32     v0, -2, v0
+    0x4a0202c1u,              // v_add_i32     v1, vcc, -1, v1
+    0x4a0000c1u,              // v_add_i32     v0, vcc, -1, v0
+    0x7e020b01u,              // v_cvt_f32_i32 v1, v1
+    0x7e000b00U,              // v_cvt_f32_i32 v0, v0
+    0x7e040280u,              // v_mov_b32     v2, 0
+    0x7e0602f2u,              // v_mov_b32     v3, 1.0
+    0xf80008cfu, 0x03020001u, // exp           pos0, v1, v0, v2, v3 done
+    0xf800020fu, 0x03030303u, // exp           param0, v3, v3, v3, v3
+    0xbf810000u,              // s_endpgm
+
+    // Binary header
+    0x5362724fu, 0x07726468u, 0x00004047u, 0u, 0x47f8c29fu, 0x9b2da5cfu, 0xff7c5b7du, 0x00000017u,
+    // VS regs
+    0x0fe000f1u, 0u, 0x000c0000u, 4u, 0u, 4u, 0u, 7u,
+};
+// clang-format on
+
+bool IsEmbeddedShaderAddress(VAddr address) {
+    return address == VAddr(embedded_ps0_code.data()) ||
+           address == VAddr(embedded_ps1_code.data()) || address == VAddr(embedded_vs0_code.data());
+}
+
 s32 PS4_SYSV_ABI sceGnmSetEmbeddedPsShader(u32* cmdbuf, u32 size, u32 shader_id,
                                            u32 shader_modifier) {
     LOG_TRACE(Lib_GnmDriver, "called");
@@ -1685,37 +1740,11 @@ s32 PS4_SYSV_ABI sceGnmSetEmbeddedPsShader(u32* cmdbuf, u32 size, u32 shader_id,
     }
 
     // clang-format off
-    constexpr static std::array ps0_code alignas(256) = {
-        0xbeeb03ffu, 0x00000003u, // s_mov_b32     vcc_hi, $0x00000003
-        0x7e000280u,              // v_mov_b32     v0, 0
-        0x5e000100u,              // v_cvt_pkrtz_f16_f32 v0, v0, v0
-        0xbf800000u,              // s_nop
-        0xf8001c0fu, 0x00000000u, // exp           mrt0, v0, v0 compr vm done
-        0xbf810000u,              // s_endpgm
-
-        // Binary header
-        0x5362724fu, 0x07726468u, 0x00002043u, 0u, 0xb0a45b2bu, 0x1d39766du, 0x72044b7bu, 0x0000000fu,
-        // PS regs
-        0x0fe000f0u, 0u, 0xc0000u, 4u, 0u, 4u, 2u, 2u, 0u, 0u, 0x10u, 0xfu, 0xcu, 0u, 0u, 0u,
-    };
-
-    const auto shader0_addr = uintptr_t(ps0_code.data()); // Original address is 0xfe000f00
+    const auto shader0_addr = uintptr_t(embedded_ps0_code.data()); // Original address is 0xfe000f00
     const static u32 ps0_regs[] = {
         u32(shader0_addr >> 8), u32(shader0_addr >> 40), 0xc0000u, 4u, 0u, 4u, 2u, 2u, 0u, 0u, 0x10u, 0xfu, 0xcu};
 
-    constexpr static std::array ps1_code alignas(256) = {
-        0xbeeb03ffu, 0x00000003u, // s_mov_b32     vcc_hi, $0x00000003
-        0x7e040280u,              // v_mov_b32     v2, 0
-        0xf8001803u, 0x02020202u, // exp           mrt0, v2, v2, off, off vm done
-        0xbf810000u,              // s_endpgm
-
-        // Binary header
-        0x5362724fu, 0x07726468u, 0x00001841u, 0x04080002u, 0x98b9cb94u, 0u, 0x6f130734u, 0x0000000fu,
-        // PS regs
-        0x0fe000f2u, 0u, 0x2000u, 0u, 0u, 2u, 2u, 2u, 0u, 0u, 0x10u, 3u, 0xcu,
-    };
-
-    const auto shader1_addr = uintptr_t(ps1_code.data()); // Original address is 0xfe000f20
+    const auto shader1_addr = uintptr_t(embedded_ps1_code.data()); // Original address is 0xfe000f20
     const static u32 ps1_regs[] = {
         u32(shader1_addr >> 8), u32(shader1_addr >> 40), 0x2000u, 0u, 0u, 2u, 2u, 2u, 0u, 0u, 0x10u, 3u, 0xcu};
     // clang-format on
@@ -1753,31 +1782,7 @@ s32 PS4_SYSV_ABI sceGnmSetEmbeddedVsShader(u32* cmdbuf, u32 size, u32 shader_id,
         return ORBIS_GNM_ERROR_FAILURE;
     }
 
-    // A fullscreen triangle with one uv set
-    // clang-format off
-    constexpr static std::array shader_code alignas(256) = {
-        0xbeeb03ffu, 0x00000007u, // s_mov_b32     vcc_hi, $0x00000007
-        0x36020081u,              // v_and_b32     v1, 1, v0
-        0x34020281u,              // v_lshlrev_b32 v1, 1, v1
-        0x360000c2u,              // v_and_b32     v0, -2, v0
-        0x4a0202c1u,              // v_add_i32     v1, vcc, -1, v1
-        0x4a0000c1u,              // v_add_i32     v0, vcc, -1, v0
-        0x7e020b01u,              // v_cvt_f32_i32 v1, v1
-        0x7e000b00U,              // v_cvt_f32_i32 v0, v0
-        0x7e040280u,              // v_mov_b32     v2, 0
-        0x7e0602f2u,              // v_mov_b32     v3, 1.0
-        0xf80008cfu, 0x03020001u, // exp           pos0, v1, v0, v2, v3 done
-        0xf800020fu, 0x03030303u, // exp           param0, v3, v3, v3, v3
-        0xbf810000u,              // s_endpgm
-
-        // Binary header
-        0x5362724fu, 0x07726468u, 0x00004047u, 0u, 0x47f8c29fu, 0x9b2da5cfu, 0xff7c5b7du, 0x00000017u,
-        // VS regs
-        0x0fe000f1u, 0u, 0x000c0000u, 4u, 0u, 4u, 0u, 7u,
-    };
-    // clang-format on
-
-    const auto shader_addr = uintptr_t(shader_code.data()); // Original address is 0xfe000f10
+    const auto shader_addr = uintptr_t(embedded_vs0_code.data()); // Original address is 0xfe000f10
     const static u32 vs_regs[] = {
         u32(shader_addr >> 8), u32(shader_addr >> 40), 0xc0000u, 4, 0, 4, 0, 7};
 

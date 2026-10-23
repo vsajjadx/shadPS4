@@ -312,6 +312,8 @@ int PS4_SYSV_ABI Func_F916890425496553();
 
 void RegisterLib(Core::Loader::SymbolsResolver* sym);
 
+bool IsEmbeddedShaderAddress(VAddr address);
+
 // One-line command processor / submission lock state, used by hang dumps.
 std::string GetGpuDebugState();
 } // namespace Libraries::GnmDriver
