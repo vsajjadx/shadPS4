@@ -29,6 +29,21 @@ per-game settings. The default settings work.
 > The first time you start a game it can be a little slower while shaders are built. After
 > that it runs normally.
 
+## What's new
+
+Latest release: [**The Order: 1886 glitch fixed, NFS Hot Pursuit renders**](https://github.com/vsajjadx/shadPS4/releases/tag/order-glitch-fix-2026-10-23)
+
+- **The Order: 1886:** the black triangles and gray rectangles that flashed over the scene for
+  a single frame are gone. Vertex shaders now run the way the PS4 allows on every GPU, so this
+  helps other games too. Black enemy faces and two crashes are fixed as well.
+- **Need for Speed Hot Pursuit Remastered:** the world is drawn again; before, only the HUD and
+  the mirror showed.
+- **No per-game readback settings:** every game reads GPU results back on the CPU when it needs
+  to, so The Order: 1886 and NHL 24 run with the default settings.
+- **Smoother play:** fewer stutters while shaders compile, especially in inFAMOUS Second Son.
+- **Brightness and contrast:** sliders in the launcher (**Graphics** tab) and in game
+  (right-click the title bar), for all games or per game.
+
 ## The launcher
 
 The zip includes the latest official shadPS4 Qt launcher, with a few additions:
@@ -41,7 +56,7 @@ The zip includes the latest official shadPS4 Qt launcher, with a few additions:
 - **Frame generation switch.** Turn on FSR 3.1 frame generation in **Settings → Graphics**.
 - **Compatibility list.** Shows the official list, plus the games this build runs that the
   official one doesn't.
-- **Install PKG files.
+- **Install PKG files.**
 
 > Already using the official launcher with a `user` folder next to it? Unzip into that same
 > folder and replace the files. Your games, saves and settings stay as they are.
@@ -79,8 +94,8 @@ The zip includes the latest official shadPS4 Qt launcher, with a few additions:
 - **Faster.** Better use of your CPU and GPU.
 - **Frame generation (optional).** Press `1` in game to turn on FSR 3.1 frame generation, `2` to
   turn it off, or use the switch in the launcher settings. It is off by default.
-- **More games run.** Games like NHL 24 , The Order: 1886 and The Grand Tour Game, which do
-  not run on the official version, work here.
+- **More games run.** Games like NHL 24, The Order: 1886, The Grand Tour Game and Need for Speed
+  Hot Pursuit Remastered, which do not run on the official version, work here.
 - **Launcher included.** One download, with automatic updates.
 - **Always up to date.** The latest changes from the official shadPS4 are included.
 
@@ -94,8 +109,7 @@ open-source projects.
 
 - The [**shadPS4**](https://github.com/shadps4-emu/shadPS4) team, for the emulator this fork is
   built on.
-- Community forks fixes
- open-source reference code.
+- Community forks and other open-source projects, for fixes and reference code.
 - AMD [**FidelityFX**](https://github.com/FireBurn/FSR-Vulkan), for FSR frame generation.
 
 ## License
