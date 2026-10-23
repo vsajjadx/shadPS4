@@ -10,6 +10,7 @@
 #include <mutex>
 #include <thread>
 #include <type_traits>
+#include <utility>
 #include <queue>
 
 #include "common/assert.h"
@@ -554,6 +555,7 @@ public:
         if (!deferred || count == 0 || data == nullptr) {
             return data;
         }
+        arrays_stored = true;
         return chunk->Store(data, count);
     }
 
@@ -563,7 +565,12 @@ public:
             func(exec_cmdbuf);
             return;
         }
-        Reserve(0);
+        // A command whose arrays are stored already has its room reserved with them. Making room
+        // again could hand the chunk holding the arrays to the recording thread, which recycles it
+        // while the command, recorded into the next chunk, still points into it.
+        if (!std::exchange(arrays_stored, false)) {
+            Reserve(0);
+        }
         chunk->Record(std::forward<F>(func));
         if (chunk->Used() >= CommandChunk::DispatchSize) {
             DispatchChunk();
@@ -641,6 +648,7 @@ private:
     vk::CommandBuffer exec_cmdbuf{};
     std::vector<vk::CommandBuffer> exec_cmdbufs;
     std::unique_ptr<CommandChunk> chunk;
+    bool arrays_stored{};
     std::deque<std::unique_ptr<CommandChunk>> chunk_queue;
     std::vector<std::unique_ptr<CommandChunk>> free_chunks;
     std::mutex chunk_mutex;
