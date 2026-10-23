@@ -5,9 +5,9 @@ on:
     paths: [.github/workflows/fork-release.yml]
 
 env:
-  RUN_ID: "39829203132"
-  TAG: smooth-brightness-2026-10-22
-  TARGET: c829eb62244ab7bcc62bbef2bdabd7d4363013f6
+  RUN_ID: "40015020210"
+  TAG: order-glitch-fix-2026-10-23
+  TARGET: 9b668ed6fbca0c4b8dd2f41d9074754b62b2d918
 
 permissions:
   contents: write
@@ -30,26 +30,30 @@ jobs:
       - name: Write release notes
         run: |
           cat > notes.md <<'EOF'
-          ## Smoother play, brightness and contrast sliders, and the launcher with it
+          ## The Order: 1886 glitch fixed, Need for Speed Hot Pursuit renders, launcher included
 
           This release ships the emulator together with the Qt launcher.
 
-          ### Stalls fixed
-          - **The emulator froze the picture 3 and 6 minutes into every session.** A diagnostic dump suspended every thread and wrote their state to the log at those times, even when nothing was wrong. In UFC 4 that was the severe stall that came once or twice in every fight (seconds long), and in inFAMOUS Second Son a hitch of about 0.4 s. The dumps are gone; the dump on a real freeze (no frame for 10 seconds) and the one on Ctrl+L remain.
-          - **Compute pipelines no longer stop the picture while they compile.** They were always built on the GPU thread, which in inFAMOUS Second Son meant hundreds of 25-300 ms hitches in a new area. Compute passes the game runs every frame are now built in the background like graphics pipelines; the picture keeps moving and an effect can show a few frames late the first time it appears. One-off passes are still built at once.
+          ### The Order: 1886
+          - **Fixed: single frames with a black triangle or a fog-gray rectangle over the scene** (around the door in the first chapter, roughly one frame in ten). A vertex shader for instanced props loops over the lanes of its wave and reads another lane's instance id. On NVIDIA that sometimes picked up the wrong vertex, and one vertex flew off across the screen. Vertex shaders now run each vertex as a wave of its own, which the PS4 also allows, so the loop always reads the vertex's own data. This applies to every game, not just The Order.
+          - Fixed: enemy faces drawn black. A shader compiled in the background read the game's texture descriptors after the game had already changed them, and was built for the wrong image type.
+          - Fixed: occasional single frames with black triangles or unlit parts, caused by a recorded GPU command reading arrays that had already been reused.
+          - Fixed: two crashes, one in the shader compile workers and one on a garbage multisampled texture descriptor in a later area.
+          - Its log no longer grows to 100 MB with a warning on every draw and flip.
 
-          ### Brightness and contrast
-          - New brightness setting, from 25% to 300%. It lifts or lowers the tones between black and white, so dark scenes become visible without washing out bright areas.
-          - New contrast setting, from 25% to 300%, which spreads the tones apart around mid-grey or brings them closer together.
-          - In game: right-click the window's title bar and choose **Brightness / Contrast...** for two sliders that apply at once, with buttons to save them for the game or for all games.
-          - In the launcher: **Graphics** tab, Image Quality, saved for all games or per game like the other settings.
-          - inFAMOUS Second Son starts at 180%, since its interiors still show darker than on the console; a brightness you choose takes over.
+          ### Need for Speed Hot Pursuit Remastered
+          - **Fixed: the world was black and only the HUD and mirror were drawn.** The game draws with the PS4 driver's built-in shaders, which the emulator keeps inside its own executable; a safety check took them for invalid addresses and skipped those draws.
 
-          ### Also
-          - Starting a game with RenderDoc enabled no longer freezes it for seconds.
+          ### Readbacks
+          - Every game now runs with at least relaxed GPU readbacks, so games that read small GPU results back on the CPU (culling, exposure, counters) no longer need a per-game setting. The Order: 1886 and NHL 24 no longer need a custom config for it; NHL 24 runs a full match with clean ice on relaxed instead of precise.
+
+          ### Smoother play
+          - A draw or compute pass that cannot wait for its pipeline is now built right away on the GPU thread instead of queueing behind every other compile.
+          - Compute passes still compiling during gameplay are skipped until they are ready, which removes the 0.2-1.7 s hitches inFAMOUS Second Son had when new effects appeared. An effect can show a few frames late the first time; loading screens still build every pass at once.
 
           ### Notes
           - The first run of a game after this update compiles its shaders again, so expect some hitching in that first session.
+          - Tested on an RTX 3080 with The Order: 1886, NHL 24, UFC 4, The Grand Tour Game, inFAMOUS Second Son and Need for Speed Hot Pursuit Remastered.
           - Requirements: Windows 64-bit and a GPU with Vulkan 1.3 support. Extract the zip and run `shadPS4QtLauncher.exe` (or `shadPS4.exe` directly).
 
           EOF
@@ -61,5 +65,6 @@ jobs:
         run: |
           gh release create "${{ env.TAG }}" shadPS4-win64-${{ env.TAG }}.zip \
             --repo ${{ github.repository }} \
-            --title "Smoother play, brightness and contrast, launcher included (${{ env.TAG }})" \
+            --target "${{ env.TARGET }}" \
+            --title "The Order: 1886 glitch fixed, NFS Hot Pursuit renders, launcher included (${{ env.TAG }})" \
             --notes-file notes.md
