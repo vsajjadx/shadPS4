@@ -453,18 +453,12 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         EmulatorSettings.SetPipelineCacheEnabled(true, true);
         LOG_INFO(Config, "Pipeline cache forced on to precompile shaders at boot");
     }
-    // inFAMOUS First Light reads GPU-written data back on the CPU, which stays stale with
-    // readbacks disabled.
-    if (id == "CUSA00897" && EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Disabled) {
+    // Games read small GPU-written results back on the CPU (culling and visibility data, exposure,
+    // counters). With readbacks disabled the CPU sees stale memory, so every game runs with at
+    // least relaxed readbacks, which only watch the small buffers the GPU writes.
+    if (EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Disabled) {
         EmulatorSettings.SetReadbacksMode(GpuReadbacksMode::Relaxed, true);
-        LOG_INFO(Config, "inFAMOUS First Light: GPU readbacks forced to Relaxed");
-    }
-    // NHL 24 (Frostbite) reads GPU-written culling/visibility data back on the CPU. With
-    // readbacks disabled the CPU sees stale memory and the ice and arena floor go black after
-    // the first frames of a match (the NHL 24 PC port ships with readbacks_mode = Relaxed).
-    if (id == "CUSA37933" && EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Disabled) {
-        EmulatorSettings.SetReadbacksMode(GpuReadbacksMode::Relaxed, true);
-        LOG_INFO(Config, "NHL 24: GPU readbacks forced to Relaxed");
+        LOG_INFO(Config, "GPU readbacks forced to Relaxed");
     }
     // Compiling a new pipeline on the GPU thread freezes the game for tens of milliseconds, so
     // pipelines are built on worker threads for every game. A game-specific config can still turn
@@ -506,12 +500,8 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
             LOG_INFO(Config, "Driveclub: linear image readbacks forced on");
         }
     }
-    // inFAMOUS Second Son renders dark unless GPU-written data and linear images are read back
-    // on the CPU: it needs relaxed readbacks and linear image readbacks.
+    // inFAMOUS Second Son renders dark unless linear images are read back on the CPU too.
     if (id == "CUSA00004") {
-        if (EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Disabled) {
-            EmulatorSettings.SetReadbacksMode(GpuReadbacksMode::Relaxed, true);
-        }
         if (!EmulatorSettings.IsReadbackLinearImagesEnabled()) {
             EmulatorSettings.SetReadbackLinearImagesEnabled(true, true);
         }
