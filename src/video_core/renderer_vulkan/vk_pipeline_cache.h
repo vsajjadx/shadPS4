@@ -175,7 +175,8 @@ private:
                            const Shader::ShaderParams& params,
                            const Shader::RuntimeInfo& runtime_info,
                            const Shader::Backend::Bindings& start_binding, size_t perm_idx,
-                           std::optional<Shader::StageSpecialization> spec);
+                           std::optional<Shader::StageSpecialization> spec,
+                           std::span<const u32> flat_buf);
     void CollectTranslations();
     void RunTranslation(PendingTranslation& translation, Shader::Pools& build_pools);
     void WaitTranslations(u64 hash);

@@ -102,6 +102,9 @@ struct Info : InfoPersistent {
 
     std::span<const u32> user_data;
     std::vector<u32> flattened_ud_buf;
+    /// The flat buffer as it was when the draw that requested this translation was recorded.
+    /// The memory the SRT walker reads may be rewritten by the time a worker translates.
+    std::vector<u32> flat_buf_snapshot;
     PersistentSrtInfo srt_info;
     /// Images to bind as null for the current draw, because it reuses a permutation compiled for
     /// a different image type in these slots. Set by the pipeline cache on every lookup.
@@ -169,6 +172,11 @@ struct Info : InfoPersistent {
 
     void RefreshFlatBuf() {
         flattened_ud_buf.resize(srt_info.flattened_bufsize_dw);
+        if (flat_buf_snapshot.size() == flattened_ud_buf.size()) {
+            std::memcpy(flattened_ud_buf.data(), flat_buf_snapshot.data(),
+                        flat_buf_snapshot.size() * sizeof(u32));
+            return;
+        }
         ASSERT(user_data.size() <= NUM_USER_DATA_REGS);
         std::memcpy(flattened_ud_buf.data(), user_data.data(), user_data.size_bytes());
         if (srt_info.walker_func) {

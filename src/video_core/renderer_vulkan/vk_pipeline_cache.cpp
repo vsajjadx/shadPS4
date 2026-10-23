@@ -1008,13 +1008,15 @@ void PipelineCache::SubmitTranslation(HwStage hw_stage, SwStage sw_stage,
                                       const Shader::RuntimeInfo& runtime_info,
                                       const Shader::Backend::Bindings& start_binding,
                                       size_t perm_idx,
-                                      std::optional<Shader::StageSpecialization> spec) {
+                                      std::optional<Shader::StageSpecialization> spec,
+                                      std::span<const u32> flat_buf) {
     // The user data registers change with the next draw, so the worker reads a copy of them.
     auto job = std::make_shared<PendingTranslation>();
     std::ranges::copy(params.user_data, job->user_data.begin());
     job->info.emplace(hw_stage, sw_stage,
                       Shader::ShaderParams{
                           .user_data = job->user_data, .code = params.code, .hash = params.hash});
+    job->info->flat_buf_snapshot.assign(flat_buf.begin(), flat_buf.end());
     job->runtime_info = runtime_info;
     job->start_binding = start_binding;
     job->code = params.code;
@@ -1113,7 +1115,7 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
     if (async && !program_cache.contains(params.hash)) {
         if (!pending_translations.contains(params.hash)) {
             SubmitTranslation(hw_stage, sw_stage, params, runtime_info, binding,
-                              NewPermutationIndex(params.hash, 0), std::nullopt);
+                              NewPermutationIndex(params.hash, 0), std::nullopt, {});
         }
         if ((num_pending_translations_skipped++ % 256) == 0) {
             LOG_INFO(Render_Vulkan, "Skipping draws while shaders translate ({} so far)",
@@ -1183,7 +1185,7 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
         if (!queued) {
             SubmitTranslation(hw_stage, sw_stage, params, runtime_info, binding,
                               NewPermutationIndex(params.hash, program->modules.size()),
-                              std::move(spec));
+                              std::move(spec), info.flattened_ud_buf);
         }
         if ((num_pending_translations_skipped++ % 256) == 0) {
             LOG_INFO(Render_Vulkan, "Skipping draws while shaders translate ({} so far)",
