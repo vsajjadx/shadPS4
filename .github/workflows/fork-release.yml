@@ -65,6 +65,5 @@ jobs:
         run: |
           gh release create "${{ env.TAG }}" shadPS4-win64-${{ env.TAG }}.zip \
             --repo ${{ github.repository }} \
-            --target "${{ env.TARGET }}" \
             --title "The Order: 1886 glitch fixed, NFS Hot Pursuit renders, launcher included (${{ env.TAG }})" \
             --notes-file notes.md
