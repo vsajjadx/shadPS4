@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <atomic>
 
 #include "common/assert.h"
 #include "common/elf_info.h"
@@ -161,7 +162,8 @@ s32 PS4_SYSV_ABI sceVideoOutSubmitFlip(s32 handle, s32 bufferIndex, s32 flipMode
         return ORBIS_VIDEO_OUT_ERROR_INVALID_HANDLE;
     }
 
-    if (flipMode != 1) {
+    static std::atomic<s32> reported_flip_mode{1};
+    if (flipMode != 1 && reported_flip_mode.exchange(flipMode) != flipMode) {
         LOG_WARNING(Lib_VideoOut, "flipmode = {}", flipMode);
     }
 

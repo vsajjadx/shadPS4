@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <unordered_set>
+
 #include "common/debug.h"
 #include "common/hack_features.h"
 #include "core/debug_state.h"
@@ -896,7 +898,9 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
                     buffer_cache.ObtainBuffer(vsharp.base_address, size, flags);
                 const u64 offset_aligned = Common::AlignDown(offset, alignment);
                 const u64 adjust = offset - offset_aligned;
-                if (adjust % 4 != 0) {
+                // Once per shader: The Order: 1886 hit this on every draw, 630,000 lines a session.
+                static std::unordered_set<u64> misaligned_shaders;
+                if (adjust % 4 != 0 && misaligned_shaders.insert(stage.pgm_hash).second) {
                     LOG_WARNING(Render_Vulkan, "Buffer binding in shader {:#x} isn't dword aligned",
                                 stage.pgm_hash);
                 }
