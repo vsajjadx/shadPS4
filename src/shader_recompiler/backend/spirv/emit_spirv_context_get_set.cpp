@@ -228,6 +228,9 @@ Id EmitGetAttributeU32(EmitContext& ctx, IR::Attribute attr, u32 comp) {
                ctx.info.sw_stage == SwStage::TessellationControl);
         return ctx.OpLoad(ctx.U32[1], ctx.invocation_id);
     case IR::Attribute::SubgroupLtMask:
+        if (ctx.info.sw_stage == SwStage::Vertex) {
+            return ctx.u32_zero_value;
+        }
         return ctx.OpLoad(
             ctx.U32[1], ctx.OpAccessChain(ctx.input_u32, ctx.subgroup_lt_mask, ctx.ConstU32(comp)));
     case IR::Attribute::PatchVertices:
