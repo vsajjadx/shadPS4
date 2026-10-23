@@ -1199,7 +1199,7 @@ bool IsPlausibleImageSharp(const AmdGpu::Image& sharp) {
     if (address == 0 || address >= MaxGpuAddress || data_fmt == AmdGpu::DataFormat::FormatInvalid ||
         AmdGpu::IsFmask(data_fmt) || !magic_enum::enum_contains(data_fmt) ||
         !magic_enum::enum_contains(num_fmt) || !magic_enum::enum_contains(tile_mode) ||
-        tile_mode == AmdGpu::TileMode::DisplayLinearGeneral) {
+        tile_mode == AmdGpu::TileMode::DisplayLinearGeneral || sharp.NumSamples() > 8) {
         return false;
     }
     return Vulkan::LiverpoolToVK::surface_format_table
