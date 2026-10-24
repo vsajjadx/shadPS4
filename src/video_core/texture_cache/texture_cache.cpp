@@ -109,13 +109,58 @@ boost::container::small_vector<vk::BufferImageCopy, 8> TextureCache::GuestCopies
     return copies;
 }
 
-void TextureCache::SyncAliasedImages(ImageId image_id) {
+void TextureCache::WriteAliasToBuffer(ImageId image_id, VAddr begin, VAddr end) {
+    Image& image = slot_images[image_id];
+    const VAddr image_begin = image.info.guest_address;
+    const VAddr image_end = image_begin + image.info.guest_size;
+    begin = std::max(begin, image_begin);
+    end = std::min(end, image_end);
+    auto copies = GuestCopies(image);
+    constexpr auto flags = ObtainBufferFlags::IsWritten | ObtainBufferFlags::IgnoreStreamBuffer;
+    if (begin == image_begin && end == image_end) {
+        const auto [buffer, offset] =
+            buffer_cache.ObtainBuffer(image_begin, image.info.guest_size, flags);
+        tile_manager.TileImage(image, copies, buffer, offset);
+        return;
+    }
+    // Only the layers that overlap the range need to be read back from the image.
+    const u32 layers = image.info.resources.layers;
+    if (image.info.resources.levels == 1 && layers > 1) {
+        const u64 layer_size = image.info.mips_layout[0].size / layers;
+        const u32 first = static_cast<u32>((begin - image_begin) / layer_size);
+        const u32 last =
+            std::min(static_cast<u32>((end - 1 - image_begin) / layer_size), layers - 1);
+        copies[0].imageSubresource.baseArrayLayer = first;
+        copies[0].imageSubresource.layerCount = last - first + 1;
+        copies[0].bufferOffset += first * layer_size;
+    }
+    const auto temp = runtime.GetStagingPool().Request(image.info.guest_size,
+                                                       MemoryType::DeviceLocal, 256, false, true);
+    tile_manager.TileImage(image, copies, temp.buffer, temp.offset);
+    const auto [buffer, offset] =
+        buffer_cache.ObtainBuffer(begin, static_cast<u32>(end - begin), flags);
+    const vk::BufferCopy copy{
+        .srcOffset = temp.offset + (begin - image_begin),
+        .dstOffset = offset,
+        .size = end - begin,
+    };
+    runtime.CopyBuffer(temp.buffer, buffer, std::span{&copy, 1});
+}
+
+void TextureCache::SyncAliasedImages(ImageId image_id, const ImageViewInfo& view) {
     Image& image = slot_images[image_id];
     if (image.info.guest_address == 0 || image.info.num_samples > 1) {
         return;
     }
-    const VAddr begin = image.info.guest_address;
-    const VAddr end = begin + image.info.guest_size;
+    VAddr begin = image.info.guest_address;
+    VAddr end = begin + image.info.guest_size;
+    // Only the bound layers need what aliasing images wrote.
+    const u32 layers = image.info.resources.layers;
+    if (image.info.resources.levels == 1 && layers > 1 && view.range.extent.layers < layers) {
+        const u64 layer_size = image.info.mips_layout[0].size / layers;
+        begin += view.range.base.layer * layer_size;
+        end = std::min<VAddr>(end, begin + view.range.extent.layers * layer_size);
+    }
     const u64 own_seq = std::max(image.alias_write_seq, image.alias_sync_seq);
     SmallVector<ImageId, 8> writers;
     bool newer = false;
@@ -125,20 +170,40 @@ void TextureCache::SyncAliasedImages(ImageId image_id) {
             other.info.guest_address + other.info.guest_size <= begin) {
             return;
         }
-        writers.push_back(id);
-        newer |= id != image_id && other.alias_write_seq > own_seq;
+        if (id == image_id || other.alias_write_seq > own_seq) {
+            writers.push_back(id);
+            newer |= id != image_id;
+        }
     });
     if (!newer) {
         return;
     }
     std::ranges::sort(writers, {}, [this](ImageId id) { return slot_images[id].alias_write_seq; });
+    // Images written after this one that cover all of it leave none of its own data.
+    {
+        SmallVector<std::pair<VAddr, VAddr>, 8> spans;
+        for (const ImageId id : writers) {
+            if (id != image_id) {
+                const auto& other = slot_images[id].info;
+                spans.emplace_back(other.guest_address, other.guest_address + other.guest_size);
+            }
+        }
+        std::ranges::sort(spans);
+        VAddr covered = image.info.guest_address;
+        for (const auto& [span_begin, span_end] : spans) {
+            if (span_begin > covered) {
+                break;
+            }
+            covered = std::max(covered, span_end);
+        }
+        if (covered >= image.info.guest_address + image.info.guest_size) {
+            writers.erase(std::remove(writers.begin(), writers.end(), image_id), writers.end());
+        }
+    }
     for (const ImageId id : writers) {
-        Image& writer = slot_images[id];
-        auto copies = GuestCopies(writer);
-        const auto [buffer, offset] = buffer_cache.ObtainBuffer(
-            writer.info.guest_address, writer.info.guest_size,
-            ObtainBufferFlags::IsWritten | ObtainBufferFlags::IgnoreStreamBuffer);
-        tile_manager.TileImage(writer, copies, buffer, offset);
+        // The whole image is reloaded, so its own data must cover all of it.
+        WriteAliasToBuffer(id, id == image_id ? image.info.guest_address : begin,
+                           id == image_id ? image.info.guest_address + image.info.guest_size : end);
     }
     image.flags |= ImageFlagBits::GpuDirty;
     image.alias_sync_seq = ++alias_seq;
@@ -713,7 +778,9 @@ ImageId TextureCache::FindImageFromRange(VAddr address, size_t size, bool ensure
 }
 
 ImageView& TextureCache::FindTexture(ImageId image_id, const ImageDesc& desc) {
-    SyncAliasedImages(image_id);
+    if (desc.type != BindingType::Storage) {
+        SyncAliasedImages(image_id, desc.view_info);
+    }
     Image& image = slot_images[image_id];
     if (desc.type == BindingType::Storage) {
         image.flags |= ImageFlagBits::GpuModified;
@@ -753,8 +820,11 @@ void TextureCache::UnregisterMeta(VAddr address, u64 owner_uid) {
     }
 }
 
-ImageView& TextureCache::FindRenderTarget(ImageId image_id, const ImageDesc& desc) {
-    SyncAliasedImages(image_id);
+ImageView& TextureCache::FindRenderTarget(ImageId image_id, const ImageDesc& desc,
+                                          bool sync_aliases) {
+    if (sync_aliases) {
+        SyncAliasedImages(image_id, desc.view_info);
+    }
     Image& image = slot_images[image_id];
     image.flags |= ImageFlagBits::GpuModified;
     image.alias_write_seq = ++alias_seq;
@@ -797,8 +867,11 @@ ImageView& TextureCache::FindRenderTarget(ImageId image_id, const ImageDesc& des
     return image.FindView(desc.view_info, false);
 }
 
-ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc) {
-    SyncAliasedImages(image_id);
+ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc,
+                                         bool sync_aliases) {
+    if (sync_aliases) {
+        SyncAliasedImages(image_id, desc.view_info);
+    }
     Image& image = slot_images[image_id];
     image.flags |= ImageFlagBits::GpuModified;
     image.alias_write_seq = ++alias_seq;

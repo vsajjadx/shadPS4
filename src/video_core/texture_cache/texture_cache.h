@@ -142,10 +142,12 @@ public:
     [[nodiscard]] ImageView& FindTexture(ImageId image_id, const ImageDesc& desc);
 
     /// Retrieves the render target with specified properties
-    [[nodiscard]] ImageView& FindRenderTarget(ImageId image_id, const ImageDesc& desc);
+    [[nodiscard]] ImageView& FindRenderTarget(ImageId image_id, const ImageDesc& desc,
+                                              bool sync_aliases = true);
 
     /// Retrieves the depth target with specified properties
-    [[nodiscard]] ImageView& FindDepthTarget(ImageId image_id, const ImageDesc& desc);
+    [[nodiscard]] ImageView& FindDepthTarget(ImageId image_id, const ImageDesc& desc,
+                                             bool sync_aliases = true);
 
     /// Links the stencil plane of a depth surface to its depth image.
     void AssociateStencil(ImageId depth_id, const ImageInfo& depth_info);
@@ -362,7 +364,10 @@ private:
 
     /// Reloads an image from the buffer cache when an image aliasing its memory was written
     /// after it, writing every aliasing image back in the order they were written.
-    void SyncAliasedImages(ImageId image_id);
+    void SyncAliasedImages(ImageId image_id, const ImageViewInfo& view);
+
+    /// Writes the part of an image within [begin, end) back to the buffer cache.
+    void WriteAliasToBuffer(ImageId image_id, VAddr begin, VAddr end);
 
     /// Register image in the page table
     void RegisterImage(ImageId image);
