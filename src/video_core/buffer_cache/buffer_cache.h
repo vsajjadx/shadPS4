@@ -4,6 +4,7 @@
 #pragma once
 
 #include <deque>
+#include <mutex>
 #include <span>
 #include <unordered_map>
 #include <unordered_set>
@@ -168,6 +169,8 @@ private:
 
     void NoteGpuWrite(VAddr device_addr, u64 size);
 
+    [[nodiscard]] u64 PrefetchTick(VAddr device_addr, u64 size);
+
     void UploadInParts(const Buffer* arena, std::span<const vk::BufferCopy> ranges);
 
     bool SynchronizeMemoryFromImage(const Buffer* arena, VAddr device_addr, u32 size);
@@ -187,6 +190,8 @@ private:
     RangeSet gpu_modified_ranges;
     std::unordered_set<u64> readback_pages;
     std::unordered_map<u64, u64> readback_page_write_seq;
+    std::unordered_map<u64, u64> readback_page_tick;
+    std::mutex readback_tick_mutex;
     u64 readback_write_seq{};
     IntervalList<Interval> pending_prefetches;
 

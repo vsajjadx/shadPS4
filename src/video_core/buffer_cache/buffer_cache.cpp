@@ -135,7 +135,19 @@ void BufferCache::UnmarkRegionAsGpuModified(VAddr device_addr, u64 size, bool is
 void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool async,
                              bool assume_locks) {
     const bool cpu_read = !is_write && !async && !assume_locks;
-    const auto flush_request = [this, device_addr, size, is_write, async, cpu_read] {
+    // GPU-modified ranges come as many small scattered islands,
+    // so the download is widened to a window around the request
+    const auto download_window = [this, device_addr, size](const Buffer* arena) {
+        constexpr u64 WindowSize = 512_KB;
+        const VAddr arena_end = arena->cpu_addr + arena->size_bytes;
+        const VAddr window_start =
+            std::max<VAddr>(Common::AlignDown(device_addr, WindowSize), arena->cpu_addr);
+        const VAddr window_end = std::min<VAddr>(
+            std::max<VAddr>(window_start + WindowSize, device_addr + size), arena_end);
+        return std::pair{window_start, window_end};
+    };
+    const auto flush_request = [this, device_addr, size, is_write, async, cpu_read,
+                                download_window] {
         if (cpu_read) {
             for (u64 page = device_addr >> ReadbackPageBits;
                  page <= (device_addr + size - 1) >> ReadbackPageBits; ++page) {
@@ -147,22 +159,43 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
         const u32 first_block = device_addr >> block_shift;
         const u32 last_block = (device_addr + size - 1) >> block_shift;
         const auto* arena = GetArena(first_block, last_block);
-
-        // GPU-modified ranges come as many small scattered islands,
-        // so the download is widened to a window around the request
-        constexpr u64 WindowSize = 512_KB;
-        const VAddr arena_end = arena->cpu_addr + arena->size_bytes;
-        const VAddr window_start =
-            std::max<VAddr>(Common::AlignDown(device_addr, WindowSize), arena->cpu_addr);
-        const VAddr window_end = std::min<VAddr>(
-            std::max<VAddr>(window_start + WindowSize, device_addr + size), arena_end);
+        const auto [window_start, window_end] = download_window(arena);
         DownloadMemory(arena, window_start, window_end - window_start, is_write, async);
     };
+    if (!async && !assume_locks) {
+        // Only the faulting thread waits for the data, the GPU thread keeps processing commands.
+        liverpool->SendCommand<true>([this, device_addr, size, download_window] {
+            if (!IsRegionGpuModified(device_addr, size)) {
+                return;
+            }
+            const auto* arena =
+                GetArena(device_addr >> block_shift, (device_addr + size - 1) >> block_shift);
+            const auto [window_start, window_end] = download_window(arena);
+            DownloadMemory(arena, window_start, window_end - window_start, false, true);
+            scheduler.Flush();
+        });
+        if (const u64 prefetch_tick = PrefetchTick(device_addr, size);
+            prefetch_tick != 0 && prefetch_tick < scheduler.CurrentTick()) {
+            scheduler.GetWorkSemaphore()->Wait(prefetch_tick);
+        }
+    }
     if (assume_locks) {
         flush_request();
     } else {
         liverpool->SendCommand<true>(std::move(flush_request));
     }
+}
+
+u64 BufferCache::PrefetchTick(VAddr device_addr, u64 size) {
+    std::scoped_lock lk{readback_tick_mutex};
+    u64 tick = 0;
+    for (u64 page = device_addr >> ReadbackPageBits;
+         page <= (device_addr + size - 1) >> ReadbackPageBits; ++page) {
+        if (const auto it = readback_page_tick.find(page); it != readback_page_tick.end()) {
+            tick = std::max(tick, it->second);
+        }
+    }
+    return tick;
 }
 
 void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 size, bool is_write,
@@ -193,13 +226,19 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
         // without unmarking them leaves the faulting access retrying forever, which on the GPU
         // thread freezes the game. A readback still in flight writes the data on completion.
         if (!async && memory_tracker->IsRegionGpuModified(device_addr, size)) {
+            if (const u64 prefetch_tick = PrefetchTick(device_addr, size); prefetch_tick != 0) {
+                scheduler.Wait(prefetch_tick);
+                scheduler.PopPendingOperations();
+            }
+        }
+        if (!async && memory_tracker->IsRegionGpuModified(device_addr, size)) {
             scheduler.Finish();
         }
         if (!async && memory_tracker->IsRegionGpuModified(device_addr, size)) {
             memory_tracker->UnmarkRegionAsGpuModified(device_addr, size, false);
-            if (is_write) {
-                memory_tracker->MarkRegionAsCpuModified(device_addr, size);
-            }
+        }
+        if (!async && is_write) {
+            memory_tracker->MarkRegionAsCpuModified(device_addr, size);
         }
         return;
     }
@@ -209,6 +248,16 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
         copy.dstOffset += download.offset;
     }
     runtime.CopyBuffer(arena, download.buffer, copies);
+    if (async) {
+        std::scoped_lock lk{readback_tick_mutex};
+        for (const auto& copy : copies) {
+            const VAddr addr = arena_base + copy.srcOffset;
+            for (u64 page = addr >> ReadbackPageBits;
+                 page <= (addr + copy.size - 1) >> ReadbackPageBits; ++page) {
+                readback_page_tick[page] = scheduler.CurrentTick();
+            }
+        }
+    }
 
     const auto write_data = [this, arena_base, device_addr, size, download, is_write, async,
                              copies = std::move(copies), seq = readback_write_seq] {
