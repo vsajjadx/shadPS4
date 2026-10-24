@@ -222,6 +222,7 @@ set_source_files_properties(src/dist/shadps4.rc PROPERTIES COMPILE_DEFINITIONS "
 set(APP_VERSION_NUM "${EMULATOR_VERSION_MAJOR}.${EMULATOR_VERSION_MINOR}.${EMULATOR_VERSION_PATCH}")
 set(APP_VERSION "${APP_VERSION_NUM} WIP")
 set(APP_IS_RELEASE false)
+set(APP_BUILD_NAME "COD")
 # Pipeline cache entries are only valid for the code that produced them. Hash the sources that
 # decide the recompiled shaders and their metadata, so a build that changes any of them starts a
 # new cache instead of mixing entries from different generations.
