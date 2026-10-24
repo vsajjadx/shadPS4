@@ -682,11 +682,13 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         }
     } else {
         if (remote_host == "shadps4-emu" || remote_url.length() == 0) {
-            window_title = fmt::format("shadPS4 v{} {} {} | {}", Common::g_version,
-                                       Common::g_scm_branch, Common::g_scm_desc, game_title);
+            window_title =
+                fmt::format("shadPS4 v{} {} {} {} | {}", Common::g_version, Common::g_scm_branch,
+                            Common::g_scm_desc, Common::g_build_name, game_title);
         } else {
-            window_title = fmt::format("shadPS4 v{} {}/{} {} | {}", Common::g_version, remote_host,
-                                       Common::g_scm_branch, Common::g_scm_desc, game_title);
+            window_title = fmt::format("shadPS4 v{} {}/{} {} {} | {}", Common::g_version,
+                                       remote_host, Common::g_scm_branch, Common::g_scm_desc,
+                                       Common::g_build_name, game_title);
         }
     }
     window = std::make_unique<Frontend::WindowSDL>(EmulatorSettings.GetWindowWidth(),
