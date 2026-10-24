@@ -116,7 +116,8 @@ void TextureCache::WriteAliasToBuffer(ImageId image_id, VAddr begin, VAddr end) 
     begin = std::max(begin, image_begin);
     end = std::min(end, image_end);
     auto copies = GuestCopies(image);
-    constexpr auto flags = ObtainBufferFlags::IsWritten | ObtainBufferFlags::IgnoreStreamBuffer;
+    constexpr auto flags = ObtainBufferFlags::IsWritten | ObtainBufferFlags::IgnoreStreamBuffer |
+                           ObtainBufferFlags::FromImages;
     if (begin == image_begin && end == image_end) {
         const auto [buffer, offset] =
             buffer_cache.ObtainBuffer(image_begin, image.info.guest_size, flags);

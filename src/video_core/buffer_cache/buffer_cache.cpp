@@ -272,7 +272,7 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     const u64 last_block = (device_addr + size - 1) >> block_shift;
     const auto* arena = GetArena(first_block, last_block);
     EnsureResident(arena, first_block, last_block);
-    if (is_written) {
+    if (is_written && False(flags & ObtainBufferFlags::FromImages)) {
         texture_cache.MarkAsMaybeGpuDirty(device_addr, size);
     }
     SynchronizeMemory(arena, device_addr, size, is_written, is_texel_buffer);
