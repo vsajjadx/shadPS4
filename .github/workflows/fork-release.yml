@@ -5,9 +5,9 @@ on:
     paths: [.github/workflows/fork-release.yml]
 
 env:
-  RUN_ID: "40102029838"
-  TAG: v0.21.0-coldwar
-  TARGET: b35bda08
+  RUN_ID: "40105793424"
+  TAG: coldwar-green-stripes-fix-2026-10-24
+  TARGET: c487af21a1e2cef0cf7afc150d17d45bcf38cbb5
 
 permissions:
   contents: write
@@ -30,30 +30,14 @@ jobs:
       - name: Write release notes
         run: |
           cat > notes.md <<'EOF'
-          ## Call of Duty: Black Ops Cold War runs (v0.21.0)
+          ## Call of Duty: Black Ops Cold War: green stripes in the menus fixed
 
-          اجرای Cold War: بازی حالا بدون کرش اجرا می‌شود، تصویر منو و مولتی‌پلیر درست است و FPS از ۱۲ به حدود ۳۱ رسیده. این تازه اول راه است.
+          - **Fixed: green striped image over the Multiplayer menu.** Two compute shaders of the game use the 64-bit buffer atomic add (`BUFFER_ATOMIC_ADD_X2`), which the shader translator did not know. Their translation failed and every dispatch using them was skipped. The instruction is now translated.
+          - 64-bit buffer atomics that ask for the old value (`glc`) no longer stop on an assertion; the old value is written to the two registers it belongs in.
 
-          This release ships the emulator together with the Qt launcher.
+          Not tested in game by the author yet: if the image is still wrong, send a new log.
 
-          ### Call of Duty: Black Ops Cold War
-          - **Fixed: crash at startup.** A shader's resource walker read reserved, uncommitted memory. The fault handler took that read for a tracked page and the game crashed. Faults on uncommitted pages now go to the handlers meant for them.
-          - **Fixed: noisy, corrupted image in the menus and in multiplayer.** The game renders several passes into one shared block of memory with different formats. The emulator kept a separate image for each and never carried one pass's output into the next, so later passes read garbage. Writes now carry over between images that share memory.
-          - **FPS: from 12 to about 31 on the title screen** (RTX 3080), with the image correct:
-            - images that share memory only sync the part that is actually read, and only when it changed;
-            - write-backs from those images skip a needless hash of the data;
-            - the shadow map, which the game switches between a depth target and a compute image every frame, is no longer re-created each time;
-            - when the CPU reads or writes memory the GPU wrote, only that thread now waits for the data. Before, the GPU thread stopped and waited for the whole GPU to go idle.
-
-          These fixes are general and not specific to Cold War, so other games that do the same things benefit too.
-
-          ### This is only the start
-          Cold War is playable here for the first time, but it is still early: FPS in matches is below the console, and more bugs are likely. Reports of where it breaks or slows down are welcome.
-
-          ### Notes
-          - The first run of a game after this update compiles its shaders again, so expect some hitching in that first session.
-          - Tested on an RTX 3080.
-          - Requirements: Windows 64-bit and a GPU with Vulkan 1.3 support. Extract the zip and run `shadPS4QtLauncher.exe` (or `shadPS4.exe` directly).
+          This release ships the emulator together with the Qt launcher. Requirements: Windows 64-bit and a GPU with Vulkan 1.3 support. Extract the zip and run `shadPS4QtLauncher.exe` (or `shadPS4.exe` directly).
 
           EOF
           sed -i 's/^          //' notes.md
@@ -64,5 +48,5 @@ jobs:
         run: |
           gh release create "${{ env.TAG }}" shadPS4-win64-${{ env.TAG }}.zip \
             --repo ${{ github.repository }} \
-            --title "اجرای Cold War (v0.21.0)" \
+            --title "Cold War: green stripes fixed (${{ env.TAG }})" --target ${{ env.TARGET }} \
             --notes-file notes.md
