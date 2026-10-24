@@ -5,9 +5,9 @@ on:
     paths: [.github/workflows/fork-release.yml]
 
 env:
-  RUN_ID: "40015020210"
-  TAG: order-glitch-fix-2026-10-23
-  TARGET: 9b668ed6fbca0c4b8dd2f41d9074754b62b2d918
+  RUN_ID: "40102029838"
+  TAG: v0.21.0-coldwar
+  TARGET: b35bda08
 
 permissions:
   contents: write
@@ -30,30 +30,29 @@ jobs:
       - name: Write release notes
         run: |
           cat > notes.md <<'EOF'
-          ## The Order: 1886 glitch fixed, Need for Speed Hot Pursuit renders, launcher included
+          ## Call of Duty: Black Ops Cold War runs (v0.21.0)
+
+          اجرای Cold War: بازی حالا بدون کرش اجرا می‌شود، تصویر منو و مولتی‌پلیر درست است و FPS از ۱۲ به حدود ۳۱ رسیده. این تازه اول راه است.
 
           This release ships the emulator together with the Qt launcher.
 
-          ### The Order: 1886
-          - **Fixed: single frames with a black triangle or a fog-gray rectangle over the scene** (around the door in the first chapter, roughly one frame in ten). A vertex shader for instanced props loops over the lanes of its wave and reads another lane's instance id. On NVIDIA that sometimes picked up the wrong vertex, and one vertex flew off across the screen. Vertex shaders now run each vertex as a wave of its own, which the PS4 also allows, so the loop always reads the vertex's own data. This applies to every game, not just The Order.
-          - Fixed: enemy faces drawn black. A shader compiled in the background read the game's texture descriptors after the game had already changed them, and was built for the wrong image type.
-          - Fixed: occasional single frames with black triangles or unlit parts, caused by a recorded GPU command reading arrays that had already been reused.
-          - Fixed: two crashes, one in the shader compile workers and one on a garbage multisampled texture descriptor in a later area.
-          - Its log no longer grows to 100 MB with a warning on every draw and flip.
+          ### Call of Duty: Black Ops Cold War
+          - **Fixed: crash at startup.** A shader's resource walker read reserved, uncommitted memory. The fault handler took that read for a tracked page and the game crashed. Faults on uncommitted pages now go to the handlers meant for them.
+          - **Fixed: noisy, corrupted image in the menus and in multiplayer.** The game renders several passes into one shared block of memory with different formats. The emulator kept a separate image for each and never carried one pass's output into the next, so later passes read garbage. Writes now carry over between images that share memory.
+          - **FPS: from 12 to about 31 on the title screen** (RTX 3080), with the image correct:
+            - images that share memory only sync the part that is actually read, and only when it changed;
+            - write-backs from those images skip a needless hash of the data;
+            - the shadow map, which the game switches between a depth target and a compute image every frame, is no longer re-created each time;
+            - when the CPU reads or writes memory the GPU wrote, only that thread now waits for the data. Before, the GPU thread stopped and waited for the whole GPU to go idle.
 
-          ### Need for Speed Hot Pursuit Remastered
-          - **Fixed: the world was black and only the HUD and mirror were drawn.** The game draws with the PS4 driver's built-in shaders, which the emulator keeps inside its own executable; a safety check took them for invalid addresses and skipped those draws.
+          These fixes are general and not specific to Cold War, so other games that do the same things benefit too.
 
-          ### Readbacks
-          - Every game now runs with at least relaxed GPU readbacks, so games that read small GPU results back on the CPU (culling, exposure, counters) no longer need a per-game setting. The Order: 1886 and NHL 24 no longer need a custom config for it; NHL 24 runs a full match with clean ice on relaxed instead of precise.
-
-          ### Smoother play
-          - A draw or compute pass that cannot wait for its pipeline is now built right away on the GPU thread instead of queueing behind every other compile.
-          - Compute passes still compiling during gameplay are skipped until they are ready, which removes the 0.2-1.7 s hitches inFAMOUS Second Son had when new effects appeared. An effect can show a few frames late the first time; loading screens still build every pass at once.
+          ### This is only the start
+          Cold War is playable here for the first time, but it is still early: FPS in matches is below the console, and more bugs are likely. Reports of where it breaks or slows down are welcome.
 
           ### Notes
           - The first run of a game after this update compiles its shaders again, so expect some hitching in that first session.
-          - Tested on an RTX 3080 with The Order: 1886, NHL 24, UFC 4, The Grand Tour Game, inFAMOUS Second Son and Need for Speed Hot Pursuit Remastered.
+          - Tested on an RTX 3080.
           - Requirements: Windows 64-bit and a GPU with Vulkan 1.3 support. Extract the zip and run `shadPS4QtLauncher.exe` (or `shadPS4.exe` directly).
 
           EOF
@@ -65,5 +64,5 @@ jobs:
         run: |
           gh release create "${{ env.TAG }}" shadPS4-win64-${{ env.TAG }}.zip \
             --repo ${{ github.repository }} \
-            --title "The Order: 1886 glitch fixed, NFS Hot Pursuit renders, launcher included (${{ env.TAG }})" \
+            --title "اجرای Cold War (v0.21.0)" \
             --notes-file notes.md
