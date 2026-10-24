@@ -448,6 +448,14 @@ struct SignalImpl : public PageManager::Impl {
             // re-run the faulting jump forever.
             return false;
         }
+#ifdef _WIN64
+        // Tracking only changes the protection of committed pages. Leave other faults, such as an
+        // SRT walker reading reserved memory, to the handlers after this one.
+        MEMORY_BASIC_INFORMATION info{};
+        if (VirtualQuery(fault_address, &info, sizeof(info)) == 0 || info.State != MEM_COMMIT) {
+            return false;
+        }
+#endif
         if (Common::IsWriteError(context)) {
             return rasterizer->InvalidateMemory(addr, size, is_gpu_thread);
         } else {
