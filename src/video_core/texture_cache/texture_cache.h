@@ -357,6 +357,13 @@ private:
     void DownloadImageMemory(ImageId image_id,
                              DownloadMemoryFlags flags = DownloadMemoryFlags::None);
 
+    /// Builds the copies of every mip and layer of an image to or from its guest layout.
+    boost::container::small_vector<vk::BufferImageCopy, 8> GuestCopies(const Image& image) const;
+
+    /// Reloads an image from the buffer cache when an image aliasing its memory was written
+    /// after it, writing every aliasing image back in the order they were written.
+    void SyncAliasedImages(ImageId image_id);
+
     /// Register image in the page table
     void RegisterImage(ImageId image);
 
@@ -431,6 +438,7 @@ private:
     u64 pressure_gc_samplers = 0;
     u64 critical_gc_samplers = 0;
     u64 gc_tick = 0;
+    u64 alias_seq = 0;
     Common::LRUCache<Image> image_lru_cache;
     Common::LRUCache<Sampler> sampler_lru_cache;
     const bool readback_linear_images;
