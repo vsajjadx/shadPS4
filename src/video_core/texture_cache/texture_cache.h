@@ -382,6 +382,12 @@ private:
     /// Touch the image in the LRU cache.
     void TouchImage(Image& image);
 
+    /// Removes image from the cache and keeps it to be reused at the same address.
+    void ParkImage(ImageId image_id);
+
+    /// Returns the image parked at the address of info if it can stand for info.
+    [[nodiscard]] ImageId TakeParkedImage(const ImageInfo& info);
+
     /// Removes image from the cache and schedules it for deletion.
     void FreeImage(ImageId image_id) {
         {
@@ -410,6 +416,7 @@ private:
     TileManager tile_manager;
     absl::flat_hash_map<u64, SamplerId> samplers;
     absl::flat_hash_set<ImageId> download_images;
+    tsl::robin_map<VAddr, ImageId> parked_images;
     struct FoundImage {
         u64 generation = 0;
         VAddr guest_address = 0;

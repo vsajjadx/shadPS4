@@ -258,6 +258,14 @@ void TextureCache::UnmapMemory(VAddr cpu_addr, size_t size) {
         // TODO: Download image data back to host.
         FreeImage(id);
     }
+    for (auto it = parked_images.begin(); it != parked_images.end();) {
+        if (slot_images[it->second].Overlaps(cpu_addr, size)) {
+            DeleteImage(it->second);
+            it = parked_images.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, BindingType binding,
@@ -309,7 +317,10 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
         auto new_info = requested_info;
         new_info.resources = std::max(requested_info.resources, cache_image.info.resources);
         new_info.UpdateSize();
-        const auto new_image_id = slot_images.Insert(instance, runtime, slot_image_views, new_info);
+        auto new_image_id = TakeParkedImage(new_info);
+        if (!new_image_id) {
+            new_image_id = slot_images.Insert(instance, runtime, slot_image_views, new_info);
+        }
         RegisterImage(new_image_id);
 
         // Inherit image usage
@@ -325,13 +336,51 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
         new_image.info.meta_info.htile_clear_mask = 0;
         runtime.CopyColorAndDepth(&cache_image, &new_image);
 
-        // Free the cache image.
-        FreeImage(cache_image_id);
+        // Guests often switch the same memory between depth and color every frame, so the cache
+        // image is kept to be the target of the switch back.
+        ParkImage(cache_image_id);
         return new_image_id;
     }
 
     // Will be handled by view
     return cache_image_id;
+}
+
+void TextureCache::ParkImage(ImageId image_id) {
+    {
+        std::scoped_lock lk{slot_images[image_id].mutex};
+        UntrackImage(image_id);
+    }
+    UnregisterImage(image_id);
+    {
+        std::unique_lock lk{download_images_mutex};
+        download_images.erase(image_id);
+    }
+    const auto [it, inserted] =
+        parked_images.try_emplace(slot_images[image_id].info.guest_address, image_id);
+    if (!inserted) {
+        DeleteImage(it->second);
+        it.value() = image_id;
+    }
+}
+
+ImageId TextureCache::TakeParkedImage(const ImageInfo& info) {
+    const auto it = parked_images.find(info.guest_address);
+    if (it == parked_images.end()) {
+        return {};
+    }
+    const ImageId image_id = it->second;
+    parked_images.erase(it);
+    Image& image = slot_images[image_id];
+    if (image.info.pixel_format != info.pixel_format || image.info.size != info.size ||
+        image.info.resources != info.resources || image.info.num_samples != info.num_samples ||
+        image.info.guest_size != info.guest_size || image.info.tile_mode != info.tile_mode) {
+        DeleteImage(image_id);
+        return {};
+    }
+    image.info = info;
+    image.flags = ImageFlagBits::Dirty;
+    return image_id;
 }
 
 std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& image_info,
