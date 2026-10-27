@@ -276,9 +276,50 @@ jobs:
         path: qtlauncher/upload/
         retention-days: 3
 
+  # DLSS5: NeuralScreen ships inside the Windows package. The base is the
+  # published full package (runtime + the NVIDIA dll are not in any
+  # repository); this job rebuilds only what the integration changes - the
+  # Python sources and the launcher exe - from the compact-ui sources plus
+  # the patches under launcher/neuralscreen.
+  neuralscreen-overlay:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Visual Studio shell
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Check out NeuralScreen and apply the integration patches
+        shell: bash
+        run: |
+          git clone --depth 1 --branch compact-ui https://github.com/vsajjadx/NeuralScreen.git ns
+          git -C ns -c user.name=ci -c user.email=ci@localhost am launcher/neuralscreen/*.patch
+          python -m py_compile ns/main.py ns/app/commands.py ns/app/control.py
+
+      - name: Build the launcher exe
+        shell: cmd
+        run: |
+          cd ns\native
+          rc /nologo /fo launcher.res launcher.rc
+          cl /nologo /O2 /EHsc /W3 /MD launcher.cpp launcher.res /Fe:..\NeuralScreen.exe /link /SUBSYSTEM:WINDOWS shell32.lib shlwapi.lib user32.lib kernel32.lib
+
+      - name: Stage the overlay
+        shell: bash
+        run: |
+          mkdir -p overlay/NeuralScreen/app
+          cp ns/main.py overlay/NeuralScreen/
+          cp ns/app/commands.py ns/app/control.py overlay/NeuralScreen/app/
+          cp ns/NeuralScreen.exe overlay/NeuralScreen/
+          ls -la overlay/NeuralScreen overlay/NeuralScreen/app
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: neuralscreen-overlay
+          path: overlay/
+
   windows-bundle:
     runs-on: ubuntu-24.04
-    needs: [get-info, windows-sdl, windows-launcher]
+    needs: [get-info, windows-sdl, windows-launcher, neuralscreen-overlay]
     steps:
     - name: Download the emulator
       uses: actions/download-artifact@v8
@@ -291,6 +332,28 @@ jobs:
       with:
         name: launcher-win64
         path: bundle
+
+    - name: Download the NeuralScreen overlay
+      uses: actions/download-artifact@v8
+      with:
+        name: neuralscreen-overlay
+        path: ns-overlay
+
+    # DLSS5: the published full package embedded beside the emulator, with
+    # the integration's Python sources and launcher exe laid over it. The
+    # emulator starts NeuralScreen\NeuralScreen.exe with the game window.
+    - name: Embed NeuralScreen (DLSS5)
+      run: |
+        curl -fL --retry 3 -o ns-full.zip \
+          "https://github.com/vsajjadx/NeuralScreen/releases/download/build-25-compact-ui/NeuralScreen-full.zip"
+        mkdir -p bundle/NeuralScreen
+        unzip -q ns-full.zip -d bundle/NeuralScreen
+        cp -a ns-overlay/NeuralScreen/. bundle/NeuralScreen/
+        rm ns-full.zip
+        test -f bundle/NeuralScreen/NeuralScreen.exe
+        test -f bundle/NeuralScreen/main.py
+        test -f bundle/NeuralScreen/app/control.py
+        echo "NeuralScreen embedded: $(du -sh bundle/NeuralScreen | cut -f1)"
 
     - name: Upload the package
       uses: actions/upload-artifact@v7

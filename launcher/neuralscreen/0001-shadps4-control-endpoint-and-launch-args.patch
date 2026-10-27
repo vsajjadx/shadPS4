@@ -1,0 +1,206 @@
+From c041502f28d69ea9667f5c6f2c273765f9de1c3e Mon Sep 17 00:00:00 2001
+From: vsajjadx <vsajjadx@users.noreply.github.com>
+Date: Tue, 27 Oct 2026 17:49:22 +0000
+Subject: [PATCH] Control endpoint and launch args for the shadPS4 integration
+
+--window attaches the capture to one window at startup (the switch the
+keyboard's window key takes), --ctl opens a line-based TCP endpoint on
+127.0.0.1 whose words are the same commands the tray queue takes (nr, fg,
+boost, reload, quit), and --instance names the single-instance mutex so a
+launcher's copy can run beside the user's tray copy. 'reload' re-reads the
+config another program wrote and applies each change through the path its
+own control takes.
+---
+ app/commands.py | 29 +++++++++++++++++++++
+ app/control.py  | 69 +++++++++++++++++++++++++++++++++++++++++++++++++
+ main.py         | 30 ++++++++++++++++++++-
+ 3 files changed, 127 insertions(+), 1 deletion(-)
+ create mode 100644 app/control.py
+
+diff --git a/app/commands.py b/app/commands.py
+index e4c7ae4..2d48f81 100644
+--- a/app/commands.py
++++ b/app/commands.py
+@@ -2031,6 +2031,35 @@ def drain_commands(st) -> bool:
+                                  + UI_STRINGS[st.lang].get(
+                                      "tile_on" if boost_on else "tile_off",
+                                      "On" if boost_on else "Off"))
++            elif cmd == "reload":
++                # Re-read the config another program wrote (the shadPS4
++                # launcher) and apply what changed - every value through the
++                # path its own control takes, so the alerts and the config
++                # writes happen too.
++                fresh = settings_io.load_config(st.cfg_path)
++                keys = ("nr_on", "frame_generation", "nr_small", "work_scale",
++                        "nr_passes", "profile", "intensity", "local_tone",
++                        "local_structure", "skin_structure")
++                old = {k: st.cfg.get(k) for k in keys}
++                for k in keys:
++                    if k in fresh:
++                        st.cfg[k] = fresh[k]
++                if bool(st.cfg.get("nr_on", True)) != (not st.paused):
++                    st.tray_commands.put("toggle")
++                if bool(st.cfg.get("frame_generation", False)) != bool(
++                        old["frame_generation"]):
++                    apply_menu_action(st, ("toggle", "frame_generation"))
++                if bool(st.cfg.get("nr_small", True)) != bool(old["nr_small"]):
++                    apply_menu_action(st, ("toggle", "boost"))
++                if int(st.cfg.get("nr_passes", 1) or 1) != int(
++                        old["nr_passes"] or 1):
++                    apply_menu_action(
++                        st, ("nr_passes", int(st.cfg.get("nr_passes", 1) or 1)))
++                if any(st.cfg.get(k) != old.get(k) for k in
++                       ("work_scale", "profile", "intensity", "local_tone",
++                        "local_structure", "skin_structure")):
++                    pipeline.request_apply(st, *settings_io.queued_apply(st))
++                print("[main] config reloaded from " + str(st.cfg_path))
+             elif cmd in ("nr_passes_up", "nr_passes_down"):
+                 # The NR cascade one pass up or down (#126), through the same
+                 # action the panel's control takes.
+diff --git a/app/control.py b/app/control.py
+new file mode 100644
+index 0000000..76ffdd3
+--- /dev/null
++++ b/app/control.py
+@@ -0,0 +1,69 @@
++"""A small TCP control endpoint for other programs on this machine.
++
++shadPS4's launcher starts NeuralScreen attached to the game window and drives
++it with its own in-game keys, which cannot be global hotkeys: RegisterHotKey
++would take the digits away from every other program (see hotkeys.py). The
++endpoint listens on 127.0.0.1 only, takes one command per line and answers
++"ok" (or "err: ...") per line, so the caller can log instead of guessing.
++
++Every command is the same word the tray and the keyboard put into
++st.tray_commands, so the endpoint decides nothing by itself - the menu state,
++the config writes and the alerts all behave exactly as they do for the keys.
++Unknown words are answered, not raised: the caller may be built against a
++different version.
++"""
++from __future__ import annotations
++
++import queue
++import socket
++import socketserver
++import threading
++
++# Word -> the command the keyboard uses. "nr"/"fg" read better in a
++# launcher's log than "toggle"/"framegen"; both spellings are taken.
++COMMANDS = {
++    "nr": "toggle",
++    "toggle": "toggle",
++    "fg": "framegen",
++    "framegen": "framegen",
++    "boost": "boost",
++    "reload": "reload",
++    "quit": "quit",
++    "ping": None,
++}
++
++
++class ControlHandler(socketserver.StreamRequestHandler):
++
++    def handle(self) -> None:
++        try:
++            for line in self.rfile:
++                word = line.decode("utf-8", "replace").strip().lower()
++                if word == "ping":
++                    self.wfile.write(b"ok\n")
++                    continue
++                cmd = COMMANDS.get(word)
++                if cmd is None:
++                    self.wfile.write(f"err: unknown command {word!r}\n".encode())
++                    continue
++                self.server.commands.put(cmd)
++                self.wfile.write(b"ok\n")
++        except (ConnectionError, OSError):
++            # A caller that hangs up mid-line is normal, not a traceback.
++            pass
++
++
++class ControlServer(socketserver.ThreadingTCPServer):
++    allow_reuse_address = True
++    daemon_threads = True
++
++    def __init__(self, port: int, commands: "queue.Queue[str]"):
++        self.commands = commands
++        super().__init__(("127.0.0.1", port), ControlHandler)
++
++
++def start(port: int, commands: "queue.Queue[str]") -> ControlServer:
++    server = ControlServer(port, commands)
++    threading.Thread(target=server.serve_forever, name="control",
++                     daemon=True).start()
++    return server
+diff --git a/main.py b/main.py
+index f48f612..047db6d 100644
+--- a/main.py
++++ b/main.py
+@@ -611,6 +611,7 @@ class _Pipeline:
+         #: with ONE rebuild instead of one per step (#115).
+         "pending_apply_due",
+         "pending_shot",
++        "pending_window",
+         "shot_rgba",
+         # The screenshot timing marks. Declared here because __slots__ turns an
+         # undeclared field into an AttributeError at run time - which is its
+@@ -669,6 +670,12 @@ def main() -> int:
+     parser = argparse.ArgumentParser(description="DLSS 5 Desktop NR prototype")
+     parser.add_argument("--config", type=Path, default=BASE_DIR / "config.json",
+                         help="path to config.json (defaults to next to main.py)")
++    parser.add_argument("--window", type=lambda text: int(text, 0), default=None,
++                        help="attach to one window (hwnd) instead of the whole screen")
++    parser.add_argument("--ctl", type=int, default=None, metavar="PORT",
++                        help="listen on 127.0.0.1:PORT for control commands")
++    parser.add_argument("--instance", default=None, metavar="NAME",
++                        help="run beside a copy with another --instance name")
+     args = parser.parse_args()
+     _init_logging()  # pythonw: stdout/stderr -> NeuralScreen.log
+ 
+@@ -680,7 +687,13 @@ def main() -> int:
+     # ERROR_ALREADY_EXISTS, or ERROR_ACCESS_DENIED when the running copy is
+     # elevated and this one is not (see taskbar.claim_single_instance).
+     from taskbar import claim_single_instance
+-    _mutex, _already_running = claim_single_instance()
++    if args.instance:
++        # A launcher's copy runs beside the user's tray copy: it captures one
++        # window (WGC), not the desktop (DDA), so the two do not fight.
++        _mutex, _already_running = claim_single_instance(
++            "NeuralScreen_SingleInstance_" + args.instance)
++    else:
++        _mutex, _already_running = claim_single_instance()
+     if _already_running:
+         # The running copy is asked to show itself: this one used to exit
+         # with only a log line, so a double-click on the program while it sat
+@@ -711,6 +724,10 @@ def main() -> int:
+     # back into it and has no business knowing what argparse is.
+     st.cfg_path = args.config
+     startup.configure(st)
++    st.pending_window = args.window
++    if args.ctl:
++        from control import start as start_control
++        start_control(args.ctl, st.tray_commands)
+     # The compatibility worker receives synthetic RGBA frames only.  Desktop
+     # capture and the presentation window are deliberately created after an
+     # exact N/N PASS (or a cached PASS for the same key).
+@@ -905,6 +922,17 @@ def main() -> int:
+             loop_start = time.perf_counter()
+             now = time.monotonic()
+ 
++            # --window, pressed once: the same switch the keyboard's window
++            # key takes. A failure is not fatal - the desktop stays
++            # processed and the log says why the window was not taken.
++            if st.pending_window:
++                hwnd, st.pending_window = st.pending_window, 0
++                try:
++                    pipeline.switch_window(st, int(hwnd))
++                except Exception as exc:
++                    print(f"[main] --window 0x{hwnd:X} could not be "
++                          f"attached: {exc}", file=sys.stderr)
++
+             # False only when the user asked to quit; a command that raised
+             # returns None and the loop goes on (run_contained).
+             if commands.run_contained(st, "a command", commands.drain_commands,
+-- 
+2.39.5
+
