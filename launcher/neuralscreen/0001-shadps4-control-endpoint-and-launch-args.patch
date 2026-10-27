@@ -1,7 +1,8 @@
-From c041502f28d69ea9667f5c6f2c273765f9de1c3e Mon Sep 17 00:00:00 2001
+From abf6b8ea481650b9ca69deebbd744b73968ec489 Mon Sep 17 00:00:00 2001
 From: vsajjadx <vsajjadx@users.noreply.github.com>
 Date: Tue, 27 Oct 2026 17:49:22 +0000
-Subject: [PATCH] Control endpoint and launch args for the shadPS4 integration
+Subject: [PATCH 1/2] Control endpoint and launch args for the shadPS4
+ integration
 
 --window attaches the capture to one window at startup (the switch the
 keyboard's window key takes), --ctl opens a line-based TCP endpoint on
@@ -13,8 +14,8 @@ own control takes.
 ---
  app/commands.py | 29 +++++++++++++++++++++
  app/control.py  | 69 +++++++++++++++++++++++++++++++++++++++++++++++++
- main.py         | 30 ++++++++++++++++++++-
- 3 files changed, 127 insertions(+), 1 deletion(-)
+ main.py         | 34 +++++++++++++++++++++++-
+ 3 files changed, 131 insertions(+), 1 deletion(-)
  create mode 100644 app/control.py
 
 diff --git a/app/commands.py b/app/commands.py
@@ -133,7 +134,7 @@ index 0000000..76ffdd3
 +                     daemon=True).start()
 +    return server
 diff --git a/main.py b/main.py
-index f48f612..047db6d 100644
+index f48f612..b70326b 100644
 --- a/main.py
 +++ b/main.py
 @@ -611,6 +611,7 @@ class _Pipeline:
@@ -172,18 +173,29 @@ index f48f612..047db6d 100644
      if _already_running:
          # The running copy is asked to show itself: this one used to exit
          # with only a log line, so a double-click on the program while it sat
-@@ -711,6 +724,10 @@ def main() -> int:
+@@ -711,6 +724,7 @@ def main() -> int:
      # back into it and has no business knowing what argparse is.
      st.cfg_path = args.config
      startup.configure(st)
 +    st.pending_window = args.window
-+    if args.ctl:
-+        from control import start as start_control
-+        start_control(args.ctl, st.tray_commands)
      # The compatibility worker receives synthetic RGBA frames only.  Desktop
      # capture and the presentation window are deliberately created after an
      # exact N/N PASS (or a cached PASS for the same key).
-@@ -905,6 +922,17 @@ def main() -> int:
+@@ -739,6 +753,13 @@ def main() -> int:
+         startup.open_capture(st)
+         startup.bring_up(st)
+ 
++        # The control endpoint for the launcher that spawned us. It goes up
++        # only here: bring_up is where tray_commands is created, and a
++        # connection before that would hold a queue the loop never reads.
++        if args.ctl:
++            from control import start as start_control
++            start_control(args.ctl, st.tray_commands)
++
+         capture_failures = 0
+         capture_retry_at = 0.0
+         capture_owner = st.capture
+@@ -905,6 +926,17 @@ def main() -> int:
              loop_start = time.perf_counter()
              now = time.monotonic()
  

@@ -1,7 +1,7 @@
-From df391f1606b38377d6e7fb272f7f0cfde7bea88a Mon Sep 17 00:00:00 2001
+From f7cc23c51a529b4af69eb585779cf4b811fd4c3f Mon Sep 17 00:00:00 2001
 From: vsajjadx <vsajjadx@users.noreply.github.com>
 Date: Tue, 27 Oct 2026 20:17:44 +0000
-Subject: [PATCH] launcher: forward the command line to main.py
+Subject: [PATCH 2/2] launcher: forward the command line to main.py
 
 NeuralScreen.exe built its own python command line and dropped every
 argument it was started with, so the shadPS4 spawn (--config/--window/
