@@ -346,13 +346,21 @@ jobs:
       run: |
         curl -fL --retry 3 -o ns-full.zip \
           "https://github.com/vsajjadx/NeuralScreen/releases/download/build-25-compact-ui/NeuralScreen-full.zip"
-        mkdir -p bundle/NeuralScreen
-        unzip -q ns-full.zip -d bundle/NeuralScreen
+        # The release zip carries its own NeuralScreen/ root folder; lift its
+        # contents up so bundle/NeuralScreen is the program itself.
+        mkdir -p bundle/NeuralScreen ns-full
+        unzip -q ns-full.zip -d ns-full
+        cp -a ns-full/NeuralScreen/. bundle/NeuralScreen/
         cp -a ns-overlay/NeuralScreen/. bundle/NeuralScreen/
-        rm ns-full.zip
+        rm -rf ns-full ns-full.zip
+        # The overlay lands on the full package, not beside it: the launcher
+        # exe, the patched Python, and everything the worker loads.
         test -f bundle/NeuralScreen/NeuralScreen.exe
         test -f bundle/NeuralScreen/main.py
         test -f bundle/NeuralScreen/app/control.py
+        test -f bundle/NeuralScreen/native/nvngx.dll
+        test -f bundle/NeuralScreen/native/nvngx_dlssnr.dll
+        test -f bundle/NeuralScreen/runtime/pythonw.exe
         echo "NeuralScreen embedded: $(du -sh bundle/NeuralScreen | cut -f1)"
 
     - name: Upload the package
