@@ -22,6 +22,7 @@
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/pad/pad.h"
 #include "core/libraries/system/userservice.h"
+#include "core/neural_screen.h"
 #include "core/user_settings.h"
 #include "imgui/brightness_layer.h"
 #include "imgui/friends_layer.h"
@@ -328,20 +329,31 @@ void WindowSDL::WaitEvent() {
     case SDL_EVENT_TOGGLE_FRIENDS:
         ImGui::Friends::Toggle();
         break;
-#ifdef ENABLE_FSR_FRAMEGEN
     case SDL_EVENT_TOGGLE_FRAME_GENERATION: {
-        const bool enable = !Vulkan::FrameGeneration::IsEnabled();
-        Vulkan::FrameGeneration::SetEnabled(enable);
-        const char* message = !Vulkan::FrameGeneration::IsAvailable()
-                                  ? "FSR frame generation is not available on this GPU"
-                              : enable ? "FSR frame generation: ON"
-                                       : "FSR frame generation: OFF";
+        const char* message = !NeuralScreen::ToggleFrameGeneration()
+                                  ? "NeuralScreen is not running"
+                                  : "Frame Generation: toggled in NeuralScreen";
         LOG_INFO(Frontend, "{}", message);
         shadNotifications::QueueNotification(message, 2.0f,
                                              shadNotifications::position::BottomRight);
         break;
     }
-#endif
+    case SDL_EVENT_TOGGLE_DLSS5: {
+        const char* message = !NeuralScreen::ToggleDLSS5() ? "NeuralScreen is not running"
+                                                           : "DLSS5: toggled in NeuralScreen";
+        LOG_INFO(Frontend, "{}", message);
+        shadNotifications::QueueNotification(message, 2.0f,
+                                             shadNotifications::position::BottomRight);
+        break;
+    }
+    case SDL_EVENT_TOGGLE_DLSS5_BOOST: {
+        const char* message = !NeuralScreen::ToggleBoost() ? "NeuralScreen is not running"
+                                                           : "DLSS5 Boost: toggled in NeuralScreen";
+        LOG_INFO(Frontend, "{}", message);
+        shadNotifications::QueueNotification(message, 2.0f,
+                                             shadNotifications::position::BottomRight);
+        break;
+    }
     case SDL_EVENT_RELOAD_INPUTS:
         Input::ParseInputConfig(std::string(Common::ElfInfo::Instance().GameSerial()));
         break;

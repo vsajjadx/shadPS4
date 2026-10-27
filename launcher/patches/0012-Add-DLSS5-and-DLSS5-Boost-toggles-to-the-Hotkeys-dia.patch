@@ -1,0 +1,226 @@
+From b231dfa2025cfcbb0232abd9d94456027f899dd3 Mon Sep 17 00:00:00 2001
+From: ci <ci@localhost>
+Date: Tue, 27 Oct 2026 18:45:57 +0000
+Subject: [PATCH 2/2] Add DLSS5 and DLSS5 Boost toggles to the Hotkeys dialog
+
+Both ship as single-key defaults, 2 and 3, next to the frame generation
+toggle on 1. As with the other rows a key combination or a controller
+button can be recorded instead.
+---
+ src/qt_gui/hotkeys.cpp |  27 ++++++++-
+ src/qt_gui/hotkeys.ui  | 126 +++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 151 insertions(+), 2 deletions(-)
+
+diff --git a/src/qt_gui/hotkeys.cpp b/src/qt_gui/hotkeys.cpp
+index 384a9ae..13da27f 100644
+--- a/src/qt_gui/hotkeys.cpp
++++ b/src/qt_gui/hotkeys.cpp
+@@ -52,7 +52,8 @@ Hotkeys::Hotkeys(std::shared_ptr<IpcClient> ipc_client, bool isGameRunning, QWid
+     PadButtonsList = {ui->fpsButtonPad,     ui->quitButtonPad,       ui->fullscreenButtonPad,
+                       ui->pauseButtonPad,   ui->reloadButtonPad,     ui->volUpButtonPad,
+                       ui->volDownButtonPad, ui->screenshotButtonPad, ui->screenshotOverlayButtonPad,
+-                      ui->settingsButtonPad, ui->frameGenButtonPad};
++                      ui->settingsButtonPad, ui->frameGenButtonPad,  ui->dlss5ButtonPad,
++                      ui->dlss5BoostButtonPad};
+ 
+     KBButtonsList = {ui->fpsButtonKB,
+                      ui->quitButtonKB,
+@@ -66,7 +67,9 @@ Hotkeys::Hotkeys(std::shared_ptr<IpcClient> ipc_client, bool isGameRunning, QWid
+                      ui->screenshotButtonKB,
+                      ui->screenshotOverlayButtonKB,
+                      ui->settingsButtonKB,
+-                     ui->frameGenButtonKB};
++                     ui->frameGenButtonKB,
++                     ui->dlss5ButtonKB,
++                     ui->dlss5BoostButtonKB};
+ 
+     connect(ui->buttonBox, &QDialogButtonBox::clicked, this, [this](QAbstractButton* button) {
+         if (button == ui->buttonBox->button(QDialogButtonBox::Save)) {
+@@ -148,6 +151,8 @@ void Hotkeys::SetDefault() {
+     ui->screenshotOverlayButtonPad->setText("unmapped");
+     ui->settingsButtonPad->setText("unmapped");
+     ui->frameGenButtonPad->setText("unmapped");
++    ui->dlss5ButtonPad->setText("unmapped");
++    ui->dlss5BoostButtonPad->setText("unmapped");
+ 
+     ui->fpsButtonKB->setText("f10");
+     ui->quitButtonKB->setText("lctrl, lshift, end");
+@@ -160,6 +165,8 @@ void Hotkeys::SetDefault() {
+     ui->screenshotOverlayButtonKB->setText("lalt, f12");
+     ui->settingsButtonKB->setText("f3");
+     ui->frameGenButtonKB->setText("1");
++    ui->dlss5ButtonKB->setText("2");
++    ui->dlss5BoostButtonKB->setText("3");
+ 
+     ui->mouseJoystickButton->setText("f7");
+     ui->mouseGyroButton->setText("f6");
+@@ -220,6 +227,14 @@ void Hotkeys::SaveHotkeys(bool CloseOnSave) {
+     add_mapping(ui->frameGenButtonKB->text(), "hotkey_toggle_frame_generation");
+     lines.push_back("");
+ 
++    add_mapping(ui->dlss5ButtonPad->text(), "hotkey_toggle_dlss5");
++    add_mapping(ui->dlss5ButtonKB->text(), "hotkey_toggle_dlss5");
++    lines.push_back("");
++
++    add_mapping(ui->dlss5BoostButtonPad->text(), "hotkey_toggle_boost");
++    add_mapping(ui->dlss5BoostButtonKB->text(), "hotkey_toggle_boost");
++    lines.push_back("");
++
+     add_mapping(ui->mouseJoystickButton->text(), "hotkey_toggle_mouse_to_joystick");
+     add_mapping(ui->mouseGyroButton->text(), "hotkey_toggle_mouse_to_gyro");
+ 
+@@ -374,6 +389,14 @@ void Hotkeys::LoadHotkeys() {
+             controllerInputDetected
+                 ? ui->frameGenButtonPad->setText(QString::fromStdString(input_string))
+                 : ui->frameGenButtonKB->setText(QString::fromStdString(input_string));
++        } else if (output_string.contains("hotkey_toggle_dlss5")) {
++            controllerInputDetected
++                ? ui->dlss5ButtonPad->setText(QString::fromStdString(input_string))
++                : ui->dlss5ButtonKB->setText(QString::fromStdString(input_string));
++        } else if (output_string.contains("hotkey_toggle_boost")) {
++            controllerInputDetected
++                ? ui->dlss5BoostButtonPad->setText(QString::fromStdString(input_string))
++                : ui->dlss5BoostButtonKB->setText(QString::fromStdString(input_string));
+         } else if (output_string.contains("hotkey_emulator_settings")) {
+             controllerInputDetected
+                 ? ui->settingsButtonPad->setText(QString::fromStdString(input_string))
+diff --git a/src/qt_gui/hotkeys.ui b/src/qt_gui/hotkeys.ui
+index c0851d9..e593510 100644
+--- a/src/qt_gui/hotkeys.ui
++++ b/src/qt_gui/hotkeys.ui
+@@ -724,6 +724,132 @@
+               </layout>
+              </widget>
+             </item>
++            <item>
++             <widget class="QFrame" name="dlss5Frame">
++              <property name="frameShape">
++               <enum>QFrame::Shape::StyledPanel</enum>
++              </property>
++              <property name="frameShadow">
++               <enum>QFrame::Shadow::Raised</enum>
++              </property>
++              <layout class="QHBoxLayout" name="horizontalLayout_dlss5">
++               <item>
++                <widget class="QLabel" name="dlss5Label">
++                 <property name="sizePolicy">
++                  <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
++                   <horstretch>0</horstretch>
++                   <verstretch>0</verstretch>
++                  </sizepolicy>
++                 </property>
++                 <property name="font">
++                  <font>
++                   <pointsize>12</pointsize>
++                   <bold>false</bold>
++                  </font>
++                 </property>
++                 <property name="text">
++                  <string>Toggle DLSS5</string>
++                 </property>
++                 <property name="wordWrap">
++                  <bool>true</bool>
++                 </property>
++                </widget>
++               </item>
++               <item>
++                <widget class="QRightClickButton" name="dlss5ButtonPad">
++                 <property name="sizePolicy">
++                  <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
++                   <horstretch>0</horstretch>
++                   <verstretch>0</verstretch>
++                  </sizepolicy>
++                 </property>
++                 <property name="text">
++                  <string>unmapped</string>
++                 </property>
++                </widget>
++               </item>
++               <item>
++                <widget class="QRightClickButton" name="dlss5ButtonKB">
++                 <property name="sizePolicy">
++                  <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
++                   <horstretch>0</horstretch>
++                   <verstretch>0</verstretch>
++                  </sizepolicy>
++                 </property>
++                 <property name="focusPolicy">
++                  <enum>Qt::FocusPolicy::NoFocus</enum>
++                 </property>
++                 <property name="text">
++                  <string>2</string>
++                 </property>
++                </widget>
++               </item>
++              </layout>
++             </widget>
++            </item>
++            <item>
++             <widget class="QFrame" name="dlss5BoostFrame">
++              <property name="frameShape">
++               <enum>QFrame::Shape::StyledPanel</enum>
++              </property>
++              <property name="frameShadow">
++               <enum>QFrame::Shadow::Raised</enum>
++              </property>
++              <layout class="QHBoxLayout" name="horizontalLayout_dlss5Boost">
++               <item>
++                <widget class="QLabel" name="dlss5BoostLabel">
++                 <property name="sizePolicy">
++                  <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
++                   <horstretch>0</horstretch>
++                   <verstretch>0</verstretch>
++                  </sizepolicy>
++                 </property>
++                 <property name="font">
++                  <font>
++                   <pointsize>12</pointsize>
++                   <bold>false</bold>
++                  </font>
++                 </property>
++                 <property name="text">
++                  <string>Toggle DLSS5 Boost</string>
++                 </property>
++                 <property name="wordWrap">
++                  <bool>true</bool>
++                 </property>
++                </widget>
++               </item>
++               <item>
++                <widget class="QRightClickButton" name="dlss5BoostButtonPad">
++                 <property name="sizePolicy">
++                  <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
++                   <horstretch>0</horstretch>
++                   <verstretch>0</verstretch>
++                  </sizepolicy>
++                 </property>
++                 <property name="text">
++                  <string>unmapped</string>
++                 </property>
++                </widget>
++               </item>
++               <item>
++                <widget class="QRightClickButton" name="dlss5BoostButtonKB">
++                 <property name="sizePolicy">
++                  <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
++                   <horstretch>0</horstretch>
++                   <verstretch>0</verstretch>
++                  </sizepolicy>
++                 </property>
++                 <property name="focusPolicy">
++                  <enum>Qt::FocusPolicy::NoFocus</enum>
++                 </property>
++                 <property name="text">
++                  <string>3</string>
++                 </property>
++                </widget>
++               </item>
++              </layout>
++             </widget>
++            </item>
+             <item>
+              <widget class="QFrame" name="mouseJoystickFrame">
+               <property name="frameShape">
+-- 
+2.39.5
+

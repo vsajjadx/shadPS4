@@ -12,6 +12,7 @@
 #include "common/path_util.h"
 #include "core/cpu_patches.h"
 #include "core/devtools/layer.h"
+#include "core/neural_screen.h"
 #include "imgui/imgui_std.h"
 #include "settings_dialog_imgui.h"
 
@@ -66,6 +67,18 @@ void SettingsWindow::LoadSettings(std::string profile) {
     fsrEnabledSetting = EmulatorSettings.IsFsrEnabled();
     rcasEnabledSetting = EmulatorSettings.IsRcasEnabled();
     rcasAttenuationSetting = static_cast<float>(EmulatorSettings.GetRcasAttenuation() * 0.001f);
+    {
+        const auto& ns = NeuralScreen::GetSettings();
+        dlss5EnabledSetting = ns.enabled;
+        dlss5BoostSetting = ns.boost;
+        dlss5ResolutionSetting = ns.networkResolutionPercent;
+        dlss5PassesSetting = ns.passes;
+        dlss5ProfileSetting = ns.profile;
+        dlss5IntensitySetting = ns.intensity;
+        dlss5LocalToneSetting = ns.localTone;
+        dlss5LocalStructureSetting = ns.localStructure;
+        dlss5SkinStructureSetting = ns.skinStructure;
+    }
     {
         const u32 aniso = EmulatorSettings.GetAnisotropicFiltering();
         anisotropySetting = aniso >= 16 ? 4 : aniso >= 8 ? 3 : aniso >= 4 ? 2 : aniso >= 2 ? 1 : 0;
@@ -134,6 +147,21 @@ void SettingsWindow::SaveSettings(std::string profile) {
     EmulatorSettings.SetAnisotropicFiltering(anisotropySetting == 0 ? 0u : 1u << anisotropySetting,
                                              isSpecific);
     EmulatorSettings.SetTextureLodBias(textureLodBiasSetting, isSpecific);
+
+    {
+        auto& ns = NeuralScreen::GetSettings();
+        ns.enabled = dlss5EnabledSetting;
+        ns.boost = dlss5BoostSetting;
+        ns.networkResolutionPercent = dlss5ResolutionSetting;
+        ns.passes = dlss5PassesSetting;
+        ns.profile = dlss5ProfileSetting;
+        ns.intensity = dlss5IntensitySetting;
+        ns.localTone = dlss5LocalToneSetting;
+        ns.localStructure = dlss5LocalStructureSetting;
+        ns.skinStructure = dlss5SkinStructureSetting;
+        NeuralScreen::SaveSettings();
+        NeuralScreen::ApplySettings();
+    }
 
     /////////// Input Tab
     EmulatorSettings.SetMotionControlsEnabled(motionControlsSetting, isSpecific);
@@ -748,6 +776,23 @@ void SettingsWindow::DrawSettingsTable(SettingsCategory category) {
 
             if (rcasEnabledSetting && fsrEnabledSetting) {
                 AddSettingSliderFloat("RCAS Attenuation", rcasAttenuationSetting, 0.0f, 3.0f, 3);
+            }
+
+            AddSettingCheckbox("Enable DLSS5 (NeuralScreen)", dlss5EnabledSetting);
+            if (dlss5EnabledSetting) {
+                AddSettingCheckbox("DLSS5 Boost", dlss5BoostSetting);
+                AddSettingSliderInt("DLSS5 Resolution Network Runs At", dlss5ResolutionSetting, 30,
+                                    100);
+                AddSettingSliderInt("DLSS5 Passes", dlss5PassesSetting, 1, 4);
+                AddSettingCombo("DLSS5 Profile", dlss5ProfileSetting,
+                                NeuralScreen::ProfileOptions());
+                AddSettingSliderFloat("DLSS5 Intensity", dlss5IntensitySetting, 0.0f, 1.0f, 3);
+                AddSettingSliderFloat("DLSS5 Fine Tune: Local Tone", dlss5LocalToneSetting, 0.0f,
+                                      2.0f, 3);
+                AddSettingSliderFloat("DLSS5 Fine Tune: Local Structure",
+                                      dlss5LocalStructureSetting, 0.0f, 2.0f, 3);
+                AddSettingSliderFloat("DLSS5 Fine Tune: Skin Structure", dlss5SkinStructureSetting,
+                                      -1.0f, 2.5f, 3);
             }
 
             AddSettingCombo("Anisotropic Filtering", anisotropySetting, anisotropyOptions);
