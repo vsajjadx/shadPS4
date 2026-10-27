@@ -961,8 +961,13 @@ bool Presenter::UpdateGenerationPacing() {
     using namespace std::chrono_literals;
     // Every game frame gets an interpolated one, whatever the display refresh rate is, like
     // frame generation in PC games. Only rates where interpolating makes no sense are left out.
+#ifdef ENABLE_FSR_FRAMEGEN
     const bool wanted =
         FrameGeneration::IsEnabled() && flip_interval >= 2ms && flip_interval <= 80ms;
+#else
+    // NeuralScreen owns frame generation instead.
+    const bool wanted = false;
+#endif
     generation_wanted = wanted;
     return wanted;
 }
