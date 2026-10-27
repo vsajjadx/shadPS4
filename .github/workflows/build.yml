@@ -293,7 +293,7 @@ jobs:
         shell: bash
         run: |
           git clone --depth 1 --branch compact-ui https://github.com/vsajjadx/NeuralScreen.git ns
-          git -C ns -c user.name=ci -c user.email=ci@localhost am launcher/neuralscreen/*.patch
+          git -C ns -c user.name=ci -c user.email=ci@localhost am "$GITHUB_WORKSPACE"/launcher/neuralscreen/*.patch
           python -m py_compile ns/main.py ns/app/commands.py ns/app/control.py
 
       - name: Build the launcher exe
