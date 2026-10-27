@@ -1,0 +1,93 @@
+From df391f1606b38377d6e7fb272f7f0cfde7bea88a Mon Sep 17 00:00:00 2001
+From: vsajjadx <vsajjadx@users.noreply.github.com>
+Date: Tue, 27 Oct 2026 20:17:44 +0000
+Subject: [PATCH] launcher: forward the command line to main.py
+
+NeuralScreen.exe built its own python command line and dropped every
+argument it was started with, so the shadPS4 spawn (--config/--window/
+--ctl/--instance) never reached main.py: the overlay always came up on
+the desktop instead of attaching to the game window. Forward argv[1:]
+with MSVCRT quoting so paths with spaces survive.
+---
+ native/launcher.cpp | 51 +++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 51 insertions(+)
+
+diff --git a/native/launcher.cpp b/native/launcher.cpp
+index 05f5fbc..f6ff9aa 100644
+--- a/native/launcher.cpp
++++ b/native/launcher.cpp
+@@ -20,6 +20,7 @@
+ #define WIN32_LEAN_AND_MEAN
+ #include <windows.h>
+ #include <shlwapi.h>
++#include <shellapi.h>
+ #include <string>
+ 
+ static const wchar_t *kTitle = L"NeuralScreen";
+@@ -29,6 +30,36 @@ static void Fail(const wchar_t *text)
+     MessageBoxW(nullptr, text, kTitle, MB_ICONERROR | MB_OK);
+ }
+ 
++// Quote one argument by the MSVCRT rules (backslashes before a quote or at
++// the end of the argument are doubled, the quote itself is escaped) so a path
++// with spaces survives the round trip through CommandLineToArgvW in Python.
++static std::wstring QuoteArg(const std::wstring &arg)
++{
++    std::wstring out(1, L'"');
++    size_t backslashes = 0;
++    for (const wchar_t ch : arg)
++    {
++        if (ch == L'\\')
++        {
++            ++backslashes;
++            continue;
++        }
++        if (ch == L'"')
++        {
++            out.append(backslashes * 2 + 1, L'\\');
++            out += L'"';
++            backslashes = 0;
++            continue;
++        }
++        out.append(backslashes, L'\\');
++        backslashes = 0;
++        out += ch;
++    }
++    out.append(backslashes * 2, L'\\');
++    out += L'"';
++    return out;
++}
++
+ static bool FileThere(const std::wstring &path)
+ {
+     const DWORD a = GetFileAttributesW(path.c_str());
+@@ -121,6 +152,26 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
+     // program is still running rather than only after it exits.
+     std::wstring cmd = L"\"" + python + L"\" -u \"" + main_py + L"\"";
+ 
++    // Forward this launcher's own command line. shadPS4 starts the exe with
++    // --config/--window/--ctl/--instance so the overlay attaches to the game
++    // window instead of the desktop; a double-click still starts plain.
++    {
++        int argc = 0;
++        LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
++        if (argv)
++        {
++            for (int i = 1; i < argc; ++i)
++            {
++                if (argv[i] && *argv[i])
++                {
++                    cmd += L" ";
++                    cmd += QuoteArg(argv[i]);
++                }
++            }
++            LocalFree(argv);
++        }
++    }
++
+     STARTUPINFOW si = {};
+     si.cb = sizeof(si);
+     si.dwFlags = STARTF_USESHOWWINDOW;
+-- 
+2.39.5
+
