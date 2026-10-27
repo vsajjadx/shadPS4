@@ -14,6 +14,12 @@ The patches add:
 - A list of common window sizes instead of typing the width and height.
 - A frame generation (FSR 3.1) switch in the Graphics tab, and a Toggle Frame Generation key in the
   Hotkeys dialog (default `1`; a single key, a combination like `Ctrl+1`, or a controller button).
+  With the DLSS5 integration the switch and the key drive NeuralScreen's frame generation
+  instead of the emulator's built-in FSR 3.1 one, which is no longer compiled.
+- DLSS5 (NeuralScreen) options in the Graphics tab: enable, boost, the resolution the network
+  runs at, passes, profile, intensity and fine tuning. They are kept in the emulator's
+  `user/neural_screen.json` and take effect when the next game starts. The Hotkeys dialog also
+  gains Toggle DLSS5 (default `2`) and Toggle DLSS5 Boost (default `3`).
 - The controller and Hotkeys dialogs read a click on the DualSense / DualShock 4 touchpad as
   `touchpad_left`, `touchpad_center` or `touchpad_right`, by the third of the pad the finger is on
   (it used to be ignored, leaving the field on `back`). The emulator takes these as inputs, so they

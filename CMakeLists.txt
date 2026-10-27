@@ -40,7 +40,7 @@ option(ENABLE_DISCORD_RPC "Enable the Discord RPC integration" ON)
 option(ENABLE_UPDATER "Enables the options to updater" ON)
 option(ENABLE_TESTS "Build unit tests (requires GTest)" OFF)
 option(ENABLE_SYSTEM_LIBRARIES "Enable building against system libraries" OFF)
-cmake_dependent_option(ENABLE_FSR_FRAMEGEN "Enable FSR 3.1 frame generation" ON WIN32 OFF)
+cmake_dependent_option(ENABLE_FSR_FRAMEGEN "Enable FSR 3.1 frame generation (superseded by NeuralScreen DLSS5)" OFF WIN32 OFF)
 
 # First, determine whether to use CMAKE_OSX_ARCHITECTURES or CMAKE_SYSTEM_PROCESSOR.
 if (APPLE AND CMAKE_OSX_ARCHITECTURES)
@@ -1044,6 +1044,8 @@ set(CORE src/core/aerolib/stubs.cpp
          src/core/emulator_state.cpp
          src/core/emulator_state.h
          src/core/emulator_settings.cpp
+         src/core/neural_screen.cpp
+         src/core/neural_screen.h
          src/core/emulator_settings.h
          src/core/user_manager.cpp
          src/core/user_manager.h
@@ -1385,6 +1387,11 @@ target_link_libraries(shadps4 PRIVATE Boost::headers GPUOpen::VulkanMemoryAlloca
 target_link_libraries(shadps4 PRIVATE stb::headers lfreist-hwinfo::hwinfo nlohmann_json::nlohmann_json miniz::miniz fdk-aac CLI11::CLI11 OpenAL::OpenAL Cpp_Httplib miniupnpc::miniupnpc)
 target_link_libraries(shadps4 PRIVATE Freetype::Freetype)
 target_link_libraries(shadps4 PRIVATE libprotobuf)
+
+if (WIN32)
+    # NeuralScreen DLSS5 control channel (localhost TCP)
+    target_link_libraries(shadps4 PRIVATE ws2_32)
+endif()
 target_link_libraries(shadps4 PRIVATE ZArchive::zarchive)
 target_link_libraries(shadps4 PRIVATE zstd::libzstd)
 target_include_directories(shadps4 PRIVATE "${SHADNET_PROTO_OUT}")

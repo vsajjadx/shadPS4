@@ -18,6 +18,7 @@
 #include "common/thread.h"
 #include "core/emulator_settings.h"
 #include "core/ipc/ipc.h"
+#include "core/neural_screen.h"
 #ifdef ENABLE_DISCORD_RPC
 #include "common/discord_rpc_handler.h"
 #endif
@@ -799,6 +800,9 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         });
     }
 
+    // NeuralScreen (DLSS5) attaches to the game window right before the game starts.
+    NeuralScreen::StartForGameWindow(window->GetSDLWindow());
+
     linker->Execute(args);
 
     window->InitTimers();
@@ -806,6 +810,7 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         window->WaitEvent();
     }
 
+    NeuralScreen::Stop();
     std::quick_exit(0);
 }
 
@@ -876,6 +881,7 @@ void Emulator::Restart(std::filesystem::path eboot_path,
     args.insert(guest_args, {"--wait-for-pid", std::to_string(Debugger::GetCurrentPid())});
 
     LOG_INFO(Common, "Relaunching the emulator with args: {}", fmt::join(args, " "));
+    NeuralScreen::Stop();
     Libraries::Np::NpHandler::GetInstance().Shutdown();
     Common::Log::Shutdown();
 
