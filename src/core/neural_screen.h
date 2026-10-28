@@ -16,6 +16,8 @@ namespace NeuralScreen {
 struct Settings {
     bool enabled = true;
     bool boost = true;
+    // NeuralScreen's automatic resolution (auto_quality); acts with Boost on.
+    bool autoQuality = false;
     int networkResolutionPercent = 65;
     int passes = 1;
     int profile = 1;
