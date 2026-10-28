@@ -294,7 +294,7 @@ jobs:
         run: |
           git clone --depth 1 --branch compact-ui https://github.com/vsajjadx/NeuralScreen.git ns
           git -C ns -c user.name=ci -c user.email=ci@localhost am "$GITHUB_WORKSPACE"/launcher/neuralscreen/*.patch
-          python -m py_compile ns/main.py ns/app/commands.py ns/app/control.py ns/app/settings_io.py
+          python -m py_compile ns/main.py ns/app/commands.py ns/app/control.py ns/app/settings_io.py ns/app/startup.py
 
       # Answers on the user's own GPU whether the NR runtime creates its
       # feature through Vulkan (tools/nr_vk_probe); shipped next to the runtime.
@@ -310,7 +310,7 @@ jobs:
           mkdir -p overlay/NeuralScreen/app overlay/NeuralScreen/native
           cp ns/native/nvngx.dll_vkprobe.exe overlay/NeuralScreen/native/
           cp ns/main.py overlay/NeuralScreen/
-          cp ns/app/commands.py ns/app/control.py ns/app/settings_io.py overlay/NeuralScreen/app/
+          cp ns/app/commands.py ns/app/control.py ns/app/settings_io.py ns/app/startup.py overlay/NeuralScreen/app/
           ls -la overlay/NeuralScreen overlay/NeuralScreen/app
 
       - uses: actions/upload-artifact@v7
