@@ -40,11 +40,11 @@ emulator updates and NeuralScreen updates stay independent.
 
 ## Runtime protocol
 
-The emulator starts `NeuralScreen.exe` (looked up as `NeuralScreen/NeuralScreen.exe`
-or `NeuralScreen.exe` next to the emulator) with
+The emulator starts the bundled `runtime/pythonw.exe` on `main.py` itself (looked up in
+`NeuralScreen/` or next to the emulator), with
 
 ```
-NeuralScreen.exe --config <user>/neural_screen_app.json --window <hwnd> --ctl 53194 --instance shadPS4
+main.py --config <user>/neural_screen_app.json --window <hwnd> --ctl 53194 --instance shadPS4
 ```
 
 and talks to it on localhost TCP port 53194, one command per line: `nr`, `fg`,

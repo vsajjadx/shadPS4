@@ -191,7 +191,7 @@ static bool SendCommand(const std::string& word) {
     return std::string(reply).find("ok") != std::string::npos;
 }
 
-static std::filesystem::path FindExecutable() {
+static std::filesystem::path FindDirectory() {
     const char* base = SDL_GetBasePath();
     if (!base) {
         return {};
@@ -199,15 +199,33 @@ static std::filesystem::path FindExecutable() {
     std::filesystem::path baseDir = std::filesystem::u8path(base);
     SDL_free(const_cast<char*>(base));
     const std::filesystem::path candidates[] = {
-        baseDir / "NeuralScreen" / "NeuralScreen.exe",
-        baseDir / "NeuralScreen.exe",
-        baseDir / "neuralscreen" / "NeuralScreen.exe",
+        baseDir / "NeuralScreen",
+        baseDir,
+        baseDir / "neuralscreen",
     };
     std::error_code ec;
     for (const auto& candidate : candidates) {
-        if (std::filesystem::is_regular_file(candidate, ec)) {
+        if (std::filesystem::is_regular_file(candidate / "main.py", ec)) {
             return candidate;
         }
+    }
+    return {};
+}
+
+static std::filesystem::path FindPython(const std::filesystem::path& dir) {
+    wchar_t overridePath[MAX_PATH]{};
+    const DWORD length = GetEnvironmentVariableW(L"NEURALSCREEN_PYTHON", overridePath, MAX_PATH);
+    std::error_code ec;
+    if (length > 0 && length < MAX_PATH && std::filesystem::is_regular_file(overridePath, ec)) {
+        return overridePath;
+    }
+    const auto bundled = dir / "runtime" / "pythonw.exe";
+    if (std::filesystem::is_regular_file(bundled, ec)) {
+        return bundled;
+    }
+    wchar_t found[MAX_PATH]{};
+    if (SearchPathW(nullptr, L"pythonw.exe", nullptr, MAX_PATH, found, nullptr)) {
+        return found;
     }
     return {};
 }
@@ -216,10 +234,22 @@ bool StartForGameWindow(SDL_Window* window) {
     if (!GetSettings().enabled || g_running) {
         return false;
     }
-    const auto exe = FindExecutable();
-    if (exe.empty()) {
+    const auto dir = FindDirectory();
+    if (dir.empty()) {
         LOG_WARNING(Loader, "NeuralScreen was not found next to the emulator - "
                             "DLSS5 is configured but will not run");
+        return false;
+    }
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(dir / "native" / "nvngx.dll", ec) ||
+        !std::filesystem::is_regular_file(dir / "native" / "nvngx_dlssnr.dll", ec)) {
+        LOG_WARNING(Loader, "NeuralScreen: native\\nvngx.dll or native\\nvngx_dlssnr.dll is missing, "
+                            "DLSS5 is off");
+        return false;
+    }
+    const auto python = FindPython(dir);
+    if (python.empty()) {
+        LOG_WARNING(Loader, "NeuralScreen: pythonw.exe was not found, DLSS5 is off");
         return false;
     }
     WriteAppConfig();
@@ -232,15 +262,18 @@ bool StartForGameWindow(SDL_Window* window) {
     }
 
     std::wostringstream cmd;
-    cmd << L'"' << exe.wstring() << L'"' << L" --config \"" << AppConfigPath().wstring() << L'"'
+    cmd << L'"' << python.wstring() << L'"' << L" -u \"" << (dir / "main.py").wstring() << L'"'
+        << L" --config \"" << AppConfigPath().wstring() << L'"'
         << L" --window " << reinterpret_cast<ptrdiff_t>(hwnd) << L" --ctl " << ControlPort
         << L" --instance shadPS4";
 
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESHOWWINDOW;
+    startup.wShowWindow = SW_HIDE;
     std::wstring command = cmd.str();
-    if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, 0, nullptr,
-                        exe.parent_path().wstring().c_str(), &startup, &g_process)) {
+    if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr,
+                        dir.wstring().c_str(), &startup, &g_process)) {
         LOG_WARNING(Loader, "NeuralScreen could not be started ({}), DLSS5 is off", GetLastError());
         g_running = false;
         return false;
