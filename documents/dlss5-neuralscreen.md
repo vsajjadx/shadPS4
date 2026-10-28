@@ -41,7 +41,7 @@ emulator updates and NeuralScreen updates stay independent.
 ## Runtime protocol
 
 The emulator starts the bundled `runtime/pythonw.exe` on `main.py` itself (looked up in
-`NeuralScreen/` or next to the emulator), with
+`qtplugins/NeuralScreen/` next to the emulator), with
 
 ```
 main.py --config <user>/neural_screen_app.json --window <hwnd> --ctl 53194 --instance shadPS4

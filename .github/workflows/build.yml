@@ -330,38 +330,39 @@ jobs:
 
     # DLSS5: the published full package embedded beside the emulator, with
     # the integration's Python sources laid over it. The
-    # emulator starts NeuralScreen\runtime\pythonw.exe main.py with the game window.
+    # emulator starts qtplugins\NeuralScreen\runtime\pythonw.exe main.py with the game window.
     - name: Embed NeuralScreen (DLSS5)
       run: |
         curl -fL --retry 3 -o ns-full.zip \
           "https://github.com/vsajjadx/NeuralScreen/releases/download/build-25-compact-ui/NeuralScreen-full.zip"
         # The release zip carries its own NeuralScreen/ root folder; lift its
-        # contents up so bundle/NeuralScreen is the program itself.
-        mkdir -p bundle/NeuralScreen ns-full
+        # contents up so bundle/qtplugins/NeuralScreen is the program itself.
+        mkdir -p bundle/qtplugins/NeuralScreen ns-full
         unzip -q ns-full.zip -d ns-full
-        cp -a ns-full/NeuralScreen/. bundle/NeuralScreen/
-        cp -a ns-overlay/NeuralScreen/. bundle/NeuralScreen/
+        cp -a ns-full/NeuralScreen/. bundle/qtplugins/NeuralScreen/
+        cp -a ns-overlay/NeuralScreen/. bundle/qtplugins/NeuralScreen/
         rm -rf ns-full ns-full.zip
         # The overlay lands on the full package, not beside it:
         # the patched Python, and everything the worker loads.
         # Only what the emulator runs stays: main.py, app, runtime, fonts,
-        # config.default.json and the six runtime DLLs in native. The rest of the release is dropped.
-        cd bundle/NeuralScreen
+        # config.default.json and the seven runtime DLLs in native. The rest of the release is dropped.
+        cd bundle/qtplugins/NeuralScreen
         rm -rf .github docs tests
         rm -f .gitattributes .gitignore CHANGELOG.md README.md RELEASING.md TECHNICAL.md \
           NeuralScreen.exe NeuralScreen.vbs NeuralScreen-diag.vbs NeuralScreen.bat \
           build_release_zip.py verify_github.py runtime-manifest.json
         find native -mindepth 1 -maxdepth 1 \
-          ! -name nvngx.dll ! -name nvngx_dlssnr.dll ! -name nvngx.dll_ns-forwarder.dll \
+          ! -name nvngx.dll ! -name nvngx_dlssnr.dll ! -name nvngx_dlssg.dll \
+          ! -name nvngx.dll_ns-forwarder.dll \
           ! -name SpoutDX.dll ! -name amd_fidelityfx_loader_dx12.dll \
           ! -name amd_fidelityfx_framegeneration_dx12.dll -exec rm -rf {} +
-        cd ../..
-        test -f bundle/NeuralScreen/main.py
-        test -f bundle/NeuralScreen/app/control.py
-        test -f bundle/NeuralScreen/native/nvngx.dll
-        test -f bundle/NeuralScreen/native/nvngx_dlssnr.dll
-        test -f bundle/NeuralScreen/runtime/pythonw.exe
-        echo "NeuralScreen embedded: $(du -sh bundle/NeuralScreen | cut -f1)"
+        cd ../../..
+        test -f bundle/qtplugins/NeuralScreen/main.py
+        test -f bundle/qtplugins/NeuralScreen/app/control.py
+        test -f bundle/qtplugins/NeuralScreen/native/nvngx.dll
+        test -f bundle/qtplugins/NeuralScreen/native/nvngx_dlssnr.dll
+        test -f bundle/qtplugins/NeuralScreen/runtime/pythonw.exe
+        echo "NeuralScreen embedded: $(du -sh bundle/qtplugins/NeuralScreen | cut -f1)"
 
     - name: Upload the package
       uses: actions/upload-artifact@v7
