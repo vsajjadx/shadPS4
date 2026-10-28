@@ -204,16 +204,10 @@ static std::filesystem::path FindDirectory() {
     }
     std::filesystem::path baseDir = std::filesystem::u8path(base);
     SDL_free(const_cast<char*>(base));
-    const std::filesystem::path candidates[] = {
-        baseDir / "NeuralScreen",
-        baseDir,
-        baseDir / "neuralscreen",
-    };
+    const auto dir = baseDir / "qtplugins" / "NeuralScreen";
     std::error_code ec;
-    for (const auto& candidate : candidates) {
-        if (std::filesystem::is_regular_file(candidate / "main.py", ec)) {
-            return candidate;
-        }
+    if (std::filesystem::is_regular_file(dir / "main.py", ec)) {
+        return dir;
     }
     return {};
 }
