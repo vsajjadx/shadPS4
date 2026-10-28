@@ -1,0 +1,28 @@
+From 937096178f49d891b8c761b1fc9a838e3ee704f4 Mon Sep 17 00:00:00 2001
+From: vsajjadx <vsajjadx@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 07:01:42 +0000
+Subject: [PATCH] Start without a taskbar button when attached to a game window
+
+A copy started with --window by shadPS4 lives inside the emulator: the
+extra NeuralScreen taskbar window is created hidden, the same way
+Minimise to tray starts it.
+---
+ app/startup.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/app/startup.py b/app/startup.py
+index 34e6f5a..fc79dde 100644
+--- a/app/startup.py
++++ b/app/startup.py
+@@ -912,7 +912,7 @@ def bring_up(st) -> None:
+     # #171: with "Minimise to tray" on the program starts in the tray - the
+     # button is created hidden, and only while the tray icon really runs (it
+     # is the one way back).
+-    st.taskbar.start_hidden = _starts_in_tray(st)
++    st.taskbar.start_hidden = bool(st.pending_window) or _starts_in_tray(st)
+     st.in_tray = st.taskbar.start_hidden
+     st.taskbar.start()
+     print("[main] taskbar window started"
+-- 
+2.43.0
+
