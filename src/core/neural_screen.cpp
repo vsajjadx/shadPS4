@@ -81,6 +81,7 @@ void LoadSettings() {
         auto& s = g_settings;
         s.enabled = j.value("Enabled", s.enabled);
         s.boost = j.value("Boost", s.boost);
+        s.autoQuality = j.value("AutoQuality", s.autoQuality);
         s.networkResolutionPercent =
             std::clamp(j.value("NetworkResolutionPercent", s.networkResolutionPercent), 30, 100);
         s.passes = std::clamp(j.value("Passes", s.passes), 1, 4);
@@ -102,6 +103,7 @@ void SaveSettings() {
     json j;
     j["Enabled"] = s.enabled;
     j["Boost"] = s.boost;
+    j["AutoQuality"] = s.autoQuality;
     j["NetworkResolutionPercent"] = s.networkResolutionPercent;
     j["Passes"] = s.passes;
     j["Profile"] = s.profile;
@@ -128,6 +130,7 @@ static void WriteAppConfig() {
     j["nr_on"] = s.enabled;
     j["frame_generation"] = EmulatorSettings.IsFrameGenerationEnabled();
     j["nr_small"] = s.boost;
+    j["auto_quality"] = s.autoQuality;
     j["work_scale"] = std::clamp(s.networkResolutionPercent, 30, 100) / 100.0;
     j["nr_passes"] = s.passes;
     j["profile"] = ProfileOptions()[s.profile];

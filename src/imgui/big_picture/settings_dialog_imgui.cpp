@@ -71,6 +71,7 @@ void SettingsWindow::LoadSettings(std::string profile) {
         const auto& ns = NeuralScreen::GetSettings();
         dlss5EnabledSetting = ns.enabled;
         dlss5BoostSetting = ns.boost;
+        dlss5AutoQualitySetting = ns.autoQuality;
         dlss5ResolutionSetting = ns.networkResolutionPercent;
         dlss5PassesSetting = ns.passes;
         dlss5ProfileSetting = ns.profile;
@@ -153,6 +154,7 @@ void SettingsWindow::SaveSettings(std::string profile) {
         auto& ns = NeuralScreen::GetSettings();
         ns.enabled = dlss5EnabledSetting;
         ns.boost = dlss5BoostSetting;
+        ns.autoQuality = dlss5AutoQualitySetting;
         ns.networkResolutionPercent = dlss5ResolutionSetting;
         ns.passes = dlss5PassesSetting;
         ns.profile = dlss5ProfileSetting;
@@ -783,6 +785,10 @@ void SettingsWindow::DrawSettingsTable(SettingsCategory category) {
             AddSettingCheckbox("Enable DLSS5 (NeuralScreen)", dlss5EnabledSetting);
             if (dlss5EnabledSetting) {
                 AddSettingCheckbox("DLSS5 Boost", dlss5BoostSetting);
+                if (dlss5BoostSetting) {
+                    AddSettingCheckbox("DLSS5 Auto Quality (Automatic Resolution)",
+                                       dlss5AutoQualitySetting);
+                }
                 AddSettingSliderInt("DLSS5 Resolution Network Runs At", dlss5ResolutionSetting, 30,
                                     100);
                 AddSettingSliderInt("DLSS5 Passes", dlss5PassesSetting, 1, 4);

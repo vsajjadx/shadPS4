@@ -142,6 +142,7 @@ private:
     // emulator updates never collide with the integration.
     bool dlss5EnabledSetting;
     bool dlss5BoostSetting;
+    bool dlss5AutoQualitySetting;
     int dlss5ResolutionSetting;
     int dlss5PassesSetting;
     int dlss5ProfileSetting;
