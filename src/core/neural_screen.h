@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -41,8 +42,8 @@ bool StartForGameWindow(SDL_Window* window);
 void Stop();
 void ApplySettings();
 
-bool ToggleFrameGeneration();
-bool ToggleDLSS5();
-bool ToggleBoost();
+std::optional<bool> ToggleFrameGeneration();
+std::optional<bool> ToggleDLSS5();
+std::optional<bool> ToggleBoost();
 
 } // namespace NeuralScreen

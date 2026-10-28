@@ -47,6 +47,9 @@ static bool g_loaded = false;
 static PROCESS_INFORMATION g_process = {};
 static bool g_running = false;
 #endif
+static bool g_frameGenerationOn = false;
+static bool g_dlss5On = false;
+static bool g_boostOn = false;
 
 static std::filesystem::path SettingsPath() {
     return Common::FS::GetUserPath(Common::FS::PathType::UserDir) / SettingsFileName;
@@ -133,6 +136,9 @@ static void WriteAppConfig() {
     j["local_tone"] = s.localTone;
     j["local_structure"] = s.localStructure;
     j["skin_structure"] = s.skinStructure;
+    g_frameGenerationOn = EmulatorSettings.IsFrameGenerationEnabled();
+    g_dlss5On = s.enabled;
+    g_boostOn = s.boost;
 
     std::error_code ec;
     auto dir = Common::FS::GetUserPath(Common::FS::PathType::UserDir);
@@ -307,25 +313,26 @@ void ApplySettings() {
     }
 }
 
-static bool SendHotkey(const char* word) {
+static std::optional<bool> SendHotkey(const char* word, bool& state) {
     if (!g_running) {
-        return false;
+        return std::nullopt;
     }
+    state = !state;
     // Detached: a dead endpoint must not stall the frame that pressed the key.
     std::thread([word] { SendCommand(word); }).detach();
-    return true;
+    return state;
 }
 
-bool ToggleFrameGeneration() {
-    return SendHotkey("fg");
+std::optional<bool> ToggleFrameGeneration() {
+    return SendHotkey("fg", g_frameGenerationOn);
 }
 
-bool ToggleDLSS5() {
-    return SendHotkey("nr");
+std::optional<bool> ToggleDLSS5() {
+    return SendHotkey("nr", g_dlss5On);
 }
 
-bool ToggleBoost() {
-    return SendHotkey("boost");
+std::optional<bool> ToggleBoost() {
+    return SendHotkey("boost", g_boostOn);
 }
 
 #else
@@ -340,16 +347,16 @@ void ApplySettings() {
     WriteAppConfig();
 }
 
-bool ToggleFrameGeneration() {
-    return false;
+std::optional<bool> ToggleFrameGeneration() {
+    return std::nullopt;
 }
 
-bool ToggleDLSS5() {
-    return false;
+std::optional<bool> ToggleDLSS5() {
+    return std::nullopt;
 }
 
-bool ToggleBoost() {
-    return false;
+std::optional<bool> ToggleBoost() {
+    return std::nullopt;
 }
 
 #endif

@@ -330,25 +330,27 @@ void WindowSDL::WaitEvent() {
         ImGui::Friends::Toggle();
         break;
     case SDL_EVENT_TOGGLE_FRAME_GENERATION: {
-        const char* message = !NeuralScreen::ToggleFrameGeneration()
-                                  ? "NeuralScreen is not running"
-                                  : "Frame Generation: toggled in NeuralScreen";
+        const auto state = NeuralScreen::ToggleFrameGeneration();
+        const std::string message =
+            !state ? "NeuralScreen is not running" : "FG " + std::string(*state ? "on" : "off");
         LOG_INFO(Frontend, "{}", message);
         shadNotifications::QueueNotification(message, 2.0f,
                                              shadNotifications::position::BottomRight);
         break;
     }
     case SDL_EVENT_TOGGLE_DLSS5: {
-        const char* message = !NeuralScreen::ToggleDLSS5() ? "NeuralScreen is not running"
-                                                           : "DLSS5: toggled in NeuralScreen";
+        const auto state = NeuralScreen::ToggleDLSS5();
+        const std::string message =
+            !state ? "NeuralScreen is not running" : "DLSS5 " + std::string(*state ? "on" : "off");
         LOG_INFO(Frontend, "{}", message);
         shadNotifications::QueueNotification(message, 2.0f,
                                              shadNotifications::position::BottomRight);
         break;
     }
     case SDL_EVENT_TOGGLE_DLSS5_BOOST: {
-        const char* message = !NeuralScreen::ToggleBoost() ? "NeuralScreen is not running"
-                                                           : "DLSS5 Boost: toggled in NeuralScreen";
+        const auto state = NeuralScreen::ToggleBoost();
+        const std::string message =
+            !state ? "NeuralScreen is not running" : "Boost " + std::string(*state ? "on" : "off");
         LOG_INFO(Frontend, "{}", message);
         shadNotifications::QueueNotification(message, 2.0f,
                                              shadNotifications::position::BottomRight);
