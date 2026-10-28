@@ -307,13 +307,18 @@ void ApplySettings() {
     }
 }
 
+// The emulator owns the target state and sends it as an absolute word
+// (nr_on / nr_off ...), so what the notification shows is what NeuralScreen
+// was told to be. The state only changes once NeuralScreen has answered ok.
 static std::optional<bool> SendHotkey(const char* word, bool& state) {
     if (!g_running) {
         return std::nullopt;
     }
-    state = !state;
-    // Detached: a dead endpoint must not stall the frame that pressed the key.
-    std::thread([word] { SendCommand(word); }).detach();
+    const bool target = !state;
+    if (!SendCommand(std::string(word) + (target ? "_on" : "_off"))) {
+        return std::nullopt;
+    }
+    state = target;
     return state;
 }
 
