@@ -1,0 +1,30 @@
+From 3f69170c90dd8299d63ac9690e3a379c3f4a3249 Mon Sep 17 00:00:00 2001
+From: vsajjadx <vsajjadx@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 07:03:57 +0000
+Subject: [PATCH] Start without a tray icon when attached to a game window
+
+The copy shadPS4 starts with --window is driven by the emulator's keys and
+the control endpoint; it needs no tray icon beside the clock.
+---
+ app/startup.py | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/app/startup.py b/app/startup.py
+index fc79dde..34a5877 100644
+--- a/app/startup.py
++++ b/app/startup.py
+@@ -895,8 +895,9 @@ def bring_up(st) -> None:
+     # The same rule the start applies below (st.paused is set further down -
+     # reading it here raised AttributeError and ended every start).
+     st.tray._set_state(nr=nr_starts_on(st.cfg), scale=st.work_scale)
+-    st.tray.start()
+-    print("[main] tray icon started")
++    if not st.pending_window:
++        st.tray.start()
++        print("[main] tray icon started")
+ 
+     # Taskbar button: the overlay and the worker window are tool
+     # windows, so the program lived only in the tray. A 1x1 APPWINDOW
+-- 
+2.43.0
+
