@@ -74,6 +74,7 @@ void SettingsWindow::LoadSettings(std::string profile) {
         dlss5ResolutionSetting = ns.networkResolutionPercent;
         dlss5PassesSetting = ns.passes;
         dlss5ProfileSetting = ns.profile;
+        dlss5ModelSetting = ns.model;
         dlss5IntensitySetting = ns.intensity;
         dlss5LocalToneSetting = ns.localTone;
         dlss5LocalStructureSetting = ns.localStructure;
@@ -155,6 +156,7 @@ void SettingsWindow::SaveSettings(std::string profile) {
         ns.networkResolutionPercent = dlss5ResolutionSetting;
         ns.passes = dlss5PassesSetting;
         ns.profile = dlss5ProfileSetting;
+        ns.model = dlss5ModelSetting;
         ns.intensity = dlss5IntensitySetting;
         ns.localTone = dlss5LocalToneSetting;
         ns.localStructure = dlss5LocalStructureSetting;
@@ -787,12 +789,14 @@ void SettingsWindow::DrawSettingsTable(SettingsCategory category) {
                 AddSettingCombo("DLSS5 Profile", dlss5ProfileSetting,
                                 NeuralScreen::ProfileOptions());
                 AddSettingSliderFloat("DLSS5 Intensity", dlss5IntensitySetting, 0.0f, 1.0f, 3);
-                AddSettingSliderFloat("DLSS5 Fine Tune: Local Tone", dlss5LocalToneSetting, 0.0f,
+                AddSettingCombo("DLSS5 Fine Tuning: Model", dlss5ModelSetting,
+                                NeuralScreen::ModelOptions());
+                AddSettingSliderFloat("DLSS5 Fine Tuning: Local Tone", dlss5LocalToneSetting, 0.0f,
                                       2.0f, 3);
-                AddSettingSliderFloat("DLSS5 Fine Tune: Local Structure",
+                AddSettingSliderFloat("DLSS5 Fine Tuning: Local Structure",
                                       dlss5LocalStructureSetting, 0.0f, 2.0f, 3);
-                AddSettingSliderFloat("DLSS5 Fine Tune: Skin Structure", dlss5SkinStructureSetting,
-                                      -1.0f, 2.5f, 3);
+                AddSettingSliderFloat("DLSS5 Fine Tuning: Skin Structure",
+                                      dlss5SkinStructureSetting, -1.0f, 2.5f, 3);
             }
 
             AddSettingCombo("Anisotropic Filtering", anisotropySetting, anisotropyOptions);

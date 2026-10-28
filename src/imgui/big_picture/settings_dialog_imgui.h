@@ -145,6 +145,7 @@ private:
     int dlss5ResolutionSetting;
     int dlss5PassesSetting;
     int dlss5ProfileSetting;
+    int dlss5ModelSetting;
     float dlss5IntensitySetting;
     float dlss5LocalToneSetting;
     float dlss5LocalStructureSetting;

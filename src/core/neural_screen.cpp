@@ -36,6 +36,11 @@ const std::vector<std::string>& ProfileOptions() {
     return options;
 }
 
+const std::vector<std::string>& ModelOptions() {
+    static const std::vector<std::string> options = {"Default", "Natural", "Cinematic"};
+    return options;
+}
+
 static Settings g_settings;
 static bool g_loaded = false;
 #ifdef _WIN32
@@ -75,6 +80,8 @@ void LoadSettings() {
         s.passes = std::clamp(j.value("Passes", s.passes), 1, 4);
         s.profile = std::clamp(j.value("Profile", s.profile), 0,
                                static_cast<int>(ProfileOptions().size()) - 1);
+        s.model = std::clamp(j.value("Model", s.model), 0,
+                             static_cast<int>(ModelOptions().size()) - 1);
         s.intensity = std::clamp(j.value("Intensity", s.intensity), 0.0f, 1.0f);
         s.localTone = std::clamp(j.value("LocalTone", s.localTone), 0.0f, 2.0f);
         s.localStructure = std::clamp(j.value("LocalStructure", s.localStructure), 0.0f, 2.0f);
@@ -92,6 +99,7 @@ void SaveSettings() {
     j["NetworkResolutionPercent"] = s.networkResolutionPercent;
     j["Passes"] = s.passes;
     j["Profile"] = s.profile;
+    j["Model"] = s.model;
     j["Intensity"] = s.intensity;
     j["LocalTone"] = s.localTone;
     j["LocalStructure"] = s.localStructure;
@@ -117,6 +125,10 @@ static void WriteAppConfig() {
     j["work_scale"] = std::clamp(s.networkResolutionPercent, 30, 100) / 100.0;
     j["nr_passes"] = s.passes;
     j["profile"] = ProfileOptions()[s.profile];
+    // NeuralScreen pins the fine tuning to its own fixed value unless told
+    // that the emulator owns it; "style" is its name for the model.
+    j["external_tuning"] = true;
+    j["style"] = std::clamp(s.model, 0, static_cast<int>(ModelOptions().size()) - 1);
     j["intensity"] = s.intensity;
     j["local_tone"] = s.localTone;
     j["local_structure"] = s.localStructure;
