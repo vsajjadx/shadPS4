@@ -29,9 +29,6 @@ The patches add:
 - The compatibility list comes from the official database, with the games listed in
   `compatibility/overrides.json` on the `main` branch shown with the fork's status.
 - About links only to this repository.
-- File > Install Packages (PKG), from shadPS4 v0.7.0. Fake PKGs made with the default passcode
-  (32 zeros) install without keys, with keys derived as in LibOrbisPkg. For other PKGs the Fake keyset and
-  the PKG Derived Key3 keyset are read from the launcher's Crypto Key Manager.
 - Existing `user` and `launcher` folders next to the launcher (or in the working directory) are
   used before the standard ones, and the emulator runs in the same place, so saves and settings
   that already exist keep being used. New folders are only made when none exist.
