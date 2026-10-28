@@ -1,0 +1,94 @@
+From 8a01c822dba06d8eac7605cc6209f0c8bbec6a51 Mon Sep 17 00:00:00 2001
+From: vsajjadx <vsajjadx@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 05:16:33 +0000
+Subject: [PATCH] Honour fine tuning and model from the shadPS4 config
+
+compact-ui pins local tone, local structure and skin structure to 1.5
+because its own menu no longer has the sliders. When the emulator writes
+external_tuning, keep the values it carries (clamped to their measured
+range) and take the model (style) from the config as well.
+
+'reload' passed the queued parameters, which are the running ones, to
+request_apply, so a changed intensity, fine tuning or model never reached
+the worker. Resolve the parameters from the freshly read config instead.
+---
+ app/commands.py    | 13 ++++++++++---
+ app/settings_io.py | 21 +++++++++++++++++++--
+ 2 files changed, 29 insertions(+), 5 deletions(-)
+
+diff --git a/app/commands.py b/app/commands.py
+index 2d48f81..84a8b38 100644
+--- a/app/commands.py
++++ b/app/commands.py
+@@ -2039,7 +2039,8 @@ def drain_commands(st) -> bool:
+                 fresh = settings_io.load_config(st.cfg_path)
+                 keys = ("nr_on", "frame_generation", "nr_small", "work_scale",
+                         "nr_passes", "profile", "intensity", "local_tone",
+-                        "local_structure", "skin_structure")
++                        "local_structure", "skin_structure", "style",
++                        "external_tuning")
+                 old = {k: st.cfg.get(k) for k in keys}
+                 for k in keys:
+                     if k in fresh:
+@@ -2057,8 +2058,14 @@ def drain_commands(st) -> bool:
+                         st, ("nr_passes", int(st.cfg.get("nr_passes", 1) or 1)))
+                 if any(st.cfg.get(k) != old.get(k) for k in
+                        ("work_scale", "profile", "intensity", "local_tone",
+-                        "local_structure", "skin_structure")):
+-                    pipeline.request_apply(st, *settings_io.queued_apply(st))
++                        "local_structure", "skin_structure", "style",
++                        "external_tuning")):
++                    # The parameters are resolved from the fresh config: the
++                    # queued set is the running one, so passing it through
++                    # applied none of the new values (fine tuning, model).
++                    pipeline.request_apply(
++                        st, float(st.cfg.get("work_scale", st.work_scale)),
++                        st.cfg["profile"], settings_io.resolve_params(st.cfg))
+                 print("[main] config reloaded from " + str(st.cfg_path))
+             elif cmd in ("nr_passes_up", "nr_passes_down"):
+                 # The NR cascade one pass up or down (#126), through the same
+diff --git a/app/settings_io.py b/app/settings_io.py
+index 4b723e7..bb17fbf 100644
+--- a/app/settings_io.py
++++ b/app/settings_io.py
+@@ -1114,11 +1114,26 @@ FIXED_PARAM_VALUE = 1.5
+ FIXED_PARAM_KEYS = ("local_tone", "local_structure", "skin_structure")
+ 
+ 
++#: Set from the config's `external_tuning` by resolve_params. The shadPS4
++#: integration owns the fine tuning (local tone, local structure, skin
++#: structure) and writes the key, so fixed_params keeps what the config carries
++#: instead of pinning it. A module flag rather than an argument because every
++#: apply path (startup, menu, hotkeys, reload) goes through fixed_params.
++_external_tuning = False
++
++
+ def fixed_params(params: dict) -> dict:
+-    """A copy of `params` with the removed sliders pinned to their fixed value."""
++    """A copy of `params` with the removed sliders pinned to their fixed value.
++
++    With `external_tuning` in the config the values are kept, only pulled into
++    their measured range.
++    """
+     out = dict(params)
+     for key in FIXED_PARAM_KEYS:
+-        out[key] = clamp_param(key, FIXED_PARAM_VALUE)
++        if _external_tuning and key in out:
++            out[key] = clamp_param(key, out[key])
++        else:
++            out[key] = clamp_param(key, FIXED_PARAM_VALUE)
+     return out
+ 
+ 
+@@ -1154,6 +1169,8 @@ def resolve_params(cfg: dict) -> dict:
+         value = cfg.get(key)
+         if value is not None:
+             params[key] = clamp_param(key, value)
++    global _external_tuning
++    _external_tuning = bool(cfg.get("external_tuning", False))
+     return fixed_params(params)
+ 
+ 
+-- 
+2.43.0
+

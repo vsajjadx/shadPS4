@@ -18,10 +18,15 @@ struct Settings {
     int networkResolutionPercent = 65;
     int passes = 1;
     int profile = 1;
+    // Which network produces the picture: Default, Natural or Cinematic.
+    int model = 1;
     float intensity = 1.0f;
-    float localTone = 0.5f;
-    float localStructure = 1.0f;
-    float skinStructure = -1.0f;
+    // Fine tuning. The defaults are what NeuralScreen used before these
+    // options were exposed (its fixed 1.5), so an untouched install looks
+    // the same.
+    float localTone = 1.5f;
+    float localStructure = 1.5f;
+    float skinStructure = 1.5f;
 };
 
 Settings& GetSettings();
@@ -29,6 +34,7 @@ void LoadSettings();
 void SaveSettings();
 
 const std::vector<std::string>& ProfileOptions();
+const std::vector<std::string>& ModelOptions();
 
 bool IsRunning();
 bool StartForGameWindow(SDL_Window* window);
