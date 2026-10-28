@@ -291,12 +291,13 @@ jobs:
         run: |
           git clone --depth 1 --branch compact-ui-auto-quality https://github.com/vsajjadx/NeuralScreen.git ns
           git -C ns -c user.name=ci -c user.email=ci@localhost am "$GITHUB_WORKSPACE"/launcher/neuralscreen/*.patch
+          python -m pip install -q numpy
           python - <<'PY'
           # config.default.json must already be canonical for the patched settings_io
           import sys, json, types
           from copy import deepcopy
           from unittest.mock import MagicMock
-          sys.modules['winreg'] = MagicMock(); sys.modules['winapi'] = MagicMock()
+          for m in ('winreg', 'winapi', 'capture'): sys.modules[m] = MagicMock()
           sys.path[:0] = ['ns', 'ns/app']
           import settings_io as s
           d = json.load(open('ns/config.default.json', encoding='utf-8'))
