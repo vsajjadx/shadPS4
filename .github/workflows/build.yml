@@ -356,7 +356,14 @@ jobs:
         rm -rf ns-full ns-full.zip
         # The overlay lands on the full package, not beside it:
         # the patched Python, and everything the worker loads.
-        rm -f bundle/NeuralScreen/NeuralScreen.exe
+        # Only what the emulator runs stays: main.py, app, runtime, fonts,
+        # config.default.json and native. The rest of the release is dropped.
+        cd bundle/NeuralScreen
+        rm -rf .github docs tests
+        rm -f .gitattributes .gitignore CHANGELOG.md README.md RELEASING.md TECHNICAL.md \
+          NeuralScreen.exe NeuralScreen.vbs NeuralScreen-diag.vbs NeuralScreen.bat \
+          build_release_zip.py verify_github.py runtime-manifest.json
+        cd ../..
         test -f bundle/NeuralScreen/main.py
         test -f bundle/NeuralScreen/app/control.py
         test -f bundle/NeuralScreen/native/nvngx.dll
