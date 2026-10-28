@@ -12,6 +12,9 @@
 #include "neural_screen.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <thread>
@@ -157,17 +160,17 @@ bool IsRunning() {
 
 #ifdef _WIN32
 
-static bool SendCommand(const std::string& word) {
+static std::string SendForReply(const std::string& word) {
     static bool winsockReady = [] {
         WSADATA data;
         return WSAStartup(MAKEWORD(2, 2), &data) == 0;
     }();
     if (!winsockReady) {
-        return false;
+        return {};
     }
     SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock == INVALID_SOCKET) {
-        return false;
+        return {};
     }
     u_long nonBlocking = 1;
     ioctlsocket(sock, FIONBIO, &nonBlocking);
@@ -182,19 +185,46 @@ static bool SendCommand(const std::string& word) {
     timeval timeout{0, 300000};
     if (select(static_cast<int>(sock) + 1, nullptr, &set, nullptr, &timeout) <= 0) {
         closesocket(sock);
-        return false;
+        return {};
     }
     u_long blocking = 0;
     ioctlsocket(sock, FIONBIO, &blocking);
     std::string line = word + "\n";
     if (send(sock, line.c_str(), static_cast<int>(line.size()), 0) <= 0) {
         closesocket(sock);
-        return false;
+        return {};
     }
     char reply[64]{};
     recv(sock, reply, sizeof(reply) - 1, 0);
     closesocket(sock);
-    return std::string(reply).find("ok") != std::string::npos;
+    return reply;
+}
+
+static bool SendCommand(const std::string& word) {
+    return SendForReply(word).find("ok") != std::string::npos;
+}
+
+// The frame rate NeuralScreen really puts on the screen. The emulator's own
+// counter counts the frames the game presents and cannot see the work done in
+// the NeuralScreen process afterwards, so while NeuralScreen runs it is asked.
+// Negative: nothing to report (NR off with no Frame Generation, or no answer).
+static std::atomic<float> g_outputFps{-1.0f};
+static std::atomic<bool> g_pollStop{false};
+static std::thread g_poller;
+
+static void PollOutputFps() {
+    while (!g_pollStop) {
+        float value = -1.0f;
+        const std::string reply = SendForReply("fps");
+        if (reply.rfind("ok ", 0) == 0 && reply.compare(3, 4, "none") != 0) {
+            value = static_cast<float>(std::atof(reply.c_str() + 3));
+        }
+        g_outputFps = value;
+        for (int i = 0; i < 5 && !g_pollStop; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+    g_outputFps = -1.0f;
 }
 
 static std::filesystem::path FindDirectory() {
@@ -279,6 +309,8 @@ bool StartForGameWindow(SDL_Window* window) {
         return false;
     }
     g_running = true;
+    g_pollStop = false;
+    g_poller = std::thread(PollOutputFps);
     LOG_INFO(Loader, "NeuralScreen started on the game window (DLSS5 on | FG {} | Boost {})",
              EmulatorSettings.IsFrameGenerationEnabled() ? "on" : "off",
              GetSettings().boost ? "on" : "off");
@@ -288,6 +320,10 @@ bool StartForGameWindow(SDL_Window* window) {
 void Stop() {
     if (!g_running) {
         return;
+    }
+    g_pollStop = true;
+    if (g_poller.joinable()) {
+        g_poller.join();
     }
     SendCommand("quit");
     if (WaitForSingleObject(g_process.hProcess, 5000) == WAIT_TIMEOUT) {
@@ -322,6 +358,14 @@ static std::optional<bool> SendHotkey(const char* word, bool& state) {
     return state;
 }
 
+std::optional<float> GetOutputFps() {
+    const float value = g_outputFps;
+    if (!g_running || value < 0.0f) {
+        return std::nullopt;
+    }
+    return value;
+}
+
 std::optional<bool> ToggleFrameGeneration() {
     return SendHotkey("fg", g_frameGenerationOn);
 }
@@ -344,6 +388,10 @@ void Stop() {}
 
 void ApplySettings() {
     WriteAppConfig();
+}
+
+std::optional<float> GetOutputFps() {
+    return std::nullopt;
 }
 
 std::optional<bool> ToggleFrameGeneration() {
