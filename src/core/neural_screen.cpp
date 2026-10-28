@@ -261,25 +261,37 @@ static std::filesystem::path FindPython(const std::filesystem::path& dir) {
 }
 
 bool StartForGameWindow(SDL_Window* window) {
-    if (!GetSettings().enabled || g_running) {
+    if (g_running) {
         return false;
     }
+    // NeuralScreen also carries Frame Generation, so it starts with DLSS5 off
+    // too: NR then comes up off (nr_on = false in the generated config) and the
+    // frame generation setting and hotkey still work. A missing install is only
+    // reported when something that needs it is switched on.
+    const bool wanted = GetSettings().enabled || EmulatorSettings.IsFrameGenerationEnabled();
     const auto dir = FindDirectory();
     if (dir.empty()) {
-        LOG_WARNING(Loader, "NeuralScreen was not found next to the emulator - "
-                            "DLSS5 is configured but will not run");
+        if (wanted) {
+            LOG_WARNING(Loader, "NeuralScreen was not found next to the emulator - "
+                                "DLSS5 / frame generation is configured but will not run");
+        }
         return false;
     }
     std::error_code ec;
     if (!std::filesystem::is_regular_file(dir / "native" / "nvngx.dll", ec) ||
         !std::filesystem::is_regular_file(dir / "native" / "nvngx_dlssnr.dll", ec)) {
-        LOG_WARNING(Loader, "NeuralScreen: native\\nvngx.dll or native\\nvngx_dlssnr.dll is missing, "
-                            "DLSS5 is off");
+        if (wanted) {
+            LOG_WARNING(Loader, "NeuralScreen: native\\nvngx.dll or native\\nvngx_dlssnr.dll is "
+                                "missing, DLSS5 / frame generation is off");
+        }
         return false;
     }
     const auto python = FindPython(dir);
     if (python.empty()) {
-        LOG_WARNING(Loader, "NeuralScreen: pythonw.exe was not found, DLSS5 is off");
+        if (wanted) {
+            LOG_WARNING(Loader, "NeuralScreen: pythonw.exe was not found, DLSS5 / frame "
+                                "generation is off");
+        }
         return false;
     }
     WriteAppConfig();
@@ -311,7 +323,8 @@ bool StartForGameWindow(SDL_Window* window) {
     g_running = true;
     g_pollStop = false;
     g_poller = std::thread(PollOutputFps);
-    LOG_INFO(Loader, "NeuralScreen started on the game window (DLSS5 on | FG {} | Boost {})",
+    LOG_INFO(Loader, "NeuralScreen started on the game window (DLSS5 {} | FG {} | Boost {})",
+             GetSettings().enabled ? "on" : "off",
              EmulatorSettings.IsFrameGenerationEnabled() ? "on" : "off",
              GetSettings().boost ? "on" : "off");
     return true;
