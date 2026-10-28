@@ -42,6 +42,11 @@ bool StartForGameWindow(SDL_Window* window);
 void Stop();
 void ApplySettings();
 
+// The rate NeuralScreen really shows (real + generated frames), or nothing when
+// it is not running or has nothing to report - then the emulator's own counter
+// is the right one.
+std::optional<float> GetOutputFps();
+
 std::optional<bool> ToggleFrameGeneration();
 std::optional<bool> ToggleDLSS5();
 std::optional<bool> ToggleBoost();
