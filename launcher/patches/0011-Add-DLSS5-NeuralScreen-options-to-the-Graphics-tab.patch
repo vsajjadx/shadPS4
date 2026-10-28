@@ -160,8 +160,8 @@ index 0df6c30..26b72da 100644
 +        slider->setValue(qRound(qBound(min, value, max) * 100.0));
 +    };
 +
-+    dlss5CheckBox->setChecked(j.value("Enabled").toBool(true));
-+    dlss5BoostCheckBox->setChecked(j.value("Boost").toBool(true));
++    dlss5CheckBox->setChecked(j.value("Enabled").toBool(false));
++    dlss5BoostCheckBox->setChecked(j.value("Boost").toBool(false));
 +    selectData(dlss5ResolutionComboBox,
 +               qBound(30, j.value("NetworkResolutionPercent").toInt(65), 100));
 +    selectData(dlss5PassesComboBox, qBound(1, j.value("Passes").toInt(1), 4));

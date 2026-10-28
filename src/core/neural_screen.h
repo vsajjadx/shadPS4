@@ -14,8 +14,8 @@ struct SDL_Window;
 namespace NeuralScreen {
 
 struct Settings {
-    bool enabled = true;
-    bool boost = true;
+    bool enabled = false;
+    bool boost = false;
     // NeuralScreen's automatic resolution (auto_quality); acts with Boost on.
     bool autoQuality = false;
     int networkResolutionPercent = 65;
