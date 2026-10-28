@@ -291,13 +291,24 @@ jobs:
         run: |
           git clone --depth 1 --branch compact-ui-auto-quality https://github.com/vsajjadx/NeuralScreen.git ns
           git -C ns -c user.name=ci -c user.email=ci@localhost am "$GITHUB_WORKSPACE"/launcher/neuralscreen/*.patch
+          python - <<'PY'
+          # config.default.json must already be canonical for the patched settings_io
+          import sys, json, types
+          from copy import deepcopy
+          from unittest.mock import MagicMock
+          sys.modules['winreg'] = MagicMock(); sys.modules['winapi'] = MagicMock()
+          sys.path[:0] = ['ns', 'ns/app']
+          import settings_io as s
+          d = json.load(open('ns/config.default.json', encoding='utf-8'))
+          assert s._validate_config(deepcopy(d)) == d, 'config.default.json is not canonical'
+          PY
           python -m py_compile ns/main.py ns/app/commands.py ns/app/control.py ns/app/settings_io.py ns/app/startup.py ns/app/overlay_ui.py ns/app/i18n.py ns/app/diagnostics.py ns/app/quality_governor.py
 
       - name: Stage the overlay
         shell: bash
         run: |
           mkdir -p overlay/NeuralScreen/app
-          cp ns/main.py overlay/NeuralScreen/
+          cp ns/main.py ns/config.default.json overlay/NeuralScreen/
           cp ns/app/commands.py ns/app/control.py ns/app/settings_io.py ns/app/startup.py ns/app/overlay_ui.py ns/app/i18n.py ns/app/diagnostics.py ns/app/quality_governor.py overlay/NeuralScreen/app/
           ls -la overlay/NeuralScreen overlay/NeuralScreen/app
 
