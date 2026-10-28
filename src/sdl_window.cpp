@@ -282,6 +282,21 @@ void WindowSDL::WaitEvent() {
             Libraries::Kernel::DumpThreadsForHang("requested with Ctrl+L");
             break;
         }
+        // Alt+Enter toggles borderless fullscreen, also when the game runs in a window.
+        if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) {
+            const bool is_enter = event.key.key == SDLK_RETURN || event.key.key == SDLK_KP_ENTER;
+            if (is_enter && (event.key.mod & SDL_KMOD_ALT)) {
+                if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) {
+                    const bool fullscreen = (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0;
+                    if (!fullscreen) {
+                        // A NULL mode is borderless fullscreen at the desktop resolution.
+                        SDL_SetWindowFullscreenMode(window, nullptr);
+                    }
+                    SDL_SetWindowFullscreen(window, !fullscreen);
+                }
+                break;
+            }
+        }
         OnKeyboardMouseInput(&event);
         break;
     case SDL_EVENT_GAMEPAD_ADDED:

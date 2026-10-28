@@ -51,8 +51,8 @@ index 087659d..2fd92b6 100644
  void SettingsDialog::LoadDlss5Settings() {
 @@ -1834,6 +1847,8 @@ void SettingsDialog::LoadDlss5Settings() {
  
-     dlss5CheckBox->setChecked(j.value("Enabled").toBool(true));
-     dlss5BoostCheckBox->setChecked(j.value("Boost").toBool(true));
+     dlss5CheckBox->setChecked(j.value("Enabled").toBool(false));
+     dlss5BoostCheckBox->setChecked(j.value("Boost").toBool(false));
 +    dlss5AutoQualityCheckBox->setChecked(j.value("AutoQuality").toBool(false));
 +    dlss5AutoQualityCheckBox->setEnabled(dlss5BoostCheckBox->isChecked());
      selectData(dlss5ResolutionComboBox,
