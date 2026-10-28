@@ -1,0 +1,69 @@
+From a2b7dcb5eeffd609124ab9b23bd033e1c1ff3894 Mon Sep 17 00:00:00 2001
+From: vsajjadx <vsajjadx@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 07:42:05 +0000
+Subject: [PATCH] No taskbar window and no in-app hotkeys when attached to a
+ game window
+
+The copy shadPS4 starts with --window is driven by the emulator's keys and
+the control endpoint. Without the taskbar window there is no button to
+click, and without its global hotkeys nothing opens the overlay menu.
+---
+ app/startup.py | 35 ++++++++++++++++++++---------------
+ 1 file changed, 20 insertions(+), 15 deletions(-)
+
+diff --git a/app/startup.py b/app/startup.py
+index 34a5877..9cb4887 100644
+--- a/app/startup.py
++++ b/app/startup.py
+@@ -904,20 +904,24 @@ def bring_up(st) -> None:
+     # window gives the program a real taskbar button; clicking it sends
+     # the same "settings" command as a left click on the tray (user
+     # rule 2026-09-09: the program must always show in the taskbar).
+-    st.taskbar = TaskbarWindow(st.tray_commands, "NeuralScreen")
+-    # What the taskbar button's minimise and close mean (#93). The window
+-    # procedure runs on its own thread and must not read the config, so the
+-    # two answers are pushed into it here and again whenever they change.
+-    st.taskbar.to_tray_on_minimise = bool(st.cfg.get("tray_on_minimise", False))
+-    st.taskbar.to_tray_on_close = bool(st.cfg.get("tray_on_close", False))
+-    # #171: with "Minimise to tray" on the program starts in the tray - the
+-    # button is created hidden, and only while the tray icon really runs (it
+-    # is the one way back).
+-    st.taskbar.start_hidden = bool(st.pending_window) or _starts_in_tray(st)
+-    st.in_tray = st.taskbar.start_hidden
+-    st.taskbar.start()
+-    print("[main] taskbar window started"
+-          + (" - in the tray (Minimise to tray is on)" if st.in_tray else ""))
++    if st.pending_window:
++        st.taskbar = None
++        st.in_tray = False
++    else:
++        st.taskbar = TaskbarWindow(st.tray_commands, "NeuralScreen")
++        # What the taskbar button's minimise and close mean (#93). The window
++        # procedure runs on its own thread and must not read the config, so the
++        # two answers are pushed into it here and again whenever they change.
++        st.taskbar.to_tray_on_minimise = bool(st.cfg.get("tray_on_minimise", False))
++        st.taskbar.to_tray_on_close = bool(st.cfg.get("tray_on_close", False))
++        # #171: with "Minimise to tray" on the program starts in the tray - the
++        # button is created hidden, and only while the tray icon really runs (it
++        # is the one way back).
++        st.taskbar.start_hidden = _starts_in_tray(st)
++        st.in_tray = st.taskbar.start_hidden
++        st.taskbar.start()
++        print("[main] taskbar window started"
++              + (" - in the tray (Minimise to tray is on)" if st.in_tray else ""))
+ 
+     # Global hotkeys: RegisterHotKey rather than polling the key state.
+     # The system gives the keypress to us alone and does not pass it to the
+@@ -936,7 +940,8 @@ def bring_up(st) -> None:
+     # asked to stay out of the way. set_enabled() would also work after
+     # start(), but only as a correction of a state that should never have
+     # existed.
+-    hotkeys_on = st.cfg.get("hotkeys_enabled", True) is not False
++    hotkeys_on = (st.cfg.get("hotkeys_enabled", True) is not False
++                  and not st.pending_window)
+     st.hotkeys.set_enabled(hotkeys_on)
+     st.hotkeys.start()
+     if not hotkeys_on:
+-- 
+2.43.0
+
