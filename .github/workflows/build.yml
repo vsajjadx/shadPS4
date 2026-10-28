@@ -279,7 +279,7 @@ jobs:
   # DLSS5: NeuralScreen ships inside the Windows package. The base is the
   # published full package (runtime + the NVIDIA dll are not in any
   # repository); this job rebuilds only what the integration changes - the
-  # Python sources and the launcher exe - from the compact-ui sources plus
+  # Python sources - from the compact-ui sources plus
   # the patches under launcher/neuralscreen.
   neuralscreen-overlay:
     runs-on: windows-2025
@@ -296,13 +296,6 @@ jobs:
           git -C ns -c user.name=ci -c user.email=ci@localhost am "$GITHUB_WORKSPACE"/launcher/neuralscreen/*.patch
           python -m py_compile ns/main.py ns/app/commands.py ns/app/control.py ns/app/settings_io.py
 
-      - name: Build the launcher exe
-        shell: cmd
-        run: |
-          cd ns\native
-          rc /nologo /fo launcher.res launcher.rc
-          cl /nologo /O2 /EHsc /W3 /MD launcher.cpp launcher.res /Fe:..\NeuralScreen.exe /link /SUBSYSTEM:WINDOWS shell32.lib shlwapi.lib user32.lib kernel32.lib
-
       # Answers on the user's own GPU whether the NR runtime creates its
       # feature through Vulkan (tools/nr_vk_probe); shipped next to the runtime.
       - name: Build the NR Vulkan probe
@@ -318,7 +311,6 @@ jobs:
           cp ns/native/nvngx.dll_vkprobe.exe overlay/NeuralScreen/native/
           cp ns/main.py overlay/NeuralScreen/
           cp ns/app/commands.py ns/app/control.py ns/app/settings_io.py overlay/NeuralScreen/app/
-          cp ns/NeuralScreen.exe overlay/NeuralScreen/
           ls -la overlay/NeuralScreen overlay/NeuralScreen/app
 
       - uses: actions/upload-artifact@v7
@@ -349,8 +341,8 @@ jobs:
         path: ns-overlay
 
     # DLSS5: the published full package embedded beside the emulator, with
-    # the integration's Python sources and launcher exe laid over it. The
-    # emulator starts NeuralScreen\NeuralScreen.exe with the game window.
+    # the integration's Python sources laid over it. The
+    # emulator starts NeuralScreen\runtime\pythonw.exe main.py with the game window.
     - name: Embed NeuralScreen (DLSS5)
       run: |
         curl -fL --retry 3 -o ns-full.zip \
@@ -362,9 +354,9 @@ jobs:
         cp -a ns-full/NeuralScreen/. bundle/NeuralScreen/
         cp -a ns-overlay/NeuralScreen/. bundle/NeuralScreen/
         rm -rf ns-full ns-full.zip
-        # The overlay lands on the full package, not beside it: the launcher
-        # exe, the patched Python, and everything the worker loads.
-        test -f bundle/NeuralScreen/NeuralScreen.exe
+        # The overlay lands on the full package, not beside it:
+        # the patched Python, and everything the worker loads.
+        rm -f bundle/NeuralScreen/NeuralScreen.exe
         test -f bundle/NeuralScreen/main.py
         test -f bundle/NeuralScreen/app/control.py
         test -f bundle/NeuralScreen/native/nvngx.dll
