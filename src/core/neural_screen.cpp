@@ -264,12 +264,14 @@ static std::filesystem::path FindPython(const std::filesystem::path& dir) {
 }
 
 bool StartForGameWindow(SDL_Window* window) {
-    // NeuralScreen also carries Frame Generation, so it starts when either is on;
-    // with both off it stays out of the game window, which then keeps the keyboard.
-    const bool wanted = GetSettings().enabled || EmulatorSettings.IsFrameGenerationEnabled();
-    if (g_running || !wanted) {
+    if (g_running) {
         return false;
     }
+    // NeuralScreen also carries Frame Generation, so it starts with DLSS5 off
+    // too: NR then comes up off (nr_on = false in the generated config) and the
+    // frame generation setting and hotkey still work. A missing install is only
+    // reported when something that needs it is switched on.
+    const bool wanted = GetSettings().enabled || EmulatorSettings.IsFrameGenerationEnabled();
     const auto dir = FindDirectory();
     if (dir.empty()) {
         if (wanted) {

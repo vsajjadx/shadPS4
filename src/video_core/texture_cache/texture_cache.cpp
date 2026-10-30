@@ -184,8 +184,7 @@ void TextureCache::SyncAliasedImages(ImageId image_id, const ImageViewInfo& view
     // An alias that the CPU or a buffer write overwrote since it was written holds stale data.
     ForEachImageInRegion(begin, end - begin, [&](ImageId id, Image& other) {
         if (id == image_id || other.alias_write_seq <= own_seq || !other.HasGpuValidData() ||
-            True(other.flags & ImageFlagBits::MaybeGpuDirty) || other.info.num_samples > 1 ||
-            other.info.guest_address >= end ||
+            other.info.num_samples > 1 || other.info.guest_address >= end ||
             other.info.guest_address + other.info.guest_size <= begin) {
             return;
         }
