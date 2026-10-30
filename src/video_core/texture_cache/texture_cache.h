@@ -160,11 +160,6 @@ public:
         RefreshImage(image);
     }
 
-    /// Records a GPU write to the image made outside of a target or storage binding.
-    void MarkAsGpuWritten(Image& image) {
-        image.alias_write_seq = ++alias_seq;
-    }
-
     /// Resolves overlap between existing cache image and pending merged image
     [[nodiscard]] std::tuple<ImageId, int, int> ResolveOverlap(const ImageInfo& info,
                                                                BindingType binding,
@@ -368,8 +363,7 @@ private:
     boost::container::small_vector<vk::BufferImageCopy, 8> GuestCopies(const Image& image) const;
 
     /// Reloads an image from the buffer cache when an image aliasing its memory was written
-    /// after it and still holds what it wrote, writing those images back in the order they
-    /// were written.
+    /// after it, writing every aliasing image back in the order they were written.
     void SyncAliasedImages(ImageId image_id, const ImageViewInfo& view);
 
     /// Writes the part of an image within [begin, end) back to the buffer cache.

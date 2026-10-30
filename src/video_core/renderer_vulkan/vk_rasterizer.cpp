@@ -726,7 +726,6 @@ bool Rasterizer::IsComputeImageCopy(const Pipeline* pipeline) {
     VideoCore::Image& src_image = desc0.is_written ? image1 : image0;
     VideoCore::Image& dst_image = desc0.is_written ? image0 : image1;
     runtime.CopyColorAndDepth(&src_image, &dst_image);
-    texture_cache.MarkAsGpuWritten(dst_image);
     return true;
 }
 
@@ -789,7 +788,6 @@ bool Rasterizer::IsComputeImageClear(const Pipeline* pipeline) {
         .extent = image1.info.resources,
     };
     runtime.ClearImage(&image1, range, clear);
-    texture_cache.MarkAsGpuWritten(image1);
     return true;
 }
 
@@ -1412,7 +1410,6 @@ void Rasterizer::Resolve() {
                                  liverpool->regs.color_buffers[1].Address()));
     runtime.ResolveImage(&mrt0_image, &mrt1_image, mrt0_desc.view_info.range,
                          mrt1_desc.view_info.range);
-    texture_cache.MarkAsGpuWritten(mrt1_image);
     ScopeMarkerEnd();
 }
 
@@ -1442,7 +1439,6 @@ void Rasterizer::DepthStencilCopy(bool is_depth, bool is_stencil) {
         regs.depth_buffer.StencilWriteAddress()));
 
     runtime.CopyDepthStencil(&read_image, &write_image, sub_range);
-    texture_cache.MarkAsGpuWritten(write_image);
 
     ScopeMarkerEnd();
 }
