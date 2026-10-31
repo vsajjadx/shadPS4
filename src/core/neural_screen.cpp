@@ -49,6 +49,23 @@ static bool g_loaded = false;
 #ifdef _WIN32
 static PROCESS_INFORMATION g_process = {};
 static bool g_running = false;
+
+/// A job that ends NeuralScreen when the emulator exits in any way, even when it crashes or is
+/// killed; a NeuralScreen left behind falls back to capturing the whole screen.
+static HANDLE LifetimeJob() {
+    static const HANDLE job = [] {
+        const HANDLE created = CreateJobObjectW(nullptr, nullptr);
+        if (!created) {
+            return created;
+        }
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        SetInformationJobObject(created, JobObjectExtendedLimitInformation, &limits,
+                                sizeof(limits));
+        return created;
+    }();
+    return job;
+}
 #endif
 static bool g_frameGenerationOn = false;
 static bool g_dlss5On = false;
@@ -317,12 +334,19 @@ bool StartForGameWindow(SDL_Window* window) {
     startup.dwFlags = STARTF_USESHOWWINDOW;
     startup.wShowWindow = SW_HIDE;
     std::wstring command = cmd.str();
-    if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr,
-                        dir.wstring().c_str(), &startup, &g_process)) {
+    if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, dir.wstring().c_str(),
+                        &startup, &g_process)) {
         LOG_WARNING(Loader, "NeuralScreen could not be started ({}), DLSS5 is off", GetLastError());
         g_running = false;
         return false;
     }
+    if (const HANDLE job = LifetimeJob();
+        !job || !AssignProcessToJobObject(job, g_process.hProcess)) {
+        LOG_WARNING(Loader, "NeuralScreen: could not tie it to the emulator's lifetime ({})",
+                    GetLastError());
+    }
+    ResumeThread(g_process.hThread);
     g_running = true;
     g_pollStop = false;
     g_poller = std::thread(PollOutputFps);
