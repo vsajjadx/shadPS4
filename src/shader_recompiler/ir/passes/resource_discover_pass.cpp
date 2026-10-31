@@ -307,11 +307,8 @@ void MarkReadConstBufferSharpSources(const SharpReference& sharp) {
         if (!source) {
             continue;
         }
-        if (!IsSharpSource(source)) {
-            LOG_WARNING(Render_Recompiler, "Sharp dword {} produced by unhandled {}", i,
-                        IR::NameOf(source->GetOpcode()));
-            continue;
-        }
+        ASSERT_MSG(IsSharpSource(source), "sharp dword {} produced by {}", i,
+                   IR::NameOf(source->GetOpcode()));
         if (source->GetOpcode() == IR::Opcode::ReadConstBuffer) {
             auto flags = source->Flags<IR::BufferInstInfo>();
             flags.sharp_source.Assign(1u);
