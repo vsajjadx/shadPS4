@@ -914,6 +914,8 @@ static void DispatchPendingNpStateCallbacks() {
             return;
         }
         pending_events.swap(g_np_state_events);
+        LOG_INFO(Lib_NpManager, "DBG dispatching {} NP state event(s), toolkit callback={}",
+                 pending_events.size(), NpStateCbForNp.func != nullptr);
         legacy_callback = LegacyNpStateCb;
         callbacks = g_np_state_callbacks;
         toolkit_callback = NpStateCbForNp;

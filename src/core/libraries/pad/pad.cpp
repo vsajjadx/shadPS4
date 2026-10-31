@@ -12,6 +12,7 @@
 #include "input/controller.h"
 #include "pad.h"
 
+#include <atomic>
 #include <algorithm>
 #include <array>
 #include <optional>
@@ -441,7 +442,25 @@ int PS4_SYSV_ABI scePadRead(s32 handle, OrbisPadData* pData, s32 num) {
     auto& controller = *it->second;
     std::array<Input::State, ORBIS_PAD_MAX_DATA_NUM> states;
     const int ret_num = controller.ReadStates(states.data(), num);
-    return ProcessStates(pData, states.data(), ret_num);
+    const int ret = ProcessStates(pData, states.data(), ret_num);
+    {
+        // DBG: log whenever what the game sees changes (rate limited by change detection).
+        static std::atomic<int> dbg_logs{0};
+        static std::atomic<u64> dbg_last{~0ull};
+        static std::atomic<u64> dbg_calls{0};
+        const u64 calls = ++dbg_calls;
+        const bool intercepted = ImGui::Core::IsGamepadInputCaptured();
+        const u64 key = (static_cast<u64>(pData[0].buttons) << 8) |
+                        (static_cast<u64>(pData[0].connected) << 1) | (intercepted ? 1 : 0);
+        if (key != dbg_last.exchange(key) && dbg_logs.fetch_add(1) < 1500) {
+            LOG_INFO(Lib_Pad,
+                     "DBG scePadRead #{} handle={} num={} ret={} buttons={:#x} connected={} "
+                     "intercepted={} user_id={}",
+                     calls, handle, num, ret, static_cast<u32>(pData[0].buttons),
+                     pData[0].connected, intercepted, controller.user_id);
+        }
+    }
+    return ret;
 }
 
 int PS4_SYSV_ABI scePadReadBlasterForTracker() {

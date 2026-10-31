@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_hints.h>
 #include <SDL3/SDL_init.h>
@@ -27,6 +28,7 @@
 #include "imgui/brightness_layer.h"
 #include "imgui/friends_layer.h"
 #include "imgui/notifications_layer.h"
+#include "common/logging/log.h"
 #include "imgui/renderer/imgui_core.h"
 #include "input/controller.h"
 #include "input/input_handler.h"
@@ -250,12 +252,28 @@ void WindowSDL::WaitEvent() {
         return;
     }
 
+    const bool dbg_is_pad_button =
+        event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || event.type == SDL_EVENT_GAMEPAD_BUTTON_UP;
+    static std::atomic<int> dbg_logs{0};
+
     if (Libraries::Mouse::PushSDLEvent(event) || Libraries::Keyboard::PushSDLEvent(event)) {
+        if (dbg_is_pad_button && dbg_logs.fetch_add(1) < 600) {
+            LOG_INFO(Input, "DBG pad button {} swallowed by Mouse/Keyboard HLE", event.gbutton.button);
+        }
         return;
     }
 
     if (ImGui::Core::ProcessEvent(&event)) {
+        if (dbg_is_pad_button && dbg_logs.fetch_add(1) < 600) {
+            LOG_INFO(Input, "DBG pad button {} down={} swallowed by ImGui (captured={})",
+                     event.gbutton.button, event.gbutton.down,
+                     ImGui::Core::IsGamepadInputCaptured());
+        }
         return;
+    }
+    if (dbg_is_pad_button && dbg_logs.fetch_add(1) < 600) {
+        LOG_INFO(Input, "DBG pad button {} down={} reaches emulator input", event.gbutton.button,
+                 event.gbutton.down);
     }
 
     switch (event.type) {

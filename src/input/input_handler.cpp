@@ -617,6 +617,9 @@ void ParseInputConfig(const std::string game_id = "") {
     for (auto& c : connections) {
         LOG_DEBUG(Input, "Binding: {} : {}", c.output->ToString(), c.binding.ToString());
     }
+    LOG_INFO(Input, "DBG ParseInputConfig game_id='{}' config='{}' global='{}' bindings={}",
+             game_id_or_default, config_file.string(), global_config_file.string(),
+             connections.size());
     LOG_DEBUG(Input, "Done parsing the input config!");
 }
 

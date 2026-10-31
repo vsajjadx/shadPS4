@@ -1,6 +1,7 @@
 ﻿// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <array>
 #include <algorithm>
 #include <cmath>
@@ -97,6 +98,13 @@ int GameController::ReadStates(State* states, int states_num) {
 }
 
 void GameController::Button(OrbisPadButtonDataOffset button, bool is_pressed) {
+    {
+        static std::atomic<int> dbg_logs{0};
+        if (dbg_logs.fetch_add(1) < 1000) {
+            LOG_INFO(Input, "DBG GameController::Button button={:#x} pressed={} connected={}",
+                     static_cast<u32>(button), is_pressed, m_state.connected);
+        }
+    }
     std::lock_guard lock{m_state_mutex};
     const u32 was_pressed = static_cast<u32>(m_state.buttonsState) & static_cast<u32>(button);
     m_state.OnButton(button, is_pressed);
