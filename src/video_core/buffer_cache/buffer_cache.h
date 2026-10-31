@@ -101,6 +101,9 @@ public:
     /// Invalidates any buffer in the logical page range.
     void InvalidateMemory(VAddr device_addr, u64 size, bool assume_locks = false);
 
+    /// Frees the sparse backing of unmapped guest memory for reuse. Runs on the GPU thread.
+    void ReleaseResidency(VAddr device_addr, u64 size);
+
     /// Unmark a region as modified from the GPU.
     void UnmarkRegionAsGpuModified(VAddr device_addr, u64 size, bool is_write = false);
 
@@ -218,6 +221,7 @@ private:
         }
     };
     IntervalList<Backing> resident_ranges;
+    std::vector<Backing> free_backings;
     vk::DeviceMemory backing_slab{};
     u64 backing_slab_blocks{};
     u64 backing_slab_used{};

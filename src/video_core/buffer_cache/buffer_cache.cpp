@@ -568,19 +568,33 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
     for (const auto& range : bind_ranges) {
         // A range may be split across two backing slabs.
         for (u64 start = range.start; start < range.end;) {
-            if (backing_slab_used == backing_slab_blocks) {
-                AllocateBackingSlab();
-            }
-            const u64 num_blocks =
-                std::min<u64>(range.end - start, backing_slab_blocks - backing_slab_used);
-
             Backing backing;
             backing.start = start;
-            backing.end = start + num_blocks;
-            backing.memory = backing_slab;
-            backing.offset = backing_slab_used;
+            // Backing that unmapped memory gave back is used before a slab grows.
+            if (!free_backings.empty()) {
+                Backing& free = free_backings.back();
+                const u64 num_blocks = std::min<u64>(range.end - start, free.end - free.start);
+                backing.end = start + num_blocks;
+                backing.memory = free.memory;
+                backing.offset = free.offset;
+                free.start += num_blocks;
+                free.offset += num_blocks;
+                if (free.start == free.end) {
+                    free_backings.pop_back();
+                }
+            } else {
+                if (backing_slab_used == backing_slab_blocks) {
+                    AllocateBackingSlab();
+                }
+                const u64 num_blocks =
+                    std::min<u64>(range.end - start, backing_slab_blocks - backing_slab_used);
+                backing.end = start + num_blocks;
+                backing.memory = backing_slab;
+                backing.offset = backing_slab_used;
+                backing_slab_used += num_blocks;
+            }
+            const u64 num_blocks = backing.end - backing.start;
             resident_ranges.Add(backing);
-            backing_slab_used += num_blocks;
 
             LOG_DEBUG(Render, "Making range start={}, end={} resident", backing.start, backing.end);
 
@@ -603,6 +617,51 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
 
     staging.Flush();
     runtime.CopyBuffer(staging.buffer, bda_pagetable_buffer.get(), copies);
+}
+
+void BufferCache::ReleaseResidency(VAddr device_addr, u64 size) {
+    // Only blocks the unmapped range covers whole are released.
+    const u64 first_block = Common::AlignUp(device_addr, block_size) >> block_shift;
+    const u64 end_block = (device_addr + size) >> block_shift;
+    if (first_block >= end_block) {
+        return;
+    }
+    SmallVector<Backing, 8> released;
+    resident_ranges.ForEachInRange(first_block, end_block, [&](const Backing& backing) {
+        released.push_back(backing.SubRange(std::max(first_block, backing.start),
+                                            std::min(end_block, backing.end)));
+    });
+    if (released.empty()) {
+        return;
+    }
+    resident_ranges.Subtract(first_block, end_block);
+    for (const Buffer& arena : arenas) {
+        const u64 arena_begin = arena.CpuAddr() >> block_shift;
+        const u64 arena_end = (arena.CpuAddr() + arena.SizeBytes()) >> block_shift;
+        for (const Backing& backing : released) {
+            const u64 start = std::max(arena_begin, backing.start);
+            const u64 end = std::min(arena_end, backing.end);
+            if (start >= end) {
+                continue;
+            }
+            auto& binds = BindsForArena(&arena)->binds;
+            const u64 offset = (start << block_shift) - arena.CpuAddr();
+            const u64 limit = (end << block_shift) - arena.CpuAddr();
+            binds.erase(std::remove_if(binds.begin(), binds.end(),
+                                       [&](const vk::SparseMemoryBind& bind) {
+                                           return bind.resourceOffset >= offset &&
+                                                  bind.resourceOffset + bind.size <= limit;
+                                       }),
+                        binds.end());
+            binds.push_back(vk::SparseMemoryBind{
+                .resourceOffset = (start << block_shift) - arena.CpuAddr(),
+                .size = (end - start) << block_shift,
+            });
+        }
+    }
+    for (const Backing& backing : released) {
+        free_backings.push_back({{0, backing.end - backing.start}, backing.memory, backing.offset});
+    }
 }
 
 bool BufferCache::SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 size,

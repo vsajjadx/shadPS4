@@ -1850,9 +1850,13 @@ void Rasterizer::UnmapMemory(VAddr addr, u64 size) {
     // the GPU thread and wait, as CPU fault flushes do. (From shadGT FIX-026.)
     const auto gpu_thread = liverpool->GetGpuCommandProcessorThread();
     if (gpu_thread != std::thread::id{} && std::this_thread::get_id() != gpu_thread) {
-        liverpool->SendCommand<true>([&] { texture_cache.UnmapMemory(addr, size); });
+        liverpool->SendCommand<true>([&] {
+            texture_cache.UnmapMemory(addr, size);
+            buffer_cache.ReleaseResidency(addr, size);
+        });
     } else {
         texture_cache.UnmapMemory(addr, size);
+        buffer_cache.ReleaseResidency(addr, size);
     }
     {
         std::scoped_lock lock{mapped_ranges_mutex};
