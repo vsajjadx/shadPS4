@@ -932,24 +932,13 @@ void Translator::V_CVT_F32_U32(const GcnInst& inst) {
 }
 
 void Translator::V_CVT_U32_F32(const GcnInst& inst) {
-    // The hardware saturates and turns NaN into 0, a plain conversion is undefined out of range.
     const IR::F32 src0{GetSrc<IR::F32>(inst.src[0])};
-    const IR::F32 clamped{
-        ir.FPMin(ir.FPMax(src0, ir.Imm32(0.f)), ir.Imm32(static_cast<f32>(0xFFFFFF00u)))};
-    const IR::U32 converted{ir.ConvertFToU(32, clamped)};
-    SetDst(inst.dst[0], IR::U32{ir.Select(ir.FPGreaterThanEqual(src0, ir.Imm32(4294967296.f)),
-                                          ir.Imm32(0xFFFFFFFFu), converted)});
+    SetDst(inst.dst[0], ir.ConvertFToU(32, src0));
 }
 
 void Translator::V_CVT_I32_F32(const GcnInst& inst) {
-    // The hardware saturates and turns NaN into 0, a plain conversion is undefined out of range.
     const IR::F32 src0{GetSrc<IR::F32>(inst.src[0])};
-    const IR::F32 clamped{
-        ir.FPMin(ir.FPMax(src0, ir.Imm32(-2147483648.f)), ir.Imm32(static_cast<f32>(0x7FFFFF80)))};
-    const IR::U32 converted{ir.ConvertFToS(32, clamped)};
-    const IR::U32 saturated{ir.Select(ir.FPGreaterThanEqual(src0, ir.Imm32(2147483648.f)),
-                                      ir.Imm32(0x7FFFFFFFu), converted)};
-    SetDst(inst.dst[0], IR::U32{ir.Select(ir.FPIsNan(src0), ir.Imm32(0u), saturated)});
+    SetDst(inst.dst[0], ir.ConvertFToS(32, src0));
 }
 
 void Translator::V_CVT_F16_F32(const GcnInst& inst) {

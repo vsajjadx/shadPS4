@@ -562,7 +562,6 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
     const auto staging =
         staging_pool.Request(resident_blocks * sizeof(vk::DeviceAddress), MemoryType::HostUncached);
 
-    boost::container::small_vector<Backing, 8> new_backings;
     ArenaBinds* binds = BindsForArena(arena);
     auto* bda_addrs = reinterpret_cast<vk::DeviceAddress*>(staging.mapped);
     u64 offset = staging.offset;
@@ -581,7 +580,6 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
             backing.memory = backing_slab;
             backing.offset = backing_slab_used;
             resident_ranges.Add(backing);
-            new_backings.push_back(backing);
             backing_slab_used += num_blocks;
 
             LOG_DEBUG(Render, "Making range start={}, end={} resident", backing.start, backing.end);
@@ -600,28 +598,6 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
             copies.emplace_back(offset, backing.start * sizeof(vk::DeviceAddress), copy_size);
             offset += copy_size;
             start = backing.end;
-        }
-    }
-
-    // Arenas replaced by a migration are still read by buffers and descriptors made before it.
-    for (const Buffer& other : arenas) {
-        if (&other == arena) {
-            continue;
-        }
-        const u64 other_begin = other.cpu_addr >> block_shift;
-        const u64 other_end = (other.cpu_addr + other.size_bytes) >> block_shift;
-        for (const Backing& backing : new_backings) {
-            const u64 start = std::max(other_begin, backing.start);
-            const u64 end = std::min(other_end, backing.end);
-            if (start >= end) {
-                continue;
-            }
-            BindsForArena(&other)->binds.push_back(vk::SparseMemoryBind{
-                .resourceOffset = (start << block_shift) - other.cpu_addr,
-                .size = (end - start) << block_shift,
-                .memory = backing.memory,
-                .memoryOffset = (backing.offset + start - backing.start) << block_shift,
-            });
         }
     }
 
