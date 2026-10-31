@@ -1,0 +1,73 @@
+From ef4c2f2f1a91214a8b9e72292a5a72c01bd80d24 Mon Sep 17 00:00:00 2001
+From: vsajjadx <vsajjadx1@gmail.com>
+Date: Thu, 22 Oct 2026 01:37:00 +0330
+Subject: [PATCH] Only look for updates when asked
+
+The launcher checked this fork's releases and, with the Version Manager's
+option, the official emulator builds every time it started, and showed a
+dialog for each new one. Updates are now only looked for from Help > Check
+for Updates and the Version Manager.
+---
+ src/qt_gui/main_window.cpp | 22 +---------------------
+ src/qt_gui/main_window.h   |  3 ---
+ 2 files changed, 1 insertion(+), 24 deletions(-)
+
+diff --git a/src/qt_gui/main_window.cpp b/src/qt_gui/main_window.cpp
+index ebb6fa9..94118f7 100644
+--- a/src/qt_gui/main_window.cpp
++++ b/src/qt_gui/main_window.cpp
+@@ -113,17 +113,9 @@ bool MainWindow::Init() {
+     // load game list
+     LoadGameLists();
+ 
+-#ifdef ENABLE_UPDATER
+-    // Check for update
+-    CheckUpdateMain(true);
+-#endif
+-
++    // Updates are only looked for from Help > Check for Updates and the Version Manager.
+     UseBundledEmulator();
+     LoadVersionComboBox();
+-    if (m_gui_settings->GetValue(gui::vm_checkOnStartup).toBool()) {
+-        auto versionDialog = new VersionDialog(m_gui_settings, this);
+-        versionDialog->checkUpdatePre(false);
+-    }
+ 
+     auto end = std::chrono::steady_clock::now();
+     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+@@ -482,18 +474,6 @@ void MainWindow::LoadGameLists() {
+     }
+ }
+ 
+-#ifdef ENABLE_UPDATER
+-void MainWindow::CheckUpdateMain(bool checkSave) {
+-    if (checkSave) {
+-        if (!m_gui_settings->GetValue(gui::gen_checkForUpdates).toBool()) {
+-            return;
+-        }
+-    }
+-    auto checkUpdate = new CheckUpdate(m_gui_settings, false);
+-    checkUpdate->exec();
+-}
+-#endif
+-
+ void MainWindow::CreateConnects() {
+     connect(this, &MainWindow::WindowResized, this, &MainWindow::HandleResize);
+     connect(ui->mw_searchbar, &QLineEdit::textChanged, this, &MainWindow::SearchGameTable);
+diff --git a/src/qt_gui/main_window.h b/src/qt_gui/main_window.h
+index cb10564..cb837a0 100644
+--- a/src/qt_gui/main_window.h
++++ b/src/qt_gui/main_window.h
+@@ -75,9 +75,6 @@ private:
+     void RunGame();
+     void PrintLog(QString entry, QColor textColor);
+ 
+-#ifdef ENABLE_UPDATER
+-    void CheckUpdateMain(bool checkSave);
+-#endif
+     void CreateConnects();
+     void SetLastUsedTheme();
+     void SetLastIconSizeBullet();
+-- 
+2.56.0.windows.2
+

@@ -81,6 +81,18 @@ public:
             out[m++] = value;
         }
 
+        // Merging the pieces first keeps a range already in the list from being split into the
+        // vector and coalesced back, each shifting every interval after it.
+        std::size_t w = 0;
+        for (std::size_t r = 1; r < m; ++r) {
+            if (out[w].end == out[r].start && out[w].CanMergeWith(out[r])) {
+                out[w].end = out[r].end;
+            } else {
+                out[++w] = out[r];
+            }
+        }
+        m = w + 1;
+
         const auto at = std::distance(intervals.begin(), first);
         Splice(first, last, out, m);
         Coalesce(at, m);

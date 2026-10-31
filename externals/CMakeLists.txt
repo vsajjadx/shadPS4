@@ -297,9 +297,26 @@ set(UPNPC_NO_INSTALL ON CACHE BOOL "" FORCE)
 add_subdirectory(miniupnp/miniupnpc)
 endif()
 
+# opus (DualSense speaker audio over Bluetooth)
+if (NOT TARGET Opus::opus)
+    set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+    set(OPUS_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    set(OPUS_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
+    set(OPUS_INSTALL_PKG_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+    set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+    set(_shad_build_testing ${BUILD_TESTING})
+    set(BUILD_TESTING OFF)
+    add_subdirectory(opus EXCLUDE_FROM_ALL)
+    set(BUILD_TESTING ${_shad_build_testing})
+endif()
+
 # minimp3
 add_library(minimp3 INTERFACE)
 target_include_directories(minimp3 INTERFACE minimp3)
+
+# dr_flac
+add_library(dr_flac INTERFACE)
+target_include_directories(dr_flac INTERFACE dr_flac)
 
 # ImGuiFileDialog
 add_library(ImGuiFileDialog ImGuiFileDialog/ImGuiFileDialog.cpp)
@@ -425,4 +442,47 @@ if (NOT TARGET ZArchive::zarchive)
     target_link_libraries(zarchive PRIVATE zstd::libzstd)
     target_compile_features(zarchive PRIVATE cxx_std_20)
     add_library(ZArchive::zarchive ALIAS zarchive)
+endif()
+
+# FSR 3.1 frame generation (FireBurn/FSR-Vulkan)
+if (ENABLE_FSR_FRAMEGEN)
+    if (NOT TARGET Vulkan::Vulkan)
+        add_library(Vulkan::Vulkan INTERFACE IMPORTED GLOBAL)
+        target_link_libraries(Vulkan::Vulkan INTERFACE Vulkan::Headers)
+    endif()
+    foreach(component TESTS PROBE FSR3_HOST FSR3_VK_BACKEND FSR4_V07_VULKAN)
+        set(FFX_VK_PORTABLE_BUILD_${component} OFF CACHE BOOL "" FORCE)
+    endforeach()
+    set(FFX_VK_PORTABLE_INSTALL OFF CACHE BOOL "" FORCE)
+    set(FFX_VK_PORTABLE_BUILD_FSR3_3_1_5_SCAFFOLD ON CACHE BOOL "" FORCE)
+    list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/fsr-vulkan-cmake")
+    # The frame generation context of FSR-Vulkan never tells its bridge which frame it records
+    # and never retires the frame afterwards. The bridge allocates descriptor sets and constant
+    # buffers (each one its own host visible vkAllocateMemory) for every dispatch and only frees
+    # those of a retired frame, so none of them were freed until the context was destroyed and
+    # video and system memory filled up while frame generation ran.
+    set(FFX_FG_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/fsr-vulkan/src/ffx_vk_fsr3_3_1_6_framegen.cpp")
+    file(READ "${FFX_FG_SOURCE}" FFX_FG_TEXT)
+    if (NOT FFX_FG_TEXT MATCHES "ffxVkFsr3_3_1_5BridgeBeginFrame")
+        set(FFX_FG_PATCHED "${FFX_FG_TEXT}")
+        string(REPLACE "    context->frameId = info->frameId;"
+                       "    context->frameId = info->frameId;\n    ffxVkFsr3_3_1_5BridgeBeginFrame(context->bridge, info->frameId);"
+                       FFX_FG_PATCHED "${FFX_FG_PATCHED}")
+        string(REPLACE "    dispatch.frameID = info->frameId;"
+                       "    dispatch.frameID = info->frameId;\n    ffxVkFsr3_3_1_5BridgeBeginFrame(context->bridge, info->frameId);"
+                       FFX_FG_PATCHED "${FFX_FG_PATCHED}")
+        string(REPLACE "    if (context->prepared && context->frameId <= completedFrameId) {"
+                       "    ffxVkFsr3_3_1_5BridgeRetireFrame(context->bridge, completedFrameId);\n    if (context->prepared && context->frameId <= completedFrameId) {"
+                       FFX_FG_PATCHED "${FFX_FG_PATCHED}")
+        string(REGEX MATCHALL "ffxVkFsr3_3_1_5Bridge(Begin|Retire)Frame" FFX_FG_HITS "${FFX_FG_PATCHED}")
+        list(LENGTH FFX_FG_HITS FFX_FG_HIT_COUNT)
+        if (FFX_FG_HIT_COUNT EQUAL 3)
+            file(WRITE "${FFX_FG_SOURCE}" "${FFX_FG_PATCHED}")
+        else()
+            message(WARNING "fsr-vulkan: could not apply the frame generation memory fix, "
+                            "frame generation will use more memory the longer it runs")
+        endif()
+    endif()
+    add_subdirectory(fsr-vulkan EXCLUDE_FROM_ALL)
+    list(POP_BACK CMAKE_MODULE_PATH)
 endif()

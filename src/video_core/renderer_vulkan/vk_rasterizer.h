@@ -3,10 +3,14 @@
 
 #pragma once
 
+#include <atomic>
+#include <unordered_map>
+
 #include "common/recursive_lock.h"
 #include "common/shared_first_mutex.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/page_manager.h"
+#include "video_core/renderer_vulkan/vk_occlusion_counter.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/texture_cache/texture_cache.h"
@@ -80,6 +84,9 @@ public:
     void UnmapMemory(VAddr addr, u64 size);
 
     u64 Flush();
+    void DumpOcclusionCounter(u64* results, u32 num_pairs);
+    [[nodiscard]] bool HasPendingOcclusionDumps() const noexcept;
+    void ResolveOcclusionDumps();
     void Finish();
     void OnSubmit();
     void OnFence();
@@ -121,6 +128,13 @@ private:
     void BindBuffers(const Shader::Info& stage, Shader::Backend::Bindings& binding,
                      Shader::PushData& push_data);
     void BindTextures(const Shader::Info& stage, Shader::Backend::Bindings& binding);
+    vk::DescriptorSet MirrorHeap(bool is_sampler, const AmdGpu::Buffer& heap, bool is_depth);
+    s32 AcquireHeapTexture(const AmdGpu::Image& tsharp);
+    void UpdateHeapTextures();
+    void ClampImageLevels(VideoCore::TextureCache::ImageDesc& desc);
+    bool ClampImageLayers(VideoCore::TextureCache::ImageDesc& desc, const AmdGpu::Image& tsharp,
+                          const Shader::ImageResource& image_desc);
+    bool IsImageInfoUsable(const VideoCore::ImageInfo& info);
     bool BindResources(const Pipeline* pipeline);
 
     void BindVertexBuffers(const GraphicsPipeline* pipeline);
@@ -145,7 +159,13 @@ private:
     Core::MemoryManager* memory;
     boost::icl::interval_set<VAddr> mapped_ranges;
     Common::SharedFirstMutex mapped_ranges_mutex;
+    // Guest ranges already found mapped by IsImageInfoUsable, dropped whenever the GPU mappings
+    // change. Saves a memory manager lock per bound texture.
+    std::atomic<u64> gpu_mappings_generation{};
+    u64 checked_ranges_generation{};
+    std::unordered_map<VAddr, u64> checked_mapped_ranges;
     PipelineCache pipeline_cache;
+    OcclusionCounter occlusion_counter;
     const bool host_markers_enabled;
     const bool guest_markers_enabled;
 
@@ -157,8 +177,12 @@ private:
     std::array<ImageBinding, AmdGpu::NUM_COLOR_BUFFERS> cb_descs;
     ImageBinding db_desc;
 
-    boost::container::static_vector<vk::DescriptorImageInfo, Shader::NUM_IMAGES> image_infos;
-    boost::container::static_vector<vk::DescriptorBufferInfo, Shader::NUM_BUFFERS> buffer_infos;
+    // Filled for every stage of a pipeline, with the samplers next to the images.
+    static constexpr u32 MaxPipelineImageInfos =
+        (Shader::NUM_IMAGES + Shader::NUM_SAMPLERS) * Shader::MaxStageTypes;
+    static constexpr u32 MaxPipelineBufferInfos = Shader::NUM_BUFFERS * Shader::MaxStageTypes;
+    boost::container::static_vector<vk::DescriptorImageInfo, MaxPipelineImageInfos> image_infos;
+    boost::container::static_vector<vk::DescriptorBufferInfo, MaxPipelineBufferInfos> buffer_infos;
 
     struct BoundBuffer {
         const VideoCore::Buffer* buffer;
@@ -170,6 +194,38 @@ private:
     std::vector<VideoCore::ImageId> bound_images;
 
     u32 set_write_index{};
+    /// A descriptor set that mirrors a guest heap of T#s or S#s slot for slot.
+    struct HeapMirror {
+        bool is_sampler;
+        VAddr base;
+        u64 size;
+        vk::DescriptorSet set;
+        std::vector<u8> shadow;
+        /// Heap texture of each slot, -1 for a null slot.
+        std::vector<s32> textures;
+        /// Generation of the heap texture view each slot was written with.
+        std::vector<u64> generations;
+        u64 tick;
+    };
+    struct HeapTexture {
+        AmdGpu::Image tsharp;
+        VideoCore::ImageId image_id;
+        VideoCore::TextureCache::ImageDesc desc;
+        vk::ImageView view;
+        u64 generation;
+        u64 size;
+        u32 refs;
+    };
+    std::vector<HeapMirror> heap_mirrors;
+    std::vector<HeapTexture> heap_textures;
+    std::vector<s32> free_heap_textures;
+    tsl::robin_map<u64, s32> heap_texture_lookup;
+    u64 heap_texture_bytes{};
+    u64 heap_texture_generation{};
+    u64 heap_textures_tick{~0ULL};
+    std::vector<u8> heap_scratch;
+    vk::UniqueDescriptorPool heap_pool;
+    boost::container::small_vector<vk::DescriptorSet, 8> heap_bind_sets;
     Pipeline::DescriptorWrites set_writes;
     Shader::PushData push_data;
 

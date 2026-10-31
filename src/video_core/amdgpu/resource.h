@@ -216,7 +216,8 @@ struct Image {
             .b = CompSwizzle(dst_sel_z),
             .a = CompSwizzle(dst_sel_w),
         };
-        return RemapSwizzle(DataFormat(data_format), dst_sel);
+        return RemapSingleChannelImageSwizzle(DataFormat(data_format),
+                                              RemapSwizzle(DataFormat(data_format), dst_sel));
     }
 
     u32 Pitch() const {
@@ -224,14 +225,17 @@ struct Image {
     }
 
     [[nodiscard]] u32 NumLayers() const noexcept {
-        // Depth is the number of layers for Array images.
-        u32 slices = depth + 1;
         const auto image_type = GetType();
-        if (image_type == ImageType::Color3D) {
-            // Depth is the actual texture depth for 3D images.
-            slices = 1;
-        } else if (image_type == ImageType::Cube) {
-            // Depth is the number of full cubes for Cube images.
+        // The hardware ignores depth for non-array images, which leave garbage in it. Depth is
+        // the actual texture depth for 3D images. (From mateussmeneses/theorder1886-port
+        // 276495a6.)
+        if (image_type == ImageType::Color1D || image_type == ImageType::Color2D ||
+            image_type == ImageType::Color2DMsaa || image_type == ImageType::Color3D) {
+            return 1;
+        }
+        // Depth is the number of layers for Array images and of full cubes for Cube images.
+        u32 slices = depth + 1;
+        if (image_type == ImageType::Cube) {
             slices *= 6;
         }
         if (pow2pad) {
@@ -484,7 +488,7 @@ struct Sampler {
         case AnisoRatio::Sixteen:
             return 16.0f;
         default:
-            UNREACHABLE();
+            return 1.0f;
         }
     }
 };

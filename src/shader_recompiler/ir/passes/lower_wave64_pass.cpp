@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/elf_info.h"
 #include "common/logging/classes.h"
 #include "shader_recompiler/info.h"
 #include "shader_recompiler/ir/basic_block.h"
@@ -22,9 +23,13 @@ static bool IsDivergentCondition(const IR::U1& condition) {
                                       case IR::Opcode::LaneId:
                                           return true;
                                       case IR::Opcode::GetAttributeU32:
-                                          if (inst->Arg(0).Attribute() ==
-                                              IR::Attribute::LocalInvocationId) {
+                                          switch (inst->Arg(0).Attribute()) {
+                                          case IR::Attribute::LocalInvocationId:
+                                          case IR::Attribute::LocalInvocationIndex:
+                                          case IR::Attribute::GlobalInvocationId:
                                               return true;
+                                          default:
+                                              break;
                                           }
                                           break;
                                       default:
@@ -43,9 +48,46 @@ static std::vector<IR::Block*> FindUniformBlocks(const IR::Program& program) {
         bool divergent;
     };
 
+    // nhlport: a loop whose every exit condition (Break / Repeat) is uniform runs the same
+    // number of iterations on all threads of the workgroup, so blocks inside it may still host
+    // the barriers the wave64 lowering inserts. Only loops with a divergent exit make their body
+    // non-uniform. NHL 24's HiZ reduction shader loops over a constant-buffer count and combines
+    // the two wave halves with ReadLane 32 inside that loop; without this the lowering was
+    // skipped and the depth pyramid (and with it GPU occlusion culling) was garbage.
+    std::vector<const IR::Block*> divergent_loops;
+    {
+        std::vector<const IR::Block*> loop_stack;
+        for (const IR::AbstractSyntaxNode& node : program.syntax_list) {
+            switch (node.type) {
+            case Type::Loop:
+                loop_stack.push_back(node.data.loop.merge);
+                break;
+            case Type::Break:
+                if (!loop_stack.empty() && IsDivergentCondition(node.data.break_node.cond)) {
+                    divergent_loops.push_back(loop_stack.back());
+                }
+                break;
+            case Type::Repeat:
+                if (loop_stack.empty() || loop_stack.back() != node.data.repeat.merge) {
+                    return {};
+                }
+                if (IsDivergentCondition(node.data.repeat.cond)) {
+                    divergent_loops.push_back(loop_stack.back());
+                }
+                loop_stack.pop_back();
+                break;
+            default:
+                break;
+            }
+        }
+        if (!loop_stack.empty()) {
+            return {};
+        }
+    }
+
     std::vector<IR::Block*> blocks;
     std::vector<ConditionalScope> conditionals;
-    std::vector<const IR::Block*> loops;
+    std::vector<ConditionalScope> loops;
     u32 divergence_depth{};
     for (const IR::AbstractSyntaxNode& node : program.syntax_list) {
         switch (node.type) {
@@ -60,17 +102,26 @@ static std::vector<IR::Block*> FindUniformBlocks(const IR::Program& program) {
             divergence_depth -= static_cast<u32>(conditionals.back().divergent);
             conditionals.pop_back();
             break;
-        case Type::Loop:
-            loops.push_back(node.data.loop.merge);
+        case Type::Loop: {
+            // Only NHL 24 is known to need uniform loop bodies; other games keep treating every
+            // loop body as divergent, as before.
+            static const bool relax_uniform_loops =
+                Common::ElfInfo::Instance().GameSerial() == "CUSA37933";
+            const bool divergent = !relax_uniform_loops ||
+                                   std::ranges::contains(divergent_loops, node.data.loop.merge);
+            loops.push_back({node.data.loop.merge, divergent});
+            divergence_depth += static_cast<u32>(divergent);
             break;
+        }
         case Type::Repeat:
-            if (loops.empty() || loops.back() != node.data.repeat.merge) {
+            if (loops.empty() || loops.back().merge != node.data.repeat.merge) {
                 return {};
             }
+            divergence_depth -= static_cast<u32>(loops.back().divergent);
             loops.pop_back();
             break;
         case Type::Block:
-            if (divergence_depth == 0 && loops.empty()) {
+            if (divergence_depth == 0) {
                 blocks.push_back(node.data.block);
             }
             break;
@@ -113,37 +164,105 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
         return;
     }
 
+    // Instructions that combine both halves of the wave through shared memory, which needs
+    // uniform control flow, and instructions that only translate lanes and masks of a host
+    // subgroup to the lanes of its wave64.
     std::vector<IR::Inst*> worklist;
+    std::vector<IR::Inst*> half_wave;
     const auto uniform_blocks = FindUniformBlocks(program);
     for (IR::Block* block : program.blocks) {
         const bool is_uniform = std::ranges::contains(uniform_blocks, block);
-        const auto push_worklist = [&](IR::Inst& inst) {
-            if (is_uniform) {
-                worklist.push_back(&inst);
-            } else {
-                LOG_WARNING(Render_Recompiler, "{} instruction in non uniform control flow",
-                            inst.GetOpcode());
-            }
-        };
         for (IR::Inst& inst : block->Instructions()) {
-            if (inst.GetOpcode() == IR::Opcode::ReadLane && inst.Arg(1).IsImmediate()) {
-                push_worklist(inst);
-            } else if (inst.GetOpcode() == IR::Opcode::Ballot) {
+            switch (inst.GetOpcode()) {
+            case IR::Opcode::ReadLane:
+                if (!inst.Arg(1).IsImmediate()) {
+                    half_wave.push_back(&inst);
+                } else if (is_uniform) {
+                    worklist.push_back(&inst);
+                } else {
+                    LOG_WARNING(Render_Recompiler, "{} instruction in non uniform control flow",
+                                inst.GetOpcode());
+                }
+                break;
+            case IR::Opcode::Ballot: {
                 const auto is_unpack = [](const IR::Use& use) {
                     return use.user->GetOpcode() == IR::Opcode::UnpackUint2x32;
                 };
-                if (std::ranges::any_of(inst.Uses(), is_unpack)) {
-                    push_worklist(inst);
+                if (is_uniform && std::ranges::any_of(inst.Uses(), is_unpack)) {
+                    worklist.push_back(&inst);
+                } else {
+                    half_wave.push_back(&inst);
                 }
-            } else if (inst.GetOpcode() == IR::Opcode::MaskedBitCount32) {
-                IR::Inst* const ballot = FindBallotForMaskedBitCount(inst);
-                if (ballot == nullptr ||
-                    std::ranges::contains(uniform_blocks, ballot->GetParent())) {
+                break;
+            }
+            case IR::Opcode::ReadFirstLane:
+                if (is_uniform) {
                     worklist.push_back(&inst);
                 }
+                break;
+            case IR::Opcode::MaskedBitCount32:
+            case IR::Opcode::BallotFindLsb:
+            case IR::Opcode::InverseBallot:
+            case IR::Opcode::LaneId:
+            case IR::Opcode::Shuffle:
+                half_wave.push_back(&inst);
+                break;
+            default:
+                break;
             }
         }
     }
+
+    for (IR::Inst* inst : half_wave) {
+        IR::IREmitter ir{*inst->GetParent(), IR::Block::InstructionList::s_iterator_to(*inst)};
+        const IR::U32 invocation_index = ir.GetAttributeU32(IR::Attribute::LocalInvocationIndex);
+        const IR::U32 wave_lane = ir.BitwiseAnd(invocation_index, ir.Imm32(63));
+        switch (inst->GetOpcode()) {
+        case IR::Opcode::Ballot: {
+            // The host subgroup holds one half of the wave, so its mask goes in that half.
+            const IR::U32 mask_low =
+                IR::U32{ir.CompositeExtract(ir.UnpackUint2x32(ir.Ballot(IR::U1{inst->Arg(0)})), 0)};
+            const IR::U64 mask =
+                IR::U64{ir.PackUint2x32(ir.CompositeConstruct(mask_low, ir.Imm32(0)))};
+            inst->ReplaceUsesWithAndRemove(
+                ir.ShiftLeftLogical(mask, ir.BitwiseAnd(invocation_index, ir.Imm32(32))));
+            break;
+        }
+        case IR::Opcode::ReadLane:
+            inst->ReplaceUsesWithAndRemove(ir.ReadLane(
+                IR::U32{inst->Arg(0)}, ir.BitwiseAnd(IR::U32{inst->Arg(1)}, ir.Imm32(31))));
+            break;
+        case IR::Opcode::Shuffle:
+            inst->ReplaceUsesWithAndRemove(ir.Shuffle(
+                IR::U32{inst->Arg(0)}, ir.BitwiseAnd(IR::U32{inst->Arg(1)}, ir.Imm32(31))));
+            break;
+        case IR::Opcode::MaskedBitCount32: {
+            const IR::U64 mask =
+                ir.ISub(ir.ShiftLeftLogical(ir.Imm64(u64{1}), wave_lane), ir.Imm64(u64{1}));
+            const IR::U32 thread_mask{
+                ir.CompositeExtract(ir.UnpackUint2x32(mask), inst->Arg(2).U1() ? 1u : 0u)};
+            const IR::U32 masked_value{
+                ir.BitCount(ir.BitwiseAnd(IR::U32{inst->Arg(0)}, thread_mask))};
+            inst->ReplaceUsesWithAndRemove(ir.IAdd(masked_value, IR::U32{inst->Arg(1)}));
+            break;
+        }
+        case IR::Opcode::BallotFindLsb:
+            inst->ReplaceUsesWithAndRemove(ir.FindILsb(IR::U64{inst->Arg(0)}));
+            break;
+        case IR::Opcode::InverseBallot: {
+            const IR::U64 bit = ir.ShiftRightLogical(IR::U64{inst->Arg(0)}, wave_lane);
+            inst->ReplaceUsesWithAndRemove(
+                ir.INotEqual(ir.BitwiseAnd(bit, ir.Imm64(u64{1})), ir.Imm64(u64{0})));
+            break;
+        }
+        case IR::Opcode::LaneId:
+            inst->ReplaceUsesWithAndRemove(wave_lane);
+            break;
+        default:
+            UNREACHABLE();
+        }
+    }
+
     if (worklist.empty()) {
         return;
     }
@@ -169,6 +288,16 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
             const IR::U64 mask = IR::U64{ir.LoadShared(64, false, offset)};
             ir.Barrier();
             inst->ReplaceUsesWithAndRemove(mask);
+        } else if (inst->GetOpcode() == IR::Opcode::ReadFirstLane) {
+            // Every lane of the wave is active here, so its first lane is in the lower half.
+            const IR::U32 offset =
+                ir.IAdd(ir.Imm32(scratch_base), ir.ShiftLeftLogical(subgroup_id, ir.Imm32(2u)));
+            ir.WriteShared(32, ir.ReadFirstLane(IR::U32{inst->Arg(0)}), offset);
+            ir.Barrier();
+            const IR::U32 value =
+                IR::U32{ir.LoadShared(32, false, ir.BitwiseAnd(offset, ir.Imm32(~7u)))};
+            ir.Barrier();
+            inst->ReplaceUsesWithAndRemove(value);
         } else if (inst->GetOpcode() == IR::Opcode::ReadLane) {
             const IR::U32 lane32 = ir.BitwiseAnd(IR::U32{inst->Arg(1)}, ir.Imm32(31));
             const IR::U32 half = ir.ShiftRightLogical(IR::U32{inst->Arg(1)}, ir.Imm32(5u));
@@ -182,15 +311,6 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
                                               ir.ShiftLeftLogical(half, ir.Imm32(2u))))};
             ir.Barrier();
             inst->ReplaceUsesWithAndRemove(value);
-        } else if (inst->GetOpcode() == IR::Opcode::MaskedBitCount32) {
-            const IR::U32 subgroup_invocation_id = ir.BitwiseAnd(invocation_index, ir.Imm32(63));
-            const IR::U64 mask = ir.ISub(
-                ir.ShiftLeftLogical(ir.Imm64(u64{1}), subgroup_invocation_id), ir.Imm64(u64{1}));
-            const IR::U32 thread_mask{
-                ir.CompositeExtract(ir.UnpackUint2x32(mask), inst->Arg(2).U1() ? 1u : 0u)};
-            const IR::U32 masked_value{
-                ir.BitCount(ir.BitwiseAnd(IR::U32{inst->Arg(0)}, thread_mask))};
-            inst->ReplaceUsesWithAndRemove(ir.IAdd(masked_value, IR::U32{inst->Arg(1)}));
         }
     }
 }

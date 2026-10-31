@@ -14,22 +14,13 @@ ComputePipeline::ComputePipeline(const Instance& instance, Scheduler& scheduler,
                                  DescriptorHeap& desc_heap, const Shader::Profile& profile,
                                  vk::PipelineCache pipeline_cache, ComputePipelineKey compute_key_,
                                  const Shader::Info& info_, vk::ShaderModule module,
-                                 SerializationSupport& sdata, bool preloading /*=false*/)
+                                 SerializationSupport& sdata, bool preloading /*=false*/,
+                                 bool defer_build /*=false*/)
     : Pipeline{instance, scheduler, desc_heap, profile, pipeline_cache, true},
-      compute_key{compute_key_} {
+      compute_key{compute_key_}, stage_module{module}, pipeline_cache_handle{pipeline_cache} {
     auto& info = stages[int(Shader::SwStage::Compute)];
     info = &info_;
     const auto debug_str = GetDebugString();
-
-    const vk::PipelineShaderStageRequiredSubgroupSizeCreateInfo subgroup_size_ci = {
-        .requiredSubgroupSize = 64,
-    };
-    const vk::PipelineShaderStageCreateInfo shader_ci = {
-        .pNext = instance.IsSubgroupSize64Supported() ? &subgroup_size_ci : nullptr,
-        .stage = vk::ShaderStageFlagBits::eCompute,
-        .module = module,
-        .pName = "main",
-    };
 
     u32 binding{};
     boost::container::small_vector<vk::DescriptorSetLayoutBinding, 32> bindings;
@@ -48,6 +39,9 @@ ComputePipeline::ComputePipeline(const Instance& instance, Scheduler& scheduler,
     }
     for (const auto& image : info->images) {
         const u32 num_bindings = image.NumBindings(*info);
+        if (num_bindings == 0) {
+            continue;
+        }
         bindings.push_back({
             .binding = binding,
             .descriptorType = image.is_written ? vk::DescriptorType::eStorageImage
@@ -58,6 +52,9 @@ ComputePipeline::ComputePipeline(const Instance& instance, Scheduler& scheduler,
         binding += num_bindings;
     }
     for (const auto& sampler : info->samplers) {
+        if (sampler.is_heap) {
+            continue;
+        }
         bindings.push_back({
             .binding = binding++,
             .descriptorType = vk::DescriptorType::eSampler,
@@ -89,29 +86,42 @@ ComputePipeline::ComputePipeline(const Instance& instance, Scheduler& scheduler,
                vk::to_string(descriptor_set_result));
     desc_layout = std::move(descriptor_set);
 
-    const vk::DescriptorSetLayout set_layout = *desc_layout;
-    const vk::PipelineLayoutCreateInfo layout_info = {
-        .setLayoutCount = 1U,
-        .pSetLayouts = &set_layout,
-        .pushConstantRangeCount = 1U,
-        .pPushConstantRanges = &push_constants,
-    };
-    auto [layout_result, layout] = instance.GetDevice().createPipelineLayoutUnique(layout_info);
-    ASSERT_MSG(layout_result == vk::Result::eSuccess,
-               "Failed to create compute pipeline layout: {}", vk::to_string(layout_result));
-    pipeline_layout = std::move(layout);
+    BuildHeapSetLayouts();
+    pipeline_layout = CreatePipelineLayout(push_constants);
     SetObjectName(device, *pipeline_layout, "Compute PipelineLayout {}", debug_str);
 
+    if (!defer_build) {
+        TryBuild();
+    }
+}
+
+void ComputePipeline::TryBuild() {
+    if (!build_started.exchange(true, std::memory_order_acq_rel)) {
+        Build();
+    }
+}
+
+void ComputePipeline::Build() {
+    const vk::PipelineShaderStageRequiredSubgroupSizeCreateInfo subgroup_size_ci = {
+        .requiredSubgroupSize = 64,
+    };
     const vk::ComputePipelineCreateInfo compute_pipeline_ci = {
-        .stage = shader_ci,
+        .stage =
+            {
+                .pNext = instance.IsSubgroupSize64Supported() ? &subgroup_size_ci : nullptr,
+                .stage = vk::ShaderStageFlagBits::eCompute,
+                .module = stage_module,
+                .pName = "main",
+            },
         .layout = *pipeline_layout,
     };
-    auto [pipeline_result, pipe] =
-        instance.GetDevice().createComputePipelineUnique(pipeline_cache, compute_pipeline_ci);
+    auto [pipeline_result, pipe] = instance.GetDevice().createComputePipelineUnique(
+        pipeline_cache_handle, compute_pipeline_ci);
     ASSERT_MSG(pipeline_result == vk::Result::eSuccess, "Failed to create compute pipeline: {}",
                vk::to_string(pipeline_result));
     pipeline = std::move(pipe);
-    SetObjectName(device, *pipeline, "Compute Pipeline {}", debug_str);
+    SetObjectName(instance.GetDevice(), *pipeline, "Compute Pipeline {}", GetDebugString());
+    ready.store(true, std::memory_order_release);
 }
 
 ComputePipeline::~ComputePipeline() = default;

@@ -38,10 +38,12 @@ public:
     }
 
     /// Mark region as modified from the host GPU without uploading it again
-    void MarkRegionAsGpuModified(VAddr cpu_addr, u64 size) noexcept {
-        IteratePages<true>(cpu_addr, size, [](RegionManager* manager, u64 offset, u64 size) {
-            manager->template ChangeRegionState<StateOp::None, StateOp::Set>(offset, size);
-        });
+    void MarkRegionAsGpuModified(VAddr cpu_addr, u64 size, bool watch_reads) noexcept {
+        IteratePages<true>(cpu_addr, size,
+                           [watch_reads](RegionManager* manager, u64 offset, u64 size) {
+                               manager->template ChangeRegionState<StateOp::None, StateOp::Set>(
+                                   offset, size, watch_reads);
+                           });
     }
 
     /// Unmark region as modified from the host GPU
@@ -85,12 +87,14 @@ public:
     }
 
     /// Call 'func' for each CPU modified range and unmark those pages as CPU modified
-    void ForEachUploadRange(VAddr cpu_addr, u64 size, bool is_written, auto&& func) {
+    void ForEachUploadRange(VAddr cpu_addr, u64 size, bool is_written, bool watch_reads,
+                            auto&& func) {
         IteratePages<true>(
-            cpu_addr, size, [&func, is_written](RegionManager* manager, u64 offset, u64 size) {
+            cpu_addr, size,
+            [&func, is_written, watch_reads](RegionManager* manager, u64 offset, u64 size) {
                 if (is_written) {
                     manager->template ForEachModifiedRange<Type::CPU, StateOp::Clear, StateOp::Set>(
-                        offset, size, func);
+                        offset, size, func, watch_reads);
                 } else {
                     manager
                         ->template ForEachModifiedRange<Type::CPU, StateOp::Clear, StateOp::None>(

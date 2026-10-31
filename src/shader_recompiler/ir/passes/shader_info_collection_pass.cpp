@@ -191,12 +191,22 @@ void Visit(Info& info, const IR::Inst& inst) {
         info.uses_shader_clock = true;
         break;
     case IR::Opcode::ReadConst:
+        if (inst.Flags<u32>() == IR::DeviceAddressReadConst) {
+            info.readconst_types |= Info::ReadConstType::Dynamic;
+            info.uses_dma = true;
+            info.uses_device_address = true;
+            break;
+        }
         AddFlatbuf(info);
         if (inst.Flags<u32>() == 0) {
             info.readconst_types |= Info::ReadConstType::Immediate;
             info.readconst_types |= Info::ReadConstType::Dynamic;
             info.uses_dma = true;
         }
+        break;
+    case IR::Opcode::WriteConst:
+        info.uses_dma = true;
+        info.uses_device_address = true;
         break;
     case IR::Opcode::PackUfloat10_11_11:
         info.uses_pack_10_11_11 = true;
@@ -218,8 +228,9 @@ void CollectShaderInfoPass(IR::Program& program, const Profile& profile) {
     }
 
     if (!EmulatorSettings.IsDirectMemoryAccessEnabled()) {
-        info.uses_dma = false;
-        info.readconst_types = Info::ReadConstType::None;
+        info.uses_dma = info.uses_device_address;
+        info.readconst_types =
+            info.uses_device_address ? Info::ReadConstType::Dynamic : Info::ReadConstType::None;
     }
 
     if (info.uses_dma) {

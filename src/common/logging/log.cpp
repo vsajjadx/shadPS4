@@ -177,21 +177,64 @@ void Flush() {
     }
 }
 
+// Synchronous logging keeps crash logs complete, but writing every line to the console from the
+// calling thread stalls game threads. Everything goes through the async queue except critical
+// messages (crash reports, hang dumps), which briefly drain the queue and are then written and
+// flushed synchronously so they survive the process going down.
+class SyncWarningsSink final : public spdlog::sinks::sink {
+public:
+    SyncWarningsSink(std::shared_ptr<spdlog::sinks::async_sink> async,
+                     std::vector<spdlog::sink_ptr> sinks)
+        : async{std::move(async)}, sinks{std::move(sinks)} {}
+
+    void log(const spdlog::details::log_msg& msg) override {
+        if (msg.log_level < spdlog::level::critical) {
+            async->log(msg);
+            return;
+        }
+        static_cast<void>(async->wait_all(std::chrono::milliseconds(250)));
+        for (const auto& sink : sinks) {
+            if (sink->should_log(msg.log_level)) {
+                sink->log(msg);
+                sink->flush();
+            }
+        }
+    }
+
+    void flush() override {
+        async->flush();
+        static_cast<void>(async->wait_all(std::chrono::milliseconds(1000)));
+        for (const auto& sink : sinks) {
+            sink->flush();
+        }
+    }
+
+    void set_pattern(const std::string&) override {}
+    void set_formatter(std::unique_ptr<spdlog::formatter>) override {}
+
+private:
+    std::shared_ptr<spdlog::sinks::async_sink> async;
+    std::vector<spdlog::sink_ptr> sinks;
+};
+
 void UpdateSinks() {
     std::initializer_list<spdlog::sink_ptr> sinks{g_console_sink, g_shad_file_sink};
 
-    std::initializer_list<spdlog::sink_ptr> async_sink{std::make_shared<spdlog::sinks::async_sink>(
-        spdlog::sinks::async_sink::config{.sinks = sinks})};
+    const auto async = std::make_shared<spdlog::sinks::async_sink>(
+        spdlog::sinks::async_sink::config{.sinks = sinks});
+    const spdlog::sink_ptr output =
+        EmulatorSettings.IsLogSync()
+            ? std::static_pointer_cast<spdlog::sinks::sink>(std::make_shared<SyncWarningsSink>(
+                  async, std::vector<spdlog::sink_ptr>{g_console_sink, g_shad_file_sink}))
+            : std::static_pointer_cast<spdlog::sinks::sink>(async);
 
+    std::initializer_list<spdlog::sink_ptr> direct{output};
     std::initializer_list<spdlog::sink_ptr> dup_filter{
         std::make_shared<spdlog::sinks::dup_filter_sink_mt>(
-            std::chrono::milliseconds(EmulatorSettings.GetLogMaxSkipDuration()),
-            EmulatorSettings.IsLogSync() ? sinks : async_sink)};
+            std::chrono::milliseconds(EmulatorSettings.GetLogMaxSkipDuration()), direct)};
 
     for (auto& logger : ALL_LOGGERS) {
-        logger->sinks() = EmulatorSettings.IsLogSkipDuplicate()
-                              ? dup_filter
-                              : (EmulatorSettings.IsLogSync() ? sinks : async_sink);
+        logger->sinks() = EmulatorSettings.IsLogSkipDuplicate() ? dup_filter : direct;
     }
 }
 

@@ -30,6 +30,7 @@ public:
           readbacks_mode{EmulatorSettings.GetReadbacksMode()} {
         cpu.Fill(true);
         gpu.Fill(false);
+        read_watched.Fill(false);
     }
     explicit RegionManager() = default;
 
@@ -81,7 +82,7 @@ public:
     }
 
     template <StateOp cpu_op, StateOp gpu_op, bool locked = true>
-    void ChangeRegionState(u64 offset, u64 size) {
+    void ChangeRegionState(u64 offset, u64 size, bool watch_reads = false) {
         auto bounds = GetBounds(offset, size);
         if (!HasEffect<cpu_op, gpu_op>(bounds)) {
             return;
@@ -97,6 +98,7 @@ public:
             update_watchers |= UpdateProtection<cpu_op, gpu_op>(write_prot, read_prot,
                                                                 watcher_bounds, index, mask);
         });
+        SelectReadWatches<gpu_op>(read_prot, bounds, watch_reads);
         const auto write_op = GetPageOp<Type::CPU>(cpu_op);
         const auto read_op = GetPageOp<Type::GPU>(gpu_op);
         update_watchers &= write_op != PageOp::None || read_op != PageOp::None;
@@ -112,7 +114,7 @@ public:
     }
 
     template <Type type, StateOp cpu_op, StateOp gpu_op, bool locked = true>
-    void ForEachModifiedRange(u64 offset, s64 size, auto&& func) {
+    void ForEachModifiedRange(u64 offset, s64 size, auto&& func, bool watch_reads = false) {
         auto bounds = GetBounds(offset, size);
         if (!HasEffect<cpu_op, gpu_op, type>(bounds)) {
             return;
@@ -148,6 +150,7 @@ public:
         if (end_page) {
             func(cpu_addr + start_page * BYTES_PER_PAGE, (end_page - start_page) * BYTES_PER_PAGE);
         }
+        SelectReadWatches<gpu_op>(read_prot, bounds, watch_reads);
         const auto write_op = GetPageOp<Type::CPU>(cpu_op);
         const auto read_op = GetPageOp<Type::GPU>(gpu_op);
         update_watchers &= write_op != PageOp::None || read_op != PageOp::None;
@@ -232,6 +235,27 @@ private:
         return false;
     }
 
+    /// Precise readbacks watch CPU reads of every page the GPU writes; relaxed ones only of the
+    /// pages of writes the caller asks to watch. Only watched pages are unwatched again.
+    template <StateOp gpu_op>
+    void SelectReadWatches(RegionBits& read_prot, const Bounds& bounds, bool watch_reads) {
+        if constexpr (gpu_op == StateOp::Set) {
+            const bool watch = readbacks_mode == GpuReadbacksMode::Precise ||
+                               (watch_reads && readbacks_mode == GpuReadbacksMode::Relaxed);
+            IterateWords(bounds, [&](u64 index, u64) {
+                if (!watch) {
+                    read_prot[index] = 0;
+                }
+                read_watched[index] |= read_prot[index];
+            });
+        } else if constexpr (gpu_op == StateOp::Clear) {
+            IterateWords(bounds, [&](u64 index, u64) {
+                read_prot[index] &= read_watched[index];
+                read_watched[index] &= ~read_prot[index];
+            });
+        }
+    }
+
     template <StateOp cpu_op, StateOp gpu_op>
     constexpr void UpdateState(u64 index, u64 mask) {
         const u64 summary_bit = u64{1} << index;
@@ -309,7 +333,7 @@ private:
             } else if (state_op == StateOp::Clear) {
                 return PageOp::Track;
             }
-        } else if (type == Type::GPU && readbacks_mode == GpuReadbacksMode::Precise) {
+        } else if (type == Type::GPU && readbacks_mode != GpuReadbacksMode::Disabled) {
             if (state_op == StateOp::Set) {
                 return PageOp::Track;
             } else if (state_op == StateOp::Clear) {
@@ -334,6 +358,7 @@ private:
     u32 readbacks_mode;
     RegionBits cpu;
     RegionBits gpu;
+    RegionBits read_watched;
     LockType mutex;
 };
 

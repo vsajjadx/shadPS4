@@ -117,6 +117,7 @@ private:
     const std::vector<std::string> hideCursorOptions = {"Never", "Idle", "Always"};
     const std::vector<std::string> trophySideOptions = {"left", "right", "top", "bottom"};
     const std::vector<std::string> readbacksModeOptions = {"Disabled", "Relaxed", "Precise"};
+    const std::vector<std::string> anisotropyOptions = {"Game Default", "2x", "4x", "8x", "16x"};
 
     //////////////// Setting Variables
     //////////////// Note:: Use int for all comboboxes as needed by ImGui
@@ -136,6 +137,25 @@ private:
     bool fsrEnabledSetting;
     bool rcasEnabledSetting;
     float rcasAttenuationSetting;
+
+    // DLSS5 (NeuralScreen) settings; kept in their own neural_screen.json so
+    // emulator updates never collide with the integration.
+    bool dlss5EnabledSetting;
+    bool dlss5BoostSetting;
+    bool dlss5AutoQualitySetting;
+    int dlss5ResolutionSetting;
+    int dlss5PassesSetting;
+    int dlss5ProfileSetting;
+    int dlss5ModelSetting;
+    float dlss5IntensitySetting;
+    float dlss5LocalToneSetting;
+    float dlss5LocalStructureSetting;
+    float dlss5SkinStructureSetting;
+
+    int anisotropySetting;
+    bool dualsenseSpeakerSetting;
+    int dualsenseSpeakerVolumeSetting;
+    int textureLodBiasSetting;
 
     // Input tab
     bool motionControlsSetting;

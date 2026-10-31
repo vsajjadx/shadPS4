@@ -66,4 +66,8 @@ private:
 
 using Signals = Common::Singleton<SignalDispatch>;
 
+/// Writes a minidump of the process next to the logs (Windows only). exception_pointers may be
+/// null when the crash is not an exception, e.g. a failed assertion.
+void WriteCrashDump(void* exception_pointers);
+
 } // namespace Core

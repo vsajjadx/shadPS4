@@ -16,6 +16,10 @@ namespace Shader {
 using PFN_SrtWalker = void PS4_SYSV_ABI (*)(const u32* /*user_data*/, u32* /*flat_dst*/);
 PFN_SrtWalker RegisterWalkerCode(const u8* ptr, size_t size);
 
+/// Walkers run by this thread read user data that may have gone stale since its draw, so a fault
+/// in them only zeroes the value read instead of patching the walker shared with the GPU thread.
+void KeepSrtWalkersUnpatchedOnThisThread();
+
 struct PersistentSrtInfo {
     // Special case when fetch shader uses step rates.
     struct SrtSharpReservation {

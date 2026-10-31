@@ -12,20 +12,88 @@ namespace Vulkan {
 
 std::mutex Scheduler::submit_mutex;
 
-Scheduler::Scheduler(const Instance& instance)
-    : instance{instance}, work_semaphore{instance}, command_pool{instance, &work_semaphore} {
+Scheduler::Scheduler(const Instance& instance, bool deferred_)
+    : instance{instance}, work_semaphore{instance}, command_pool{instance, &work_semaphore},
+      deferred{deferred_} {
 #if TRACY_GPU_ENABLED
     profiler_scope = reinterpret_cast<tracy::VkCtxScope*>(std::malloc(sizeof(tracy::VkCtxScope)));
 #endif
+    if (deferred) {
+        chunk = std::make_unique<CommandChunk>();
+        record_thread = std::jthread(std::bind_front(&Scheduler::RecordThread, this));
+    }
     BeginSession();
     priority_pending_ops_thread =
         std::jthread(std::bind_front(&Scheduler::PriorityPendingOpsThread, this));
 }
 
 Scheduler::~Scheduler() {
+    if (deferred) {
+        Drain();
+        record_thread.request_stop();
+        chunk_cv.notify_all();
+        record_thread.join();
+    }
 #if TRACY_GPU_ENABLED
     std::free(profiler_scope);
 #endif
+}
+
+vk::CommandBuffer Scheduler::DirectCommandBuffer() {
+    if (deferred) {
+        Drain();
+    }
+    return exec_cmdbuf;
+}
+
+void Scheduler::DispatchChunk() {
+    if (chunk->Empty()) {
+        return;
+    }
+    std::unique_ptr<CommandChunk> next;
+    {
+        std::scoped_lock lk{chunk_mutex};
+        chunk_queue.push_back(std::move(chunk));
+        if (!free_chunks.empty()) {
+            next = std::move(free_chunks.back());
+            free_chunks.pop_back();
+        }
+    }
+    chunk_cv.notify_one();
+    chunk = next ? std::move(next) : std::make_unique<CommandChunk>();
+}
+
+void Scheduler::Drain() {
+    DispatchChunk();
+    std::unique_lock lk{chunk_mutex};
+    idle_cv.wait(lk, [this] { return chunk_queue.empty() && !recording; });
+}
+
+void Scheduler::RecordThread(std::stop_token stoken) {
+    Common::SetCurrentThreadName("shadPS4:GpuCommandRecorder");
+    while (true) {
+        std::unique_ptr<CommandChunk> work;
+        {
+            std::unique_lock lk{chunk_mutex};
+            chunk_cv.wait(lk, stoken, [this] { return !chunk_queue.empty(); });
+            if (chunk_queue.empty()) {
+                return;
+            }
+            work = std::move(chunk_queue.front());
+            chunk_queue.pop_front();
+            recording = true;
+        }
+        work->Execute(exec_cmdbuf);
+        work->Reset();
+        {
+            std::scoped_lock lk{chunk_mutex};
+            if (work->Capacity() == CommandChunk::Size) {
+                free_chunks.push_back(std::move(work));
+            }
+            recording = false;
+        }
+        idle_cv.notify_all();
+    }
 }
 
 void Scheduler::BeginRendering(const RenderState& new_state) {
@@ -81,27 +149,20 @@ void Scheduler::BeginRendering(const RenderState& new_state) {
     };
 
     CommandBuffer().beginRendering(rendering_info);
+    if (on_rendering_begin) {
+        on_rendering_begin(CommandBuffer());
+    }
 }
 
 void Scheduler::EndRendering() {
     if (!is_rendering) {
         return;
     }
+    if (on_rendering_end) {
+        on_rendering_end(CommandBuffer());
+    }
     is_rendering = false;
     CommandBuffer().endRendering();
-}
-
-vk::CommandBuffer Scheduler::UploadCommandBuffer() {
-    auto& upload_cmdbuf = sessions.back().upload;
-    if (upload_cmdbuf) {
-        return upload_cmdbuf;
-    }
-    const vk::CommandBufferBeginInfo begin_info = {
-        .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
-    };
-    upload_cmdbuf = command_pool.Commit();
-    Check(upload_cmdbuf.begin(begin_info));
-    return upload_cmdbuf;
 }
 
 void Scheduler::Flush(SubmitInfo& info) {
@@ -142,14 +203,16 @@ void Scheduler::PopPendingOperations() {
 
 void Scheduler::BeginSession() {
     EndSession();
+    has_session = true;
 
-    auto& session = sessions.emplace_back();
-
-    const vk::CommandBufferBeginInfo begin_info = {
-        .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
-    };
-    session.primary = command_pool.Commit();
-    Check(session.primary.begin(begin_info));
+    Record([this](vk::CommandBuffer) {
+        const vk::CommandBufferBeginInfo begin_info = {
+            .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
+        };
+        exec_cmdbuf = command_pool.Commit();
+        Check(exec_cmdbuf.begin(begin_info));
+        exec_cmdbufs.push_back(exec_cmdbuf);
+    });
 
     // Invalidate dynamic state so it gets applied to the new command buffer.
     dynamic_state.Invalidate();
@@ -165,7 +228,7 @@ void Scheduler::BeginSession() {
 }
 
 void Scheduler::EndSession() {
-    if (sessions.empty()) {
+    if (!has_session) {
         return;
     }
 
@@ -173,17 +236,12 @@ void Scheduler::EndSession() {
         on_session();
     }
 
-    const auto& session = sessions.back();
-    if (session.upload) {
-        Check(session.upload.end());
-    }
-
     EndRendering();
-    Check(session.primary.end());
+    Record([this](vk::CommandBuffer) { Check(exec_cmdbuf.end()); });
+    has_session = false;
 }
 
 void Scheduler::SubmitExecution(SubmitInfo& info) {
-    std::scoped_lock lk{submit_mutex};
     const u64 signal_value = work_semaphore.NextTick();
 
 #if TRACY_GPU_ENABLED
@@ -195,24 +253,31 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
 #endif
 
     if (on_submit) {
+        std::scoped_lock lk{submit_mutex};
         on_submit(info);
     }
 
     EndSession();
 
-    std::vector<vk::CommandBuffer> cmd_buffers;
-    cmd_buffers.reserve(sessions.size() * 2);
-
-    for (const auto& session : sessions) {
-        if (session.upload) {
-            cmd_buffers.push_back(session.upload);
-        }
-        cmd_buffers.push_back(session.primary);
-    }
-    sessions.clear();
-
     const vk::Semaphore timeline = work_semaphore.Handle();
     info.AddSignal(timeline, signal_value);
+    Record([this, info](vk::CommandBuffer) { SubmitRecorded(info); });
+
+    BeginSession();
+    if (deferred) {
+        DispatchChunk();
+    }
+
+    work_semaphore.Refresh();
+
+    // Apply pending operations
+    PopPendingOperations();
+}
+
+void Scheduler::SubmitRecorded(SubmitInfo info) {
+    std::scoped_lock lk{submit_mutex};
+    std::vector<vk::CommandBuffer> cmd_buffers;
+    cmd_buffers.swap(exec_cmdbufs);
 
     std::array<vk::PipelineStageFlags, std::tuple_size_v<decltype(info.wait_semas)>>
         wait_stage_masks;
@@ -238,13 +303,10 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
 
     ImGui::Core::TextureManager::Submit();
     auto submit_result = instance.GetGraphicsQueue().submit(submit_info, info.fence);
+    if (submit_result == vk::Result::eErrorDeviceLost) {
+        instance.LogDeviceFault();
+    }
     ASSERT_MSG(submit_result != vk::Result::eErrorDeviceLost, "Device lost during submit");
-
-    work_semaphore.Refresh();
-    BeginSession();
-
-    // Apply pending operations
-    PopPendingOperations();
 }
 
 void Scheduler::PriorityPendingOpsThread(std::stop_token stoken) {
@@ -273,7 +335,7 @@ void Scheduler::PriorityPendingOpsThread(std::stop_token stoken) {
     }
 }
 
-void DynamicState::Commit(const Instance& instance, const vk::CommandBuffer& cmdbuf) {
+void DynamicState::Commit(const Instance& instance, CommandRecorder cmdbuf) {
     if (dirty_state.viewports) {
         dirty_state.viewports = false;
         cmdbuf.setViewportWithCount(viewports);

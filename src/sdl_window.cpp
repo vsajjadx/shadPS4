@@ -18,17 +18,28 @@
 #include "core/debug_state.h"
 #include "core/devtools/layer.h"
 #include "core/emulator_settings.h"
+#include "core/libraries/kernel/threads/hang_diag.h"
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/pad/pad.h"
 #include "core/libraries/system/userservice.h"
+#include "core/neural_screen.h"
 #include "core/user_settings.h"
+#include "imgui/brightness_layer.h"
 #include "imgui/friends_layer.h"
+#include "imgui/notifications_layer.h"
 #include "imgui/renderer/imgui_core.h"
 #include "input/controller.h"
 #include "input/input_handler.h"
 #include "input/input_mouse.h"
 #include "sdl_window.h"
 #include "video_core/renderdoc.h"
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
+#ifdef ENABLE_FSR_FRAMEGEN
+#include "video_core/renderer_vulkan/vk_frame_generation.h"
+#endif
 
 #ifdef __APPLE__
 #include <SDL3/SDL_metal.h>
@@ -94,6 +105,35 @@ static Uint32 SDLCALL PollControllerLightColour(void* userdata, SDL_TimerID time
     controller->PollLightColour();
     return interval;
 }
+
+#if defined(SDL_PLATFORM_WIN32)
+namespace {
+
+constexpr UINT_PTR BrightnessMenuId = 0x5100;
+WNDPROC sdl_window_proc{};
+
+LRESULT CALLBACK TitleBarMenuProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+    if (msg == WM_SYSCOMMAND && (wparam & 0xFFF0) == BrightnessMenuId) {
+        ImGui::BrightnessLayer::Toggle();
+        return 0;
+    }
+    return CallWindowProcW(sdl_window_proc, hwnd, msg, wparam, lparam);
+}
+
+// Right-clicking the title bar opens the window menu, where the picture sliders are offered.
+void AddTitleBarMenu(HWND hwnd) {
+    const HMENU menu = GetSystemMenu(hwnd, FALSE);
+    if (!menu) {
+        return;
+    }
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, BrightnessMenuId, L"Brightness / Contrast...");
+    sdl_window_proc = reinterpret_cast<WNDPROC>(
+        SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(TitleBarMenuProc)));
+}
+
+} // namespace
+#endif
 
 WindowSDL::WindowSDL(s32 width_, s32 height_, Input::GameControllers* controllers_,
                      std::string_view window_title)
@@ -162,6 +202,7 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, Input::GameControllers* controller
     window_info.type = WindowSystemType::Windows;
     window_info.render_surface = SDL_GetPointerProperty(SDL_GetWindowProperties(window),
                                                         SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+    AddTitleBarMenu(static_cast<HWND>(window_info.render_surface));
 #elif defined(SDL_PLATFORM_LINUX) || defined(__FreeBSD__)
     // SDL doesn't have a platform define for FreeBSD AAAAAAAAAA
     if (SDL_strcmp(SDL_GetCurrentVideoDriver(), "x11") == 0) {
@@ -236,6 +277,26 @@ void WindowSDL::WaitEvent() {
     case SDL_EVENT_MOUSE_WHEEL_OFF:
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP:
+        if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat && event.key.key == SDLK_L &&
+            (event.key.mod & SDL_KMOD_CTRL)) {
+            Libraries::Kernel::DumpThreadsForHang("requested with Ctrl+L");
+            break;
+        }
+        // Alt+Enter toggles borderless fullscreen, also when the game runs in a window.
+        if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) {
+            const bool is_enter = event.key.key == SDLK_RETURN || event.key.key == SDLK_KP_ENTER;
+            if (is_enter && (event.key.mod & SDL_KMOD_ALT)) {
+                if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) {
+                    const bool fullscreen = (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0;
+                    if (!fullscreen) {
+                        // A NULL mode is borderless fullscreen at the desktop resolution.
+                        SDL_SetWindowFullscreenMode(window, nullptr);
+                    }
+                    SDL_SetWindowFullscreen(window, !fullscreen);
+                }
+                break;
+            }
+        }
         OnKeyboardMouseInput(&event);
         break;
     case SDL_EVENT_GAMEPAD_ADDED:
@@ -283,6 +344,33 @@ void WindowSDL::WaitEvent() {
     case SDL_EVENT_TOGGLE_FRIENDS:
         ImGui::Friends::Toggle();
         break;
+    case SDL_EVENT_TOGGLE_FRAME_GENERATION: {
+        const auto state = NeuralScreen::ToggleFrameGeneration();
+        const std::string message =
+            !state ? "NeuralScreen is not running" : "FG " + std::string(*state ? "on" : "off");
+        LOG_INFO(Frontend, "{}", message);
+        shadNotifications::QueueNotification(message, 2.0f,
+                                             shadNotifications::position::BottomRight);
+        break;
+    }
+    case SDL_EVENT_TOGGLE_DLSS5: {
+        const auto state = NeuralScreen::ToggleDLSS5();
+        const std::string message =
+            !state ? "NeuralScreen is not running" : "DLSS5 " + std::string(*state ? "on" : "off");
+        LOG_INFO(Frontend, "{}", message);
+        shadNotifications::QueueNotification(message, 2.0f,
+                                             shadNotifications::position::BottomRight);
+        break;
+    }
+    case SDL_EVENT_TOGGLE_DLSS5_BOOST: {
+        const auto state = NeuralScreen::ToggleBoost();
+        const std::string message =
+            !state ? "NeuralScreen is not running" : "Boost " + std::string(*state ? "on" : "off");
+        LOG_INFO(Frontend, "{}", message);
+        shadNotifications::QueueNotification(message, 2.0f,
+                                             shadNotifications::position::BottomRight);
+        break;
+    }
     case SDL_EVENT_RELOAD_INPUTS:
         Input::ParseInputConfig(std::string(Common::ElfInfo::Instance().GameSerial()));
         break;
@@ -411,8 +499,31 @@ void WindowSDL::OnGamepadEvent(const SDL_Event* event) {
     // as it would break the entire touchpad handling
     // You can still bind other things to it though
     if (event->gbutton.button == SDL_GAMEPAD_BUTTON_TOUCHPAD) {
-        controllers[controllers.GetGamepadIndexFromJoystickId(event->gbutton.which)]->Button(
-            OrbisPadButtonDataOffset::TouchPad, input_down);
+        const u8 pad = controllers.GetGamepadIndexFromJoystickId(event->gbutton.which);
+        controllers[pad]->Button(OrbisPadButtonDataOffset::TouchPad, input_down);
+
+        // A click is also an input for the bindings (touchpad_left / touchpad_center /
+        // touchpad_right, as the launcher records them): the third of the pad the finger is on.
+        // The release reports the third the press did, so a finger that slid keeps it consistent.
+        if (pad < touchpad_click_region.size()) {
+            const float x = touchpad_last_x[pad];
+            u32 region = touchpad_click_region[pad];
+            if (input_down) {
+                region = x < 1.0f / 3.0f   ? static_cast<u32>(SDL_GAMEPAD_BUTTON_TOUCHPAD_LEFT)
+                         : x > 2.0f / 3.0f ? static_cast<u32>(SDL_GAMEPAD_BUTTON_TOUCHPAD_RIGHT)
+                                           : static_cast<u32>(SDL_GAMEPAD_BUTTON_TOUCHPAD_CENTER);
+                touchpad_click_region[pad] = region;
+            } else {
+                touchpad_click_region[pad] = 0;
+            }
+            if (region != 0) {
+                const Input::InputEvent region_event(
+                    Input::InputID(Input::InputType::Controller, region, pad + 1), input_down, 0);
+                if (Input::UpdatePressedKeys(region_event)) {
+                    Input::ActivateOutputsFromInputs();
+                }
+            }
+        }
         return;
     }
 
@@ -440,6 +551,12 @@ void WindowSDL::OnGamepadEvent(const SDL_Event* event) {
     case SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN:
     case SDL_EVENT_GAMEPAD_TOUCHPAD_UP:
     case SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION:
+        if (event->type != SDL_EVENT_GAMEPAD_TOUCHPAD_UP) {
+            const u8 pad = controllers.GetGamepadIndexFromJoystickId(event->gtouchpad.which);
+            if (pad < touchpad_last_x.size()) {
+                touchpad_last_x[pad] = event->gtouchpad.x;
+            }
+        }
         controllers[controllers.GetGamepadIndexFromJoystickId(event->gtouchpad.which)]
             ->SetTouchpadState(event->gtouchpad.finger,
                                event->type != SDL_EVENT_GAMEPAD_TOUCHPAD_UP, event->gtouchpad.x,

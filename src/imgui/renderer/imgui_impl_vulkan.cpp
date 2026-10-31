@@ -9,6 +9,7 @@
 #include <imgui.h>
 
 #include "imgui_impl_vulkan.h"
+#include "video_core/renderer_vulkan/vk_scheduler.h"
 
 #ifndef IM_MAX
 #define IM_MAX(A, B) (((A) >= (B)) ? (A) : (B))
@@ -24,19 +25,6 @@ struct RenderBuffer {
     vk::Buffer buffer{};
 };
 
-// Reusable buffers used for rendering 1 current in-flight frame, for RenderDrawData()
-struct FrameRenderBuffers {
-    RenderBuffer vertex;
-    RenderBuffer index;
-};
-
-// Each viewport will hold 1 WindowRenderBuffers
-struct WindowRenderBuffers {
-    uint32_t index{};
-    uint32_t count{};
-    std::vector<FrameRenderBuffers> frame_render_buffers{};
-};
-
 struct StagingBuffer {
     vk::Buffer buffer{};
     vk::DeviceMemory memory{};
@@ -47,6 +35,27 @@ struct AtlasTexture {
     vk::Image image{};
     vk::DeviceMemory memory{};
     vk::ImageView view{};
+};
+
+struct RetiredTexture {
+    AtlasTexture* backend_tex{};
+    ImTextureID tex_id{};
+};
+
+// Resources of one in-flight frame, reused once the GPU reaches the tick that last used them
+struct FrameRenderBuffers {
+    RenderBuffer vertex;
+    RenderBuffer index;
+    std::vector<StagingBuffer> staging_buffers;
+    std::vector<RetiredTexture> retired_textures;
+    u64 tick{};
+};
+
+// Each viewport will hold 1 WindowRenderBuffers
+struct WindowRenderBuffers {
+    uint32_t index{};
+    uint32_t count{};
+    std::vector<FrameRenderBuffers> frame_render_buffers{};
 };
 
 // Vulkan data
@@ -65,10 +74,6 @@ struct VkData {
     vk::CommandPool command_pool{};
     vk::Sampler simple_sampler{};
 
-    // Font atlas uploads. A frame's staging buffers live until its slot comes round again
-    std::vector<std::vector<StagingBuffer>> upload_buffers{};
-    uint32_t upload_index{};
-
     // Render buffers
     WindowRenderBuffers render_buffers{};
     bool enabled_blending{true};
@@ -76,7 +81,6 @@ struct VkData {
     VkData(const InitInfo init_info) : init_info(init_info) {
         render_buffers.count = init_info.image_count;
         render_buffers.frame_render_buffers.resize(render_buffers.count);
-        upload_buffers.resize(render_buffers.count);
     }
 };
 
@@ -238,6 +242,9 @@ static inline vk::DeviceSize AlignBufferSize(vk::DeviceSize size, vk::DeviceSize
 }
 
 void UploadTextureData::Upload() {
+    if (command_buffer == VK_NULL_HANDLE) {
+        return;
+    }
     VkData* bd = GetBackendData();
     const InitInfo& v = bd->init_info;
 
@@ -292,7 +299,12 @@ ImTextureID AddTexture(vk::ImageView image_view, vk::ImageLayout image_layout,
             .descriptorSetCount = 1,
             .pSetLayouts = &bd->descriptor_set_layout,
         };
-        descriptor_set = CheckVkResult(v.device.allocateDescriptorSets(alloc_info)).front();
+        const auto sets = v.device.allocateDescriptorSets(alloc_info);
+        if (sets.result != vk::Result::eSuccess || sets.value.empty()) {
+            CheckVkErr(sets.result);
+            return nullptr;
+        }
+        descriptor_set = sets.value.front();
     }
 
     // Update the Descriptor Set:
@@ -325,14 +337,44 @@ UploadTextureData UploadTexture(const void* data, vk::Format format, u32 width, 
     const InitInfo& v = bd->init_info;
 
     UploadTextureData info{};
+    // Allocations fail when video memory runs out. Release what was created so far and return an
+    // empty texture, instead of handing null handles to the driver.
+    const auto abort_upload = [&]() -> UploadTextureData {
+        if (info.upload_buffer != VK_NULL_HANDLE) {
+            v.device.destroyBuffer(info.upload_buffer, v.allocator);
+        }
+        if (info.upload_buffer_memory != VK_NULL_HANDLE) {
+            v.device.freeMemory(info.upload_buffer_memory, v.allocator);
+        }
+        if (info.im_texture != nullptr) {
+            RemoveTexture(info.im_texture);
+        }
+        if (info.image_view != VK_NULL_HANDLE) {
+            v.device.destroyImageView(info.image_view, v.allocator);
+        }
+        if (info.image != VK_NULL_HANDLE) {
+            v.device.destroyImage(info.image, v.allocator);
+        }
+        if (info.image_memory != VK_NULL_HANDLE) {
+            v.device.freeMemory(info.image_memory, v.allocator);
+        }
+        if (info.command_buffer != VK_NULL_HANDLE) {
+            std::unique_lock lk(bd->command_pool_mutex);
+            v.device.freeCommandBuffers(bd->command_pool, {info.command_buffer});
+        }
+        return UploadTextureData{};
+    };
     {
         std::unique_lock lk(bd->command_pool_mutex);
-        info.command_buffer =
-            CheckVkResult(v.device.allocateCommandBuffers(vk::CommandBufferAllocateInfo{
-                              .commandPool = bd->command_pool,
-                              .commandBufferCount = 1,
-                          }))
-                .front();
+        const auto buffers = v.device.allocateCommandBuffers(vk::CommandBufferAllocateInfo{
+            .commandPool = bd->command_pool,
+            .commandBufferCount = 1,
+        });
+        if (buffers.result != vk::Result::eSuccess || buffers.value.empty()) {
+            CheckVkErr(buffers.result);
+            return UploadTextureData{};
+        }
+        info.command_buffer = buffers.value.front();
         CheckVkErr(info.command_buffer.begin(vk::CommandBufferBeginInfo{
             .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
         }));
@@ -356,15 +398,29 @@ UploadTextureData UploadTexture(const void* data, vk::Format format, u32 width, 
             .sharingMode = vk::SharingMode::eExclusive,
             .initialLayout = vk::ImageLayout::eUndefined,
         };
-        info.image = CheckVkResult(v.device.createImage(image_info, v.allocator));
+        const auto image = v.device.createImage(image_info, v.allocator);
+        if (image.result != vk::Result::eSuccess) {
+            CheckVkErr(image.result);
+            return abort_upload();
+        }
+        info.image = image.value;
         auto req = v.device.getImageMemoryRequirements(info.image);
         vk::MemoryAllocateInfo alloc_info{
             .allocationSize = IM_MAX(v.min_allocation_size, req.size),
             .memoryTypeIndex =
                 FindMemoryType(vk::MemoryPropertyFlagBits::eDeviceLocal, req.memoryTypeBits),
         };
-        info.image_memory = CheckVkResult(v.device.allocateMemory(alloc_info, v.allocator));
-        CheckVkErr(v.device.bindImageMemory(info.image, info.image_memory, 0));
+        const auto memory = v.device.allocateMemory(alloc_info, v.allocator);
+        if (memory.result != vk::Result::eSuccess) {
+            CheckVkErr(memory.result);
+            return abort_upload();
+        }
+        info.image_memory = memory.value;
+        const auto bind_result = v.device.bindImageMemory(info.image, info.image_memory, 0);
+        if (bind_result != vk::Result::eSuccess) {
+            CheckVkErr(bind_result);
+            return abort_upload();
+        }
     }
 
     // Create Image View
@@ -379,11 +435,19 @@ UploadTextureData UploadTexture(const void* data, vk::Format format, u32 width, 
                 .layerCount = 1,
             },
         };
-        info.image_view = CheckVkResult(v.device.createImageView(view_info, v.allocator));
+        const auto view = v.device.createImageView(view_info, v.allocator);
+        if (view.result != vk::Result::eSuccess) {
+            CheckVkErr(view.result);
+            return abort_upload();
+        }
+        info.image_view = view.value;
     }
 
     // Create descriptor set (ImTextureID)
     info.im_texture = AddTexture(info.image_view, vk::ImageLayout::eShaderReadOnlyOptimal);
+    if (info.im_texture == nullptr) {
+        return abort_upload();
+    }
 
     // Create Upload Buffer
     {
@@ -392,7 +456,12 @@ UploadTextureData UploadTexture(const void* data, vk::Format format, u32 width, 
             .usage = vk::BufferUsageFlagBits::eTransferSrc,
             .sharingMode = vk::SharingMode::eExclusive,
         };
-        info.upload_buffer = CheckVkResult(v.device.createBuffer(buffer_info, v.allocator));
+        const auto buffer = v.device.createBuffer(buffer_info, v.allocator);
+        if (buffer.result != vk::Result::eSuccess) {
+            CheckVkErr(buffer.result);
+            return abort_upload();
+        }
+        info.upload_buffer = buffer.value;
         auto req = v.device.getBufferMemoryRequirements(info.upload_buffer);
         auto alignemtn = IM_MAX(bd->buffer_memory_alignment, req.alignment);
         vk::MemoryAllocateInfo alloc_info{
@@ -400,14 +469,28 @@ UploadTextureData UploadTexture(const void* data, vk::Format format, u32 width, 
             .memoryTypeIndex =
                 FindMemoryType(vk::MemoryPropertyFlagBits::eHostVisible, req.memoryTypeBits),
         };
-        info.upload_buffer_memory = CheckVkResult(v.device.allocateMemory(alloc_info, v.allocator));
-        CheckVkErr(v.device.bindBufferMemory(info.upload_buffer, info.upload_buffer_memory, 0));
+        const auto memory = v.device.allocateMemory(alloc_info, v.allocator);
+        if (memory.result != vk::Result::eSuccess) {
+            CheckVkErr(memory.result);
+            return abort_upload();
+        }
+        info.upload_buffer_memory = memory.value;
+        const auto bind_result =
+            v.device.bindBufferMemory(info.upload_buffer, info.upload_buffer_memory, 0);
+        if (bind_result != vk::Result::eSuccess) {
+            CheckVkErr(bind_result);
+            return abort_upload();
+        }
     }
 
     // Upload to Buffer
     {
-        char* map = (char*)CheckVkResult(v.device.mapMemory(info.upload_buffer_memory, 0, size));
-        memcpy(map, data, size);
+        const auto mapped = v.device.mapMemory(info.upload_buffer_memory, 0, size);
+        if (mapped.result != vk::Result::eSuccess) {
+            CheckVkErr(mapped.result);
+            return abort_upload();
+        }
+        memcpy(mapped.value, data, size);
         vk::MappedMemoryRange range[1]{
             {
                 .memory = info.upload_buffer_memory,
@@ -582,9 +665,7 @@ void RenderDrawData(ImDrawData& draw_data, vk::CommandBuffer command_buffer,
         pipeline = bd->pipeline;
     }
 
-    // Allocate array to store enough vertex/index buffers
     WindowRenderBuffers& wrb = bd->render_buffers;
-    wrb.index = (wrb.index + 1) % wrb.count;
     FrameRenderBuffers& frb = wrb.frame_render_buffers[wrb.index];
 
     if (draw_data.TotalVtxCount > 0) {
@@ -720,23 +801,42 @@ static void DestroyStagingBuffers(std::vector<StagingBuffer>& buffers) {
     buffers.clear();
 }
 
-static void DestroyTexture(ImTextureData* tex) {
-    if (auto* backend_tex = static_cast<AtlasTexture*>(tex->BackendUserData)) {
-        VkData* bd = GetBackendData();
-        const InitInfo& v = bd->init_info;
-        RemoveTexture(tex->TexID);
-        v.device.destroyImageView(backend_tex->view, v.allocator);
-        v.device.destroyImage(backend_tex->image, v.allocator);
-        v.device.freeMemory(backend_tex->memory, v.allocator);
-        IM_DELETE(backend_tex);
-
-        tex->SetTexID(ImTextureID_Invalid);
-        tex->BackendUserData = nullptr;
-    }
-    tex->SetStatus(ImTextureStatus_Destroyed);
+static void DestroyAtlasTexture(const RetiredTexture& retired) {
+    VkData* bd = GetBackendData();
+    const InitInfo& v = bd->init_info;
+    RemoveTexture(retired.tex_id);
+    v.device.destroyImageView(retired.backend_tex->view, v.allocator);
+    v.device.destroyImage(retired.backend_tex->image, v.allocator);
+    v.device.freeMemory(retired.backend_tex->memory, v.allocator);
+    IM_DELETE(retired.backend_tex);
 }
 
-static void UpdateTexture(ImTextureData* tex, vk::CommandBuffer cmdbuf) {
+static void DestroyRetiredTextures(std::vector<RetiredTexture>& textures) {
+    for (const RetiredTexture& retired : textures) {
+        DestroyAtlasTexture(retired);
+    }
+    textures.clear();
+}
+
+static RetiredTexture DetachTexture(ImTextureData* tex) {
+    const RetiredTexture retired{
+        .backend_tex = static_cast<AtlasTexture*>(tex->BackendUserData),
+        .tex_id = tex->TexID,
+    };
+    tex->SetTexID(ImTextureID_Invalid);
+    tex->BackendUserData = nullptr;
+    tex->SetStatus(ImTextureStatus_Destroyed);
+    return retired;
+}
+
+static void DestroyTexture(ImTextureData* tex) {
+    const RetiredTexture retired = DetachTexture(tex);
+    if (retired.backend_tex != nullptr) {
+        DestroyAtlasTexture(retired);
+    }
+}
+
+static void UpdateTexture(ImTextureData* tex, vk::CommandBuffer cmdbuf, FrameRenderBuffers& frb) {
     VkData* bd = GetBackendData();
     const InitInfo& v = bd->init_info;
 
@@ -881,28 +981,42 @@ static void UpdateTexture(ImTextureData* tex, vk::CommandBuffer cmdbuf) {
                                vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {},
                                {use_barrier});
 
-        bd->upload_buffers[bd->upload_index].push_back(staging);
+        frb.staging_buffers.push_back(staging);
         tex->SetStatus(ImTextureStatus_OK);
     }
 
-    // Unused for as many frames as can be in flight, so no pending frame samples it.
-    if (tex->Status == ImTextureStatus_WantDestroy &&
-        tex->UnusedFrames >= static_cast<int>(bd->render_buffers.count)) {
-        DestroyTexture(tex);
+    // Frames still in flight may sample the texture, so it lives as long as this frame's slot.
+    if (tex->Status == ImTextureStatus_WantDestroy) {
+        const RetiredTexture retired = DetachTexture(tex);
+        if (retired.backend_tex != nullptr) {
+            frb.retired_textures.push_back(retired);
+        }
     }
 }
 
-void UpdateTextures(ImDrawData& draw_data, vk::CommandBuffer command_buffer) {
+void BeginFrame(::Vulkan::Scheduler& scheduler) {
     VkData* bd = GetBackendData();
-    // The slot last served the frame image_count presents ago, which has completed.
-    bd->upload_index = (bd->upload_index + 1) % bd->render_buffers.count;
-    DestroyStagingBuffers(bd->upload_buffers[bd->upload_index]);
+    WindowRenderBuffers& wrb = bd->render_buffers;
+    wrb.index = (wrb.index + 1) % wrb.count;
+    FrameRenderBuffers& frb = wrb.frame_render_buffers[wrb.index];
+    if (frb.tick != 0) {
+        scheduler.Wait(frb.tick);
+    }
+    frb.tick = scheduler.CurrentTick();
+    DestroyStagingBuffers(frb.staging_buffers);
+    DestroyRetiredTextures(frb.retired_textures);
+}
+
+void UpdateTextures(ImDrawData& draw_data, vk::CommandBuffer command_buffer) {
     if (draw_data.Textures == nullptr) {
         return;
     }
+    VkData* bd = GetBackendData();
+    WindowRenderBuffers& wrb = bd->render_buffers;
+    FrameRenderBuffers& frb = wrb.frame_render_buffers[wrb.index];
     for (ImTextureData* tex : *draw_data.Textures) {
         if (tex->Status != ImTextureStatus_OK) {
-            UpdateTexture(tex, command_buffer);
+            UpdateTexture(tex, command_buffer, frb);
         }
     }
 }
@@ -926,6 +1040,8 @@ static void DestroyWindowRenderBuffers(vk::Device device, WindowRenderBuffers& b
         auto& frb = buffers.frame_render_buffers[n];
         DestroyFrameRenderBuffers(device, frb.index, allocator);
         DestroyFrameRenderBuffers(device, frb.vertex, allocator);
+        DestroyStagingBuffers(frb.staging_buffers);
+        DestroyRetiredTextures(frb.retired_textures);
     }
     buffers = {};
 }
@@ -1185,9 +1301,6 @@ void ImGuiImplVulkanDestroyDeviceObjects() {
         if (tex->RefCount == 1) {
             DestroyTexture(tex);
         }
-    }
-    for (auto& buffers : bd->upload_buffers) {
-        DestroyStagingBuffers(buffers);
     }
     if (bd->command_pool) {
         std::unique_lock lk(bd->command_pool_mutex);

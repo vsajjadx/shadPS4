@@ -440,8 +440,14 @@ struct AddressSpace::Impl {
         // Get a pointer to the region containing virtual_addr
         auto it = std::prev(regions.upper_bound(virtual_addr));
 
-        // If needed, split surrounding regions to create a placeholder
+        // If needed, split surrounding regions to create a placeholder. Free placeholders are
+        // only merged when a mapping needs more than one of them, so a range that is unmapped
+        // and mapped again (games recycle small direct memory blocks constantly) reuses its
+        // placeholder instead of paying for a split and a merge every time.
         if (it->first != virtual_addr || it->second.size != size) {
+            if (!it->second.is_mapped && it->second.base + it->second.size < virtual_addr + size) {
+                CoalesceFreeRegions(virtual_addr);
+            }
             SplitRegion(virtual_addr, size);
             it = std::prev(regions.upper_bound(virtual_addr));
         }
@@ -541,9 +547,6 @@ struct AddressSpace::Impl {
             current_addr += size_to_unmap;
         }
 
-        // Coalesce any free space produced from these unmaps.
-        CoalesceFreeRegions(virtual_addr);
-
         return virtual_addr;
     }
 
@@ -586,9 +589,12 @@ struct AddressSpace::Impl {
         }
 
         const VAddr virtual_end = virtual_addr + size;
-        auto it = --regions.upper_bound(virtual_addr);
-        ASSERT_MSG(it != regions.end(), "addr {:#x} out of bounds", virtual_addr);
-        for (; it->first < virtual_end; it++) {
+        // Tracking can cover pages outside the address space, which have nothing to protect.
+        auto it = regions.upper_bound(virtual_addr);
+        if (it != regions.begin()) {
+            --it;
+        }
+        for (; it != regions.end() && it->first < virtual_end; it++) {
             if (!it->second.is_mapped) {
                 continue;
             }

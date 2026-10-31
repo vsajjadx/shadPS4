@@ -130,7 +130,8 @@ constexpr bool IsMacroTiled(ArrayMode array_mode) {
     case ArrayMode::ArrayPrt3DTiledThick:
         return true;
     default:
-        UNREACHABLE_MSG("Unknown array mode = {}", u32(array_mode));
+        // Garbage descriptors carry reserved modes; treat them as linear instead of aborting.
+        return false;
     }
 }
 
@@ -156,7 +157,7 @@ constexpr u32 GetMicroTileThickness(ArrayMode array_mode) {
     case ArrayMode::Array3DTiledXThick:
         return 8;
     default:
-        UNREACHABLE_MSG("Unknown array mode = {}", u32(array_mode));
+        return 1;
     }
 }
 
@@ -183,7 +184,7 @@ constexpr u32 GetAltNumBanks(MacroTileMode mode) {
     case MacroTileMode::Mode_1x8_16:
         return 16;
     default:
-        UNREACHABLE_MSG("Unknown macro tile mode = {}", u32(mode));
+        return 8;
     }
 }
 
@@ -234,7 +235,7 @@ constexpr ArrayMode GetArrayMode(TileMode tile_mode) {
     case TileMode::DisplayLinearGeneral:
         return ArrayMode::ArrayLinearGeneral;
     default:
-        UNREACHABLE_MSG("Unknown tile mode = {}", u32(tile_mode));
+        return ArrayMode::ArrayLinearGeneral;
     }
 }
 
@@ -273,7 +274,7 @@ constexpr MicroTileMode GetMicroTileMode(TileMode tile_mode) {
     case TileMode::Thick3DXThick:
         return MicroTileMode::Thick;
     default:
-        UNREACHABLE_MSG("Unknown tile mode = {}", u32(tile_mode));
+        return MicroTileMode::Display;
     }
 }
 

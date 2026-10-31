@@ -932,13 +932,24 @@ void Translator::V_CVT_F32_U32(const GcnInst& inst) {
 }
 
 void Translator::V_CVT_U32_F32(const GcnInst& inst) {
+    // The hardware saturates and turns NaN into 0, a plain conversion is undefined out of range.
     const IR::F32 src0{GetSrc<IR::F32>(inst.src[0])};
-    SetDst(inst.dst[0], ir.ConvertFToU(32, src0));
+    const IR::F32 clamped{
+        ir.FPMin(ir.FPMax(src0, ir.Imm32(0.f)), ir.Imm32(static_cast<f32>(0xFFFFFF00u)))};
+    const IR::U32 converted{ir.ConvertFToU(32, clamped)};
+    SetDst(inst.dst[0], IR::U32{ir.Select(ir.FPGreaterThanEqual(src0, ir.Imm32(4294967296.f)),
+                                          ir.Imm32(0xFFFFFFFFu), converted)});
 }
 
 void Translator::V_CVT_I32_F32(const GcnInst& inst) {
+    // The hardware saturates and turns NaN into 0, a plain conversion is undefined out of range.
     const IR::F32 src0{GetSrc<IR::F32>(inst.src[0])};
-    SetDst(inst.dst[0], ir.ConvertFToS(32, src0));
+    const IR::F32 clamped{
+        ir.FPMin(ir.FPMax(src0, ir.Imm32(-2147483648.f)), ir.Imm32(static_cast<f32>(0x7FFFFF80)))};
+    const IR::U32 converted{ir.ConvertFToS(32, clamped)};
+    const IR::U32 saturated{ir.Select(ir.FPGreaterThanEqual(src0, ir.Imm32(2147483648.f)),
+                                      ir.Imm32(0x7FFFFFFFu), converted)};
+    SetDst(inst.dst[0], IR::U32{ir.Select(ir.FPIsNan(src0), ir.Imm32(0u), saturated)});
 }
 
 void Translator::V_CVT_F16_F32(const GcnInst& inst) {
@@ -1998,13 +2009,78 @@ IR::F32 Translator::LegacyMul(const IR::F32& a, const IR::F32& b) {
     return IR::F32{ir.Select(either_zero, zero, ir.FPMul(a, b))};
 }
 
-// TODO: add range analysis pass to hopefully put an upper bound on m0, and only select one of
-// [src_vgprno, src_vgprno + max_m0]. Same for dst regs we may write back to
+void Translator::AnalyzeMovRel(std::span<const GcnInst> inst_list) {
+    const u32 num_vgprs = runtime_info.props.num_allocated_vgprs;
+    std::vector<bool> has_movrels(num_vgprs, false);
+    std::vector<bool> has_movreld(num_vgprs, false);
+    bool any_movrel = false;
+    for (const auto& inst : inst_list) {
+        if (inst.opcode == Opcode::V_MOVRELS_B32) {
+            const u32 src = inst.src[0].code - static_cast<u32>(IR::VectorReg::V0);
+            if (src < num_vgprs) {
+                has_movrels[src] = true;
+                any_movrel = true;
+            }
+        } else if (inst.opcode == Opcode::V_MOVRELD_B32) {
+            const u32 dst = inst.dst[0].code - static_cast<u32>(IR::VectorReg::V0);
+            if (dst < num_vgprs) {
+                has_movreld[dst] = true;
+                any_movrel = true;
+            }
+        } else if (inst.opcode == Opcode::V_MOVRELSD_B32) {
+            const u32 src = inst.src[0].code - static_cast<u32>(IR::VectorReg::V0);
+            const u32 dst = inst.dst[0].code - static_cast<u32>(IR::VectorReg::V0);
+            if (src < num_vgprs) {
+                has_movrels[src] = true;
+                any_movrel = true;
+            }
+            if (dst < num_vgprs) {
+                has_movreld[dst] = true;
+                any_movrel = true;
+            }
+        }
+    }
+    if (!any_movrel) {
+        return;
+    }
+
+    u32 prev_base = num_vgprs;
+    bool cluster_has_s = false;
+    bool cluster_has_d = false;
+    for (u32 v = 0; v < num_vgprs; ++v) {
+        if (!has_movrels[v] && !has_movreld[v]) {
+            continue;
+        }
+        const bool is_s = has_movrels[v];
+        const bool is_d = has_movreld[v];
+        if (prev_base == num_vgprs || (v - prev_base > 16) ||
+            ((v - prev_base > 4) &&
+             ((is_s && !is_d && !cluster_has_s) || (is_d && !is_s && !cluster_has_d)))) {
+            movrel_cluster_starts.push_back(v);
+            cluster_has_s = is_s;
+            cluster_has_d = is_d;
+        } else {
+            cluster_has_s |= is_s;
+            cluster_has_d |= is_d;
+        }
+        prev_base = v;
+    }
+}
+
+u32 Translator::GetMovRelEndVgpr(u32 base_vgprno) const {
+    for (const u32 start : movrel_cluster_starts) {
+        if (start > base_vgprno) {
+            return start;
+        }
+    }
+    return runtime_info.props.num_allocated_vgprs;
+}
 
 IR::U32 Translator::VMovRelSHelper(u32 src_vgprno, const IR::U32 m0) {
     // Read from VGPR0 by default when src_vgprno + m0 > num_allocated_vgprs
     IR::U32 src_val = ir.GetVectorReg<IR::U32>(IR::VectorReg::V0);
-    for (u32 i = src_vgprno; i < runtime_info.props.num_allocated_vgprs; i++) {
+    const u32 end_vgprno = GetMovRelEndVgpr(src_vgprno);
+    for (u32 i = src_vgprno; i < end_vgprno; i++) {
         const IR::U1 cond = ir.IEqual(m0, ir.Imm32(i - src_vgprno));
         src_val =
             IR::U32{ir.Select(cond, ir.GetVectorReg<IR::U32>(IR::VectorReg::V0 + i), src_val)};
@@ -2013,7 +2089,8 @@ IR::U32 Translator::VMovRelSHelper(u32 src_vgprno, const IR::U32 m0) {
 }
 
 void Translator::VMovRelDHelper(u32 dst_vgprno, const IR::U32 src_val, const IR::U32 m0) {
-    for (u32 i = dst_vgprno; i < runtime_info.props.num_allocated_vgprs; i++) {
+    const u32 end_vgprno = GetMovRelEndVgpr(dst_vgprno);
+    for (u32 i = dst_vgprno; i < end_vgprno; i++) {
         const IR::U1 cond = ir.IEqual(m0, ir.Imm32(i - dst_vgprno));
         const IR::U32 dst_val =
             IR::U32{ir.Select(cond, src_val, ir.GetVectorReg<IR::U32>(IR::VectorReg::V0 + i))};

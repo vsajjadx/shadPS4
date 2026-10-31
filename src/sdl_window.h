@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <span>
 #include <string>
 
@@ -93,6 +94,10 @@ private:
     SDL_Window* window{};
     bool is_shown{};
     bool is_open{true};
+    // Where the finger last touched each pad's touchpad (0..1), and the third of the pad (a
+    // touchpad_left / _center / _right input id) a click is holding, 0 when none.
+    std::array<float, 5> touchpad_last_x{0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
+    std::array<u32, 5> touchpad_click_region{};
 };
 
 void SetWindowIcon(SDL_Window* window, const std::vector<u8>& png);

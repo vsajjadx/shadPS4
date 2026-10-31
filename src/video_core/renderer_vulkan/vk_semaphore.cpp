@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <limits>
+#include "common/logging/log.h"
+#include "common/thread.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_semaphore.h"
 
@@ -9,7 +11,7 @@
 
 namespace Vulkan {
 
-constexpr u64 WAIT_TIMEOUT = std::numeric_limits<u64>::max();
+constexpr u64 WAIT_TIMEOUT = 2'000'000'000ULL;
 
 Semaphore::Semaphore(const Instance& instance_) : instance{instance_} {
     const vk::StructureChain semaphore_chain = {
@@ -62,7 +64,26 @@ void Semaphore::Wait(u64 tick) {
         .pValues = &tick,
     };
 
-    while (instance.GetDevice().waitSemaphores(&wait_info, WAIT_TIMEOUT) != vk::Result::eSuccess) {
+    // Only a timeout is worth retrying. Any other result (most importantly a lost device after a
+    // GPU reset) will never turn into success, so retrying it spins the calling thread forever
+    // and freezes the game instead of failing.
+    u32 waited_s = 0;
+    for (;;) {
+        const vk::Result result = instance.GetDevice().waitSemaphores(&wait_info, WAIT_TIMEOUT);
+        if (result == vk::Result::eSuccess) {
+            break;
+        }
+        if (result == vk::Result::eErrorDeviceLost) {
+            instance.LogDeviceFault();
+        }
+        ASSERT_MSG(result == vk::Result::eTimeout, "Failed to wait for the GPU: vk::Result={}",
+                   vk::to_string(result));
+        waited_s += 2;
+        Refresh();
+        LOG_WARNING(Render_Vulkan,
+                    "Waited {}s for GPU tick {} (gpu tick {}, next submit tick {}, thread {}){}",
+                    waited_s, tick, KnownGpuTick(), CurrentTick(), Common::GetCurrentThreadName(),
+                    tick >= CurrentTick() ? ": tick was never submitted" : "");
     }
     Refresh();
 }

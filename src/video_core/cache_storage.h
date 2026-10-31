@@ -8,6 +8,7 @@
 #include "common/types.h"
 
 #include <functional>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -32,6 +33,11 @@ public:
         return opened;
     }
     void FinishPreload();
+    /// Deletes every blob of a directory based cache. Returns false for archived caches.
+    bool Reset();
+    [[nodiscard]] const std::filesystem::path& GetCachePath() const {
+        return cache_path;
+    }
 
     bool Save(BlobType type, const std::string& name, std::vector<u8>&& data);
     bool Save(BlobType type, const std::string& name, std::vector<u32>&& data);
@@ -40,6 +46,7 @@ public:
     void Load(BlobType type, const std::string& name, std::vector<u32>& data);
 
     void ForEachBlob(BlobType type, const std::function<void(std::vector<u8>&& data)>& func);
+    void ForEachBlobName(BlobType type, const std::function<void(std::string_view name)>& func);
 
 private:
     std::jthread io_worker{};

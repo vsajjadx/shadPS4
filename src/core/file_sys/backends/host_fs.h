@@ -19,9 +19,11 @@ namespace Core::FileSys {
 class HostFile final : public IFile {
 public:
     HostFile(std::filesystem::path host_path, Common::FS::FileAccessMode mode, bool read_only);
-    ~HostFile() override = default;
+    ~HostFile() override;
 
     s64 Read(void* dst, u64 size) override;
+    bool SupportsReadAt() const override;
+    s64 ReadAt(void* dst, u64 size, u64 offset) override;
     s64 Write(const void* src, u64 size) override;
     bool Seek(s64 offset, Common::FS::SeekOrigin origin) override;
     u64 Tell() const override;
@@ -51,11 +53,32 @@ public:
 
     void Stat(FileStat& out) override;
 
+    bool IsRecyclable() const override {
+        return m_recyclable;
+    }
+
+    void SetRecyclable() {
+        m_recyclable = true;
+    }
+
+    const std::filesystem::path& Path() const {
+        return m_path;
+    }
+
 private:
+    bool OpenPositionalHandle();
+
     std::filesystem::path m_path;
     Common::FS::IOFile m_file;
+    u32 m_inode{0};
     bool m_read_only;
+    std::once_flag m_positional_once;
+    intptr_t m_positional_handle{-1};
+    bool m_recyclable{false};
 };
+
+/// Keeps a closed recyclable file open for its next open, or destroys it otherwise.
+void RecycleFile(std::unique_ptr<IFile> file);
 
 /// Streaming iterator over a host directory.
 class HostDirectory final : public IDirectory {
@@ -79,6 +102,7 @@ public:
 
     bool Exists(std::string_view rel_path) override;
     bool IsDirectory(std::string_view rel_path) override;
+    bool Stat(std::string_view rel_path, FileStat& out) override;
 
     std::unique_ptr<IFile> Open(std::string_view rel_path,
                                 Common::FS::FileAccessMode mode) override;

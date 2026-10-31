@@ -1,0 +1,192 @@
+From b80d5db4924f47406ef67a4f0fec1a1dcefa1724 Mon Sep 17 00:00:00 2001
+From: Replit Agent <agent@replit.com>
+Date: Tue, 20 Oct 2026 17:04:59 +0000
+Subject: [PATCH 3/8] Add PS4 game scanning to launcher
+
+---
+ src/qt_gui/game_info.cpp   | 51 +++++++++++++++++++++++++++-----------
+ src/qt_gui/main_window.cpp | 33 ++++++++++++++++++++++++
+ src/qt_gui/main_window.h   |  1 +
+ 3 files changed, 70 insertions(+), 15 deletions(-)
+
+diff --git a/src/qt_gui/game_info.cpp b/src/qt_gui/game_info.cpp
+index 66d2679..62c706e 100644
+--- a/src/qt_gui/game_info.cpp
++++ b/src/qt_gui/game_info.cpp
+@@ -1,7 +1,10 @@
+ // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <algorithm>
++
+ #include <QProgressDialog>
++#include <QSet>
+ 
+ #if WIN32
+ #include "common/bitlocker.h"
+@@ -17,13 +20,14 @@
+ #include <QMessageBox>
+ 
+ // Maximum depth to search for games in subdirectories
+-const int max_recursion_depth = 5;
++const int max_recursion_depth = 32;
+ 
+ static bool alreadyAskedBitlocker = false;
+ 
+-void ScanDirectoryRecursively(const QString& dir, QStringList& filePaths, int current_depth = 0) {
++void ScanDirectoryRecursively(const QString& dir, QStringList& filePaths,
++                              QSet<QString>& visitedDirectories, int current_depth = 0) {
+     // Stop recursion if we've reached the maximum depth
+-    if (current_depth >= max_recursion_depth) {
++    if (current_depth > max_recursion_depth) {
+         return;
+     }
+ 
+@@ -66,20 +70,28 @@ void ScanDirectoryRecursively(const QString& dir, QStringList& filePaths, int cu
+     }
+ #endif
+ 
++    const QString canonicalDir = QFileInfo(dir).canonicalFilePath();
++    if (canonicalDir.isEmpty() || visitedDirectories.contains(canonicalDir)) {
++        return;
++    }
++    visitedDirectories.insert(canonicalDir);
++
+     QFileInfoList entries = directory.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
++    const bool isGameDirectory =
++        QFile::exists(directory.filePath("sce_sys/param.sfo")) &&
++        QFile::exists(directory.filePath("eboot.bin"));
++    if (isGameDirectory) {
++        filePaths.append(canonicalDir);
++    }
+ 
+-    for (const auto& entry : entries) {
+-        if (entry.fileName().endsWith("-UPDATE") || entry.fileName().endsWith("-patch")) {
+-            continue;
+-        }
++    if (!isGameDirectory) {
++        for (const auto& entry : entries) {
++            if (entry.fileName().endsWith("-UPDATE") || entry.fileName().endsWith("-patch")) {
++                continue;
++            }
+ 
+-        // Check if this directory contains a PS4 game (has sce_sys/param.sfo and eboot.bin)
+-        if (QFile::exists(entry.filePath() + "/sce_sys/param.sfo") &&
+-            QFile::exists(entry.filePath() + "/eboot.bin")) {
+-            filePaths.append(entry.absoluteFilePath());
+-        } else {
+-            // If not a game directory, recursively scan it with increased depth
+-            ScanDirectoryRecursively(entry.absoluteFilePath(), filePaths, current_depth + 1);
++            ScanDirectoryRecursively(entry.absoluteFilePath(), filePaths, visitedDirectories,
++                                     current_depth + 1);
+         }
+     }
+ 
+@@ -110,15 +122,24 @@ GameInfoClass::~GameInfoClass() = default;
+ void GameInfoClass::GetGameInfo(QWidget* parent, bool force_size_refresh,
+                                 const std::string& force_size_serial) {
+     QStringList filePaths;
++    QSet<QString> visitedDirectories;
+     for (const auto& installLoc : EmulatorSettings.GetGameInstallDirs()) {
+         QString installDir;
+         Common::FS::PathToQString(installDir, installLoc);
+-        ScanDirectoryRecursively(installDir, filePaths, 0);
++        ScanDirectoryRecursively(installDir, filePaths, visitedDirectories, 0);
+     }
++    filePaths.removeDuplicates();
+ 
+     m_games = QtConcurrent::mapped(filePaths, [&](const QString& path) {
+                   return readGameInfo(Common::FS::PathFromQString(path));
+               }).results();
++    m_games.erase(std::remove_if(m_games.begin(), m_games.end(), [](const GameInfo& game) {
++                      const std::string& titleId = game.serial;
++                      return titleId.size() != 9 || titleId.compare(0, 4, "CUSA") != 0 ||
++                             !std::all_of(titleId.begin() + 4, titleId.end(),
++                                          [](char digit) { return digit >= '0' && digit <= '9'; });
++                  }),
++                  m_games.end());
+ 
+     // Progress bar, please be patient :)
+     QProgressDialog dialog(tr("Loading game list, please wait :3"), tr("Cancel"), 0, 0, parent);
+diff --git a/src/qt_gui/main_window.cpp b/src/qt_gui/main_window.cpp
+index cb32a65..e0f0d68 100644
+--- a/src/qt_gui/main_window.cpp
++++ b/src/qt_gui/main_window.cpp
+@@ -7,8 +7,10 @@
+ #include <QDateTime>
+ #include <QDir>
+ #include <QDockWidget>
++#include <QFileDialog>
+ #include <QFileInfo>
+ #include <QKeyEvent>
++#include <QMessageBox>
+ #include <QPlainTextEdit>
+ #include <QProgressDialog>
+ #include <QStatusBar>
+@@ -25,6 +27,7 @@
+ #include "common/versions.h"
+ #include "control_settings.h"
+ #include "core/emulator_state.h"
++#include "core/emulator_settings.h"
+ #include "core/file_sys/game_backend.h"
+ #include "crypto_key_dialog.h"
+ #include "dimensions_dialog.h"
+@@ -886,6 +889,11 @@ void MainWindow::CreateConnects() {
+     installPkgAct->setObjectName("installPkgAct");
+     ui->menuFile->insertAction(ui->bootGameAct, installPkgAct);
+     connect(installPkgAct, &QAction::triggered, this, &MainWindow::InstallPkg);
++
++    auto* scanGamesAct = new QAction(tr("Scan for PS4 games..."), this);
++    scanGamesAct->setObjectName("scanGamesAct");
++    ui->menuFile->insertAction(ui->bootGameAct, scanGamesAct);
++    connect(scanGamesAct, &QAction::triggered, this, &MainWindow::ScanGames);
+     connect(ui->gameInstallPathAct, &QAction::triggered, this, &MainWindow::InstallDirectory);
+ 
+     // elf viewer
+@@ -1208,6 +1216,31 @@ void MainWindow::InstallDirectory() {
+     RefreshGameTable();
+ }
+ 
++void MainWindow::ScanGames() {
++    const QString selectedPath =
++        QFileDialog::getExistingDirectory(this, tr("Select a folder to scan for PS4 games"),
++                                          QDir::homePath());
++    if (selectedPath.isEmpty()) {
++        return;
++    }
++
++    const QString scanPath = QDir(selectedPath).canonicalPath();
++    if (scanPath.isEmpty()) {
++        QMessageBox::warning(this, tr("Scan for PS4 games"),
++                             tr("The selected folder could not be accessed."));
++        return;
++    }
++
++    EmulatorSettings.AddGameInstallDir(Common::FS::PathFromQString(scanPath));
++    EmulatorSettings.Save();
++    ReloadGameTable(false);
++
++    QMessageBox::information(
++        this, tr("Scan complete"),
++        tr("Found %1 PS4 game(s) with CUSA title IDs in the library.")
++            .arg(m_game_info->m_games_backup.size()));
++}
++
+ void MainWindow::SetLastUsedTheme() {
+     Theme lastTheme = static_cast<Theme>(m_gui_settings->GetValue(gui::gen_theme).toInt());
+     m_window_themes.SetWindowTheme(lastTheme, ui->mw_searchbar);
+diff --git a/src/qt_gui/main_window.h b/src/qt_gui/main_window.h
+index 5f05771..cb10564 100644
+--- a/src/qt_gui/main_window.h
++++ b/src/qt_gui/main_window.h
+@@ -83,6 +83,7 @@ private:
+     void SetLastIconSizeBullet();
+     void SetUiIcons(bool isWhite);
+     void BootGame();
++    void ScanGames();
+     void InstallPkg();
+     void InstallPkgFile(const std::filesystem::path& file, const std::filesystem::path& install_dir,
+                         int pkg_num, int pkg_count);
+-- 
+2.43.0
+

@@ -1,12 +1,17 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
+#include <string>
+
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/thread.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
+#include "core/libraries/kernel/threads/hang_diag.h"
 #include "core/libraries/kernel/time.h"
+#include "core/libraries/gnmdriver/gnmdriver.h"
 #include "core/libraries/videoout/driver.h"
 #include "core/libraries/videoout/videoout_error.h"
 #include "imgui/renderer/imgui_core.h"
@@ -237,44 +242,50 @@ void VideoOutDriver::Flip(const Request& req) {
     // Update HDR status before presenting.
     presenter->SetHDR(req.port->is_hdr);
 
+    // Update flip status. The presenter calls this as soon as the game's frame is accepted when it
+    // paces a generated frame around it, so frame generation does not delay the game's flips.
+    const auto complete_flip = [this, &req] {
+        auto* port = req.port;
+        {
+            std::unique_lock lock{port->port_mutex};
+            auto& flip_status = port->flip_status;
+            flip_status.count++;
+            flip_status.process_time = Libraries::Kernel::sceKernelGetProcessTime();
+            flip_status.tsc = Libraries::Kernel::sceKernelReadTsc();
+            flip_status.flip_arg = req.flip_arg;
+            flip_status.current_buffer = req.index;
+            if (req.eop) {
+                --flip_status.gc_queue_num;
+            }
+            --flip_status.flip_pending_num;
+            LOG_DEBUG(Lib_VideoOut, "flip presented: index={} arg={} eop={} count={} pending={}",
+                      req.index, req.flip_arg, req.eop, flip_status.count,
+                      flip_status.flip_pending_num);
+        }
+
+        // Trigger flip events for the port.
+        for (auto event : port->flip_events) {
+            auto equeue = Kernel::GetEqueue(event);
+            if (equeue != nullptr) {
+                equeue->TriggerEvent(
+                    static_cast<u64>(OrbisVideoOutInternalEventId::Flip),
+                    Kernel::OrbisKernelEvent::Filter::VideoOut,
+                    reinterpret_cast<void*>(static_cast<u64>(OrbisVideoOutInternalEventId::Flip) |
+                                            (req.flip_arg << 16)));
+            }
+        }
+
+        // Reset prev flip label
+        if (port->prev_index != -1) {
+            port->buffer_labels[port->prev_index] = 0;
+            port->SignalVoLabel();
+        }
+        // save to prev buf index
+        port->prev_index = req.index;
+    };
+
     // Present the frame.
-    presenter->Present(req.frame);
-
-    // Update flip status.
-    auto* port = req.port;
-    {
-        std::unique_lock lock{port->port_mutex};
-        auto& flip_status = port->flip_status;
-        flip_status.count++;
-        flip_status.process_time = Libraries::Kernel::sceKernelGetProcessTime();
-        flip_status.tsc = Libraries::Kernel::sceKernelReadTsc();
-        flip_status.flip_arg = req.flip_arg;
-        flip_status.current_buffer = req.index;
-        if (req.eop) {
-            --flip_status.gc_queue_num;
-        }
-        --flip_status.flip_pending_num;
-    }
-
-    // Trigger flip events for the port.
-    for (auto event : port->flip_events) {
-        auto equeue = Kernel::GetEqueue(event);
-        if (equeue != nullptr) {
-            equeue->TriggerEvent(
-                static_cast<u64>(OrbisVideoOutInternalEventId::Flip),
-                Kernel::OrbisKernelEvent::Filter::VideoOut,
-                reinterpret_cast<void*>(static_cast<u64>(OrbisVideoOutInternalEventId::Flip) |
-                                        (req.flip_arg << 16)));
-        }
-    }
-
-    // Reset prev flip label
-    if (port->prev_index != -1) {
-        port->buffer_labels[port->prev_index] = 0;
-        port->SignalVoLabel();
-    }
-    // save to prev buf index
-    port->prev_index = req.index;
+    presenter->Present(req.frame, false, true, complete_flip);
 }
 
 void VideoOutDriver::DrawBlankFrame() {
@@ -326,24 +337,56 @@ void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_
         frame = presenter->PrepareFrame(group, buffer.address_left);
     }
 
-    std::scoped_lock lock{mutex};
-    requests.push({
-        .frame = frame,
-        .port = port,
-        .flip_arg = flip_arg,
-        .index = index,
-        .eop = is_eop,
-    });
+    LOG_DEBUG(Lib_VideoOut, "flip submitted: index={} arg={} eop={} pending={}", index, flip_arg,
+              is_eop, port->flip_status.flip_pending_num);
+    {
+        std::scoped_lock lock{mutex};
+        requests.push({
+            .frame = frame,
+            .port = port,
+            .flip_arg = flip_arg,
+            .index = index,
+            .eop = is_eop,
+        });
+    }
+    request_cv.notify_one();
 }
 
 void VideoOutDriver::PresentThread(std::stop_token token) {
-    const std::chrono::nanoseconds vblank_period(1000000000 /
-                                                 EmulatorSettings.GetVblankFrequency());
+    // With no limit, a vblank is signalled as soon as a flip is presented, or after at most
+    // max_idle_period when the game doesn't flip, so a game waiting on vblank never stalls.
+    using namespace std::chrono_literals;
+    const u32 vblank_frequency = EmulatorSettings.GetVblankFrequency();
+    const bool unlimited = vblank_frequency == 0;
+    constexpr std::chrono::nanoseconds max_idle_period = 1ms;
+    // Frames redrawn without a flip request (blank screen, overlays) stay at about 60 per second.
+    constexpr std::chrono::nanoseconds redraw_period = 16ms;
+    const std::chrono::nanoseconds vblank_period =
+        unlimited ? max_idle_period : std::chrono::nanoseconds(1000000000 / vblank_frequency);
+    LOG_INFO(Lib_VideoOut, "Vblank frequency: {}",
+             unlimited ? std::string{"unlimited"} : std::to_string(vblank_frequency));
 
     Common::SetCurrentThreadName("shadPS4:PresentThread");
+    Libraries::Kernel::RegisterHangDiagHostThread("shadPS4:PresentThread");
     Common::SetCurrentThreadRealtime(vblank_period);
 
     Common::AccurateTimer timer{vblank_period};
+    auto last_draw = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point last_flip{};
+    constexpr std::chrono::seconds flip_stall_timeout{10};
+    bool stall_dumped = false;
+    u32 stall_dumps = 0;
+
+    const auto wait_for_request = [&] {
+        std::unique_lock lk{mutex};
+        request_cv.wait_for(lk, max_idle_period, [&] { return !requests.empty(); });
+    };
+    const auto may_redraw = [&] {
+        if (unlimited) {
+            return std::chrono::steady_clock::now() - last_draw >= redraw_period;
+        }
+        return timer.GetTotalWait().count() < 0; // Dont draw too fast
+    };
 
     const auto receive_request = [this] -> Request {
         std::scoped_lock lk{mutex};
@@ -356,11 +399,20 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
     };
 
     while (!token.stop_requested()) {
-        timer.Start();
+        if (unlimited) {
+            wait_for_request();
+        } else {
+            timer.Start();
+        }
 
         if (DebugState.IsGuestThreadsPaused()) {
-            DrawLastFrame();
-            timer.End();
+            if (!unlimited || may_redraw()) {
+                DrawLastFrame();
+                last_draw = std::chrono::steady_clock::now();
+            }
+            if (!unlimited) {
+                timer.End();
+            }
             continue;
         }
 
@@ -369,16 +421,33 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
         if (vblank_status.count % (main_port.flip_rate + 1) == 0) {
             const auto request = receive_request();
             if (!request) {
-                if (timer.GetTotalWait().count() < 0) { // Dont draw too fast
+                if (may_redraw()) {
                     if (!main_port.is_open) {
                         DrawBlankFrame();
+                        last_draw = std::chrono::steady_clock::now();
                     } else if (ImGui::Core::MustKeepDrawing()) {
                         DrawLastFrame();
+                        last_draw = std::chrono::steady_clock::now();
                     }
                 }
             } else {
                 Flip(request);
+                last_draw = std::chrono::steady_clock::now();
+                last_flip = last_draw;
+                stall_dumped = false;
                 FRAME_END;
+            }
+        }
+
+        // Hang watchdog: once the game has started flipping, dump every thread's state when no
+        // flip arrives for a while, so freezes can be traced from the log.
+        if (main_port.is_open && last_flip != std::chrono::steady_clock::time_point{} &&
+            !stall_dumped && std::chrono::steady_clock::now() - last_flip > flip_stall_timeout) {
+            stall_dumped = true;
+            if (stall_dumps++ < 3) {
+                LOG_CRITICAL(Lib_VideoOut, "GPU state at stall: {}",
+                             Libraries::GnmDriver::GetGpuDebugState());
+                Libraries::Kernel::DumpThreadsForHang("no flip for 10 seconds");
             }
         }
 
@@ -406,7 +475,9 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
             main_port.vblank_cv.notify_all();
         }
 
-        timer.End();
+        if (!unlimited) {
+            timer.End();
+        }
     }
 }
 

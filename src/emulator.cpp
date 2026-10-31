@@ -18,10 +18,12 @@
 #include "common/thread.h"
 #include "core/emulator_settings.h"
 #include "core/ipc/ipc.h"
+#include "core/neural_screen.h"
 #ifdef ENABLE_DISCORD_RPC
 #include "common/discord_rpc_handler.h"
 #endif
 #include "common/elf_info.h"
+#include "common/hack_features.h"
 #include "common/memory_patcher.h"
 #include "common/ntapi.h"
 #include "common/path_util.h"
@@ -36,11 +38,13 @@
 #include "core/file_format/psf.h"
 #include "core/file_format/trp.h"
 #include "core/file_sys/fs.h"
+#include "core/guest_fault_recovery.h"
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/np/np_handler/np_handler.h"
 #include "core/libraries/np/np_trophy.h"
 #include "core/libraries/save_data/save_backup.h"
+#include "core/libraries/usbd/usbstorage.h"
 #include "core/linker.h"
 #include "core/memory.h"
 #include "core/user_settings.h"
@@ -444,6 +448,65 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     auto& game_info = Common::ElfInfo::Instance();
     game_info.initialized = true;
     game_info.game_serial = id;
+    Common::HackFeatures::Init(id);
+    // Compile every shader seen in earlier sessions before the game starts, for every game.
+    if (!EmulatorSettings.IsPipelineCacheEnabled()) {
+        EmulatorSettings.SetPipelineCacheEnabled(true, true);
+        LOG_INFO(Config, "Pipeline cache forced on to precompile shaders at boot");
+    }
+    // Games read small GPU-written results back on the CPU (culling and visibility data, exposure,
+    // counters). With readbacks disabled the CPU sees stale memory, so every game runs with at
+    // least relaxed readbacks, which only watch the small buffers the GPU writes.
+    if (EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Disabled) {
+        EmulatorSettings.SetReadbacksMode(GpuReadbacksMode::Relaxed, true);
+        LOG_INFO(Config, "GPU readbacks forced to Relaxed");
+    }
+    // Compiling a new pipeline on the GPU thread freezes the game for tens of milliseconds, so
+    // pipelines are built on worker threads for every game. A game-specific config can still turn
+    // it off for a title that needs every draw of a pipeline's first frames.
+    // Driveclub renders lighting probes and exposure data in passes it doesn't repeat, so a draw
+    // skipped while its pipeline compiles leaves the scene dark.
+    const bool needs_every_draw = id == "CUSA00003" || id == "CUSA00093";
+    if (!EmulatorSettings.IsAsyncPipelineCompilation() && !needs_every_draw &&
+        !EmulatorSettings.IsAsyncPipelineCompilationGameSpecific()) {
+        EmulatorSettings.SetAsyncPipelineCompilation(true, true);
+        LOG_INFO(Config, "Asynchronous pipeline compilation forced on");
+    } else if (needs_every_draw && EmulatorSettings.IsAsyncPipelineCompilation()) {
+        EmulatorSettings.SetAsyncPipelineCompilation(false, true);
+        LOG_INFO(Config, "Asynchronous pipeline compilation turned off for this game");
+    }
+    // UFC 4 reads GPU-rendered data back on the CPU, including images the GPU renders in linear
+    // layout. Without precise readbacks every fight is a black arena with only the HUD, and
+    // without linear image readbacks the fighters stay black silhouettes (shadPS4 #4375).
+    // Relaxed readbacks only flush GPU data when the CPU writes, which isn't enough here.
+    if (id == "CUSA14204" || id == "CUSA14209") {
+        if (EmulatorSettings.GetReadbacksMode() != GpuReadbacksMode::Precise) {
+            EmulatorSettings.SetReadbacksMode(GpuReadbacksMode::Precise, true);
+            LOG_INFO(Config, "UFC 4: GPU readbacks forced to Precise");
+        }
+        if (!EmulatorSettings.IsReadbackLinearImagesEnabled()) {
+            EmulatorSettings.SetReadbackLinearImagesEnabled(true, true);
+            LOG_INFO(Config, "UFC 4: linear image readbacks forced on");
+        }
+    }
+    // Driveclub reads GPU-rendered lighting and linear images back on the CPU; without precise
+    // and linear image readbacks the game renders dark.
+    if (id == "CUSA00003" || id == "CUSA00093") {
+        if (EmulatorSettings.GetReadbacksMode() != GpuReadbacksMode::Precise) {
+            EmulatorSettings.SetReadbacksMode(GpuReadbacksMode::Precise, true);
+            LOG_INFO(Config, "Driveclub: GPU readbacks forced to Precise");
+        }
+        if (!EmulatorSettings.IsReadbackLinearImagesEnabled()) {
+            EmulatorSettings.SetReadbackLinearImagesEnabled(true, true);
+            LOG_INFO(Config, "Driveclub: linear image readbacks forced on");
+        }
+    }
+    // inFAMOUS Second Son renders dark unless linear images are read back on the CPU too.
+    if (id == "CUSA00004") {
+        if (!EmulatorSettings.IsReadbackLinearImagesEnabled()) {
+            EmulatorSettings.SetReadbackLinearImagesEnabled(true, true);
+        }
+    }
     game_info.title = title;
     game_info.app_ver = app_version;
     game_info.firmware_ver = fw_version & 0xFFF00000;
@@ -479,6 +542,16 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     LOG_INFO(Config, "General isRedZonePatchingEnabled: {}",
              EmulatorSettings.IsRedZonePatchingEnabled());
 #endif
+    Core::GuestFaultRecovery::SetEnabled(EmulatorSettings.IsGuestFaultRecoveryEnabled());
+    Core::GuestFaultRecovery::SetAddressDescriber([](u64 address) -> std::string {
+        auto* linker = Common::Singleton<Core::Linker>::Instance();
+        if (auto* module = linker->FindByAddress(address)) {
+            return fmt::format("{}+{:#x}", module->name, address - module->GetBaseAddress());
+        }
+        return fmt::format("{:#x}", address);
+    });
+    LOG_INFO(Config, "General guestFaultRecovery: {}",
+             EmulatorSettings.IsGuestFaultRecoveryEnabled());
     LOG_INFO(Config, "General p2pPort: {}", EmulatorSettings.GetP2PPort());
     LOG_INFO(Config, "Log sync: {}", EmulatorSettings.IsLogSync());
     LOG_INFO(Config, "Log skipDuplicate: {}", EmulatorSettings.IsLogSkipDuplicate());
@@ -497,6 +570,9 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     LOG_INFO(Config, "GPU userfaultfdTracking: {}", EmulatorSettings.IsUserfaultfdTracking());
 #endif
     LOG_INFO(Config, "GPU inlineFetchShader: {}", EmulatorSettings.IsInlineFetchShader());
+    LOG_INFO(Config, "GPU anisotropicFiltering: {}", EmulatorSettings.GetAnisotropicFiltering());
+    LOG_INFO(Config, "GPU textureLodBias: {}", EmulatorSettings.GetTextureLodBias());
+    LOG_INFO(Config, "GPU fastShaderMath: {}", EmulatorSettings.IsFastShaderMath());
     LOG_INFO(Config, "Vulkan gpuId: {}", EmulatorSettings.GetGpuId());
     LOG_INFO(Config, "Vulkan vkValidation: {}", EmulatorSettings.IsVkValidationEnabled());
     LOG_INFO(Config, "Vulkan vkValidationCore: {}", EmulatorSettings.IsVkValidationCoreEnabled());
@@ -509,6 +585,8 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     LOG_INFO(Config, "Vulkan PipelineCacheEnabled: {}", EmulatorSettings.IsPipelineCacheEnabled());
     LOG_INFO(Config, "Vulkan PipelineCacheArchived: {}",
              EmulatorSettings.IsPipelineCacheArchived());
+    LOG_INFO(Config, "Vulkan AsyncPipelineCompilation: {}",
+             EmulatorSettings.IsAsyncPipelineCompilation());
 
     hwinfo::Memory ram;
     hwinfo::OS os;
@@ -548,6 +626,17 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     }
 
 #ifdef _WIN32
+    // Guest sleeps, waits and frame pacing rely on millisecond timing; the default Windows tick
+    // of ~15.6 ms makes them overshoot. Ask for 0.5 ms for the life of the process.
+    {
+        using NtSetTimerResolutionFn = LONG(NTAPI*)(ULONG, BOOLEAN, PULONG);
+        const auto set_timer_resolution = reinterpret_cast<NtSetTimerResolutionFn>(
+            GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtSetTimerResolution"));
+        ULONG actual_resolution = 0;
+        if (set_timer_resolution && set_timer_resolution(5000, TRUE, &actual_resolution) == 0) {
+            LOG_INFO(Config, "Timer resolution set to {:.2f} ms", actual_resolution / 10000.0);
+        }
+    }
     // Enable red-zone patching if the setting is enabled
     if (EmulatorSettings.IsRedZonePatchingEnabled()) {
         WindowsGuestRedZoneProtection::SetActiveMode(
@@ -588,11 +677,13 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         }
     } else {
         if (remote_host == "shadps4-emu" || remote_url.length() == 0) {
-            window_title = fmt::format("shadPS4 v{} {} {} | {}", Common::g_version,
-                                       Common::g_scm_branch, Common::g_scm_desc, game_title);
+            window_title =
+                fmt::format("shadPS4 v{} {} {} {} | {}", Common::g_version, Common::g_scm_branch,
+                            Common::g_scm_desc, Common::g_build_name, game_title);
         } else {
-            window_title = fmt::format("shadPS4 v{} {}/{} {} | {}", Common::g_version, remote_host,
-                                       Common::g_scm_branch, Common::g_scm_desc, game_title);
+            window_title = fmt::format("shadPS4 v{} {}/{} {} {} | {}", Common::g_version,
+                                       remote_host, Common::g_scm_branch, Common::g_scm_desc,
+                                       Common::g_build_name, game_title);
         }
     }
     window = std::make_unique<Frontend::WindowSDL>(EmulatorSettings.GetWindowWidth(),
@@ -612,12 +703,7 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
 
     // Mounting temp folders
     const auto& mount_temp_dir = Common::FS::GetUserPath(Common::FS::PathType::TempDataDir) / id;
-    if (std::filesystem::exists(mount_temp_dir)) {
-        // Temp folder should be cleared on each boot.
-        std::filesystem::remove_all(mount_temp_dir);
-    }
     std::filesystem::create_directory(mount_temp_dir);
-    mnt->Mount(mount_temp_dir, "/temp0");
     mnt->Mount(mount_temp_dir, "/temp");
 
     const auto& mount_download_dir =
@@ -626,6 +712,11 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         std::filesystem::create_directory(mount_download_dir);
     }
     mnt->Mount(mount_download_dir, "/download0");
+
+    const auto mount_usb_dir = Libraries::UsbStorage::GetUsbMountPath();
+    std::error_code ec_usb;
+    std::filesystem::create_directories(mount_usb_dir, ec_usb);
+    mnt->Mount(mount_usb_dir, "/mnt/usb0");
 
     const auto& mount_captures_dir = Common::FS::GetUserPath(Common::FS::PathType::CapturesDir);
     if (!std::filesystem::exists(mount_captures_dir)) {
@@ -703,6 +794,9 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         });
     }
 
+    // NeuralScreen (DLSS5) attaches to the game window right before the game starts.
+    NeuralScreen::StartForGameWindow(window->GetSDLWindow());
+
     linker->Execute(args);
 
     window->InitTimers();
@@ -710,6 +804,7 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         window->WaitEvent();
     }
 
+    NeuralScreen::Stop();
     std::quick_exit(0);
 }
 
@@ -780,6 +875,7 @@ void Emulator::Restart(std::filesystem::path eboot_path,
     args.insert(guest_args, {"--wait-for-pid", std::to_string(Debugger::GetCurrentPid())});
 
     LOG_INFO(Common, "Relaunching the emulator with args: {}", fmt::join(args, " "));
+    NeuralScreen::Stop();
     Libraries::Np::NpHandler::GetInstance().Shutdown();
     Common::Log::Shutdown();
 

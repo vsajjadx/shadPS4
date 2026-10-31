@@ -1,0 +1,62 @@
+From 9dec33f5f915e948ba8d898ad63da698d47ba9d1 Mon Sep 17 00:00:00 2001
+From: vsajjadx <vsajjadx@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 08:32:07 +0000
+Subject: [PATCH] Absolute on/off words for nr, fg and boost on the control
+ endpoint
+
+The shadPS4 hotkeys sent a bare toggle word and kept their own guess of the
+state, so a lost or repeated word left the emulator's notification showing
+the opposite of what NeuralScreen did. nr_on/nr_off, fg_on/fg_off and
+boost_on/boost_off set the state; each acts only when it differs and goes
+through the toggle path, so alerts and config writes stay the same.
+---
+ app/commands.py | 12 ++++++++++++
+ app/control.py  |  9 +++++++++
+ 2 files changed, 21 insertions(+)
+
+diff --git a/app/commands.py b/app/commands.py
+index 84a8b38..206e386 100644
+--- a/app/commands.py
++++ b/app/commands.py
+@@ -2031,6 +2031,18 @@ def drain_commands(st) -> bool:
+                                  + UI_STRINGS[st.lang].get(
+                                      "tile_on" if boost_on else "tile_off",
+                                      "On" if boost_on else "Off"))
++            elif cmd in ("nr_set_on", "nr_set_off"):
++                # The absolute form of "toggle": act only when the state
++                # differs, through the same path the toggle takes.
++                if (cmd == "nr_set_on") == bool(st.paused):
++                    st.tray_commands.put("toggle")
++            elif cmd in ("framegen_set_on", "framegen_set_off"):
++                if (cmd == "framegen_set_on") != bool(
++                        st.cfg.get("frame_generation", False)):
++                    st.tray_commands.put("framegen")
++            elif cmd in ("boost_set_on", "boost_set_off"):
++                if (cmd == "boost_set_on") != bool(settings_io.queued_small(st)):
++                    st.tray_commands.put("boost")
+             elif cmd == "reload":
+                 # Re-read the config another program wrote (the shadPS4
+                 # launcher) and apply what changed - every value through the
+diff --git a/app/control.py b/app/control.py
+index 76ffdd3..62056c9 100644
+--- a/app/control.py
++++ b/app/control.py
+@@ -27,6 +27,15 @@ COMMANDS = {
+     "fg": "framegen",
+     "framegen": "framegen",
+     "boost": "boost",
++    # Absolute words: the caller says which state it wants, so a lost or
++    # repeated word can no longer leave the two programs showing opposite
++    # states (a plain toggle word only flips whatever the state happens to be).
++    "nr_on": "nr_set_on",
++    "nr_off": "nr_set_off",
++    "fg_on": "framegen_set_on",
++    "fg_off": "framegen_set_off",
++    "boost_on": "boost_set_on",
++    "boost_off": "boost_set_off",
+     "reload": "reload",
+     "quit": "quit",
+     "ping": None,
+-- 
+2.43.0
+

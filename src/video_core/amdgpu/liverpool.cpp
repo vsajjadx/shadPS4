@@ -3,13 +3,19 @@
 
 #include <boost/preprocessor/stringize.hpp>
 
+#include <chrono>
+#include <fmt/format.h>
+#include <mutex>
+#include <unordered_set>
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/polyfill_thread.h"
+#include "common/scope_exit.h"
 #include "common/thread.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/kernel/process.h"
+#include "core/libraries/kernel/threads/hang_diag.h"
 #include "core/libraries/videoout/driver.h"
 #include "core/memory.h"
 #include "core/platform.h"
@@ -17,6 +23,47 @@
 #include "video_core/amdgpu/pm4_cmds.h"
 #include "video_core/renderdoc.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
+
+namespace {
+// nhlport diagnostics: a queue fiber that spins on a wait for seconds means the game waits for
+// something the emulator never produces (a CPU label write, another queue, a flip). Report it.
+struct SpinDiag {
+    u64 spins = 0;
+    std::chrono::steady_clock::time_point start;
+    bool reported = false;
+
+    bool Tick() {
+        if (spins++ == 0) {
+            start = std::chrono::steady_clock::now();
+            return false;
+        }
+        if (reported || (spins & 1023) != 0) {
+            return false;
+        }
+        if (std::chrono::steady_clock::now() - start < std::chrono::seconds(2)) {
+            return false;
+        }
+        reported = true;
+        return true;
+    }
+
+    double Seconds() const {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    }
+};
+
+void LogWaitRegMemSpin(const char* queue, const AmdGpu::PM4CmdWaitRegMem& w, bool is_vo_label,
+                       u32 num_submits, size_t gfx_submits, u32 num_mapped_queues) {
+    const bool mem = w.mem_space.Value() == AmdGpu::PM4CmdWaitRegMem::MemSpace::Memory;
+    const u32 value = mem ? *w.Address<const u32*>() : 0u;
+    LOG_WARNING(Render,
+                "{} WaitRegMem spinning > 2s: {} {:#x} func={} ref={:#x} mask={:#x} cur={:#x} "
+                "vo_label={} engine={} (num_submits={} gfx_submits={} mapped_queues={})",
+                queue, mem ? "addr" : "reg", mem ? w.Address<uintptr_t>() : uintptr_t(w.Reg()),
+                static_cast<u32>(w.function.Value()), w.ref, w.mask, value, is_vo_label,
+                static_cast<u32>(w.engine.Value()), num_submits, gfx_submits, num_mapped_queues);
+}
+} // namespace
 
 namespace AmdGpu {
 
@@ -27,7 +74,8 @@ static const char* ccb_task_name{"CCB_TASK"};
 static_assert(Liverpool::NumComputeRings <= MAX_NAMES);
 
 #define NAME_NUM(z, n, name) BOOST_PP_STRINGIZE(name) BOOST_PP_STRINGIZE(n),
-#define NAME_ARRAY(name, num) {BOOST_PP_REPEAT(num, NAME_NUM, name)}
+#define NAME_ARRAY(name, num)                                                                      \
+    { BOOST_PP_REPEAT(num, NAME_NUM, name) }
 
 static const char* acb_task_name[] = NAME_ARRAY(ACB_TASK, MAX_NAMES);
 
@@ -51,6 +99,30 @@ static const char* acb_task_name[] = NAME_ARRAY(ACB_TASK, MAX_NAMES);
 
 std::array<u8, 48_KB> Liverpool::ConstantEngine::constants_heap;
 
+// DMA_DATA with a register source or destination address space (SAS/DAS = 1): its effect is
+// undocumented, so the packet is reported once per destination and skipped instead of stopping
+// the emulator. (From shadGT FIX-035.)
+static bool SkipRegisterSpaceDmaData(const PM4DmaData* dma_data, const char* queue) {
+    if (dma_data->command.das == 0 && dma_data->command.sas == 0) {
+        return false;
+    }
+    static std::mutex mutex;
+    static std::unordered_set<u64> reported;
+    std::scoped_lock lk{mutex};
+    if (reported
+            .insert(u64(dma_data->dst_addr_lo) << 8 | u64(dma_data->src_sel) << 4 |
+                    u64(dma_data->dst_sel))
+            .second) {
+        LOG_ERROR(Render_Vulkan,
+                  "{} DMA_DATA with register address space skipped: sas {} das {} src_sel {} "
+                  "dst_sel {} dst {:#x} bytes {}",
+                  queue, u32(dma_data->command.sas), u32(dma_data->command.das),
+                  u32(dma_data->src_sel), u32(dma_data->dst_sel), u32(dma_data->dst_addr_lo),
+                  dma_data->NumBytes());
+    }
+    return true;
+}
+
 static std::span<const u32> NextPacket(std::span<const u32> span, size_t offset) {
     if (offset > span.size()) {
         LOG_ERROR(
@@ -73,6 +145,37 @@ Liverpool::Liverpool() : guest_markers_enabled{EmulatorSettings.IsVkGuestMarkers
 Liverpool::~Liverpool() {
     process_thread.request_stop();
     process_thread.join();
+    while (!ce_submits.empty()) {
+        ce_submits.front().destroy();
+        ce_submits.pop();
+    }
+    for (auto& queue : mapped_queues) {
+        while (!queue.submits.empty()) {
+            queue.submits.front().destroy();
+            queue.submits.pop();
+        }
+    }
+}
+
+void Liverpool::ProcessCeQueue() {
+    auto& queue = mapped_queues[GfxQueueId];
+    Task::Handle task{};
+    {
+        std::scoped_lock lock{queue.m_access};
+        if (ce_submits.empty()) {
+            return;
+        }
+        task = ce_submits.front();
+    }
+    task.resume();
+    if (task.done()) {
+        task.destroy();
+        std::scoped_lock lock{queue.m_access};
+        ce_submits.pop();
+        --num_submits;
+        std::scoped_lock lock2{submit_mutex};
+        submit_cv.notify_all();
+    }
 }
 
 void Liverpool::ProcessCommands() {
@@ -89,8 +192,20 @@ void Liverpool::ProcessCommands() {
     }
 }
 
+std::string Liverpool::DescribeState() const {
+    const s64 now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now().time_since_epoch())
+                           .count();
+    const s64 last = last_progress_ms.load(std::memory_order_relaxed);
+    return fmt::format("num_submits={} num_commands={} submit_done={} curr_qid={} "
+                       "last_task_resume={}ms_ago",
+                       num_submits.load(), num_commands.load(), submit_done.load(), curr_qid,
+                       last == 0 ? -1 : now_ms - last);
+}
+
 void Liverpool::Process(std::stop_token stoken) {
     Common::SetCurrentThreadName("shadPS4:GpuCommandProcessor");
+    Libraries::Kernel::RegisterHangDiagHostThread("shadPS4:GpuCommandProcessor");
     gpu_id = std::this_thread::get_id();
 #ifdef __linux__
     gpu_tid = gettid();
@@ -99,8 +214,18 @@ void Liverpool::Process(std::stop_token stoken) {
     while (!stoken.stop_requested()) {
         {
             std::unique_lock lk{submit_mutex};
-            Common::CondvarWait(submit_cv, lk, stoken,
-                                [this] { return num_commands || num_submits || submit_done; });
+            const auto has_work = [this] { return num_commands || num_submits || submit_done; };
+            // A game can wait on the CPU for occlusion counters, which are written once the
+            // host GPU has run the draws before them, so they are resolved while idle.
+            if (rasterizer && rasterizer->HasPendingOcclusionDumps() && !has_work()) {
+                rasterizer->Flush();
+            }
+            while (rasterizer && rasterizer->HasPendingOcclusionDumps() && !has_work() &&
+                   !stoken.stop_requested()) {
+                submit_cv.wait_for(lk, std::chrono::milliseconds{1});
+                rasterizer->ResolveOcclusionDumps();
+            }
+            Common::CondvarWait(submit_cv, lk, stoken, has_work);
         }
         if (stoken.stop_requested()) {
             break;
@@ -110,8 +235,9 @@ void Liverpool::Process(std::stop_token stoken) {
 
         curr_qid = -1;
 
-        while (num_submits || num_commands) {
+        while ((num_submits || num_commands) && !stoken.stop_requested()) {
             ProcessCommands();
+            ProcessCeQueue();
 
             curr_qid = (curr_qid + 1) % num_mapped_queues;
 
@@ -126,6 +252,10 @@ void Liverpool::Process(std::stop_token stoken) {
                 task = queue.submits.front();
             }
             task.resume();
+            last_progress_ms.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       std::chrono::steady_clock::now().time_since_epoch())
+                                       .count(),
+                                   std::memory_order_relaxed);
 
             if (task.done()) {
                 task.destroy();
@@ -140,11 +270,11 @@ void Liverpool::Process(std::stop_token stoken) {
         }
 
         if (submit_done) {
-            VideoCore::EndCapture();
             if (rasterizer) {
                 rasterizer->OnSubmit();
                 rasterizer->Flush();
             }
+            VideoCore::EndCapture();
             submit_done = false;
         }
 
@@ -161,8 +291,9 @@ Liverpool::Task Liverpool::ProcessCeUpdate(std::span<const u32> ccb) {
         const auto* header = reinterpret_cast<const PM4Header*>(ccb.data());
         const u32 type = header->type;
         if (type != 3) {
-            // No other types of packets were spotted so far
-            UNREACHABLE_MSG("Invalid PM4 type {}", type);
+            // Garbage in the constant engine buffer; drop the rest of it.
+            LOG_ERROR(Render, "Invalid PM4 type {} in CE buffer, skipping the rest", type);
+            break;
         }
 
         const PM4ItOpcode opcode = header->type3.opcode;
@@ -190,7 +321,8 @@ Liverpool::Task Liverpool::ProcessCeUpdate(std::span<const u32> ccb) {
         }
         case PM4ItOpcode::WaitOnDeCounterDiff: {
             const auto diff = it_body[0];
-            while ((cblock.de_count - cblock.ce_count) >= diff) {
+            while (cblock.ce_count >= cblock.de_count &&
+                   (cblock.ce_count - cblock.de_count) >= diff) {
                 YIELD_CE();
             }
             break;
@@ -199,19 +331,21 @@ Liverpool::Task Liverpool::ProcessCeUpdate(std::span<const u32> ccb) {
             const auto* indirect_buffer = reinterpret_cast<const PM4CmdIndirectBuffer*>(header);
             auto task =
                 ProcessCeUpdate({indirect_buffer->Address<const u32>(), indirect_buffer->ib_size});
+            SCOPE_EXIT {
+                task.handle.destroy();
+            };
             RESUME_CE(task);
 
             while (!task.handle.done()) {
                 YIELD_CE();
                 RESUME_CE(task);
             }
-            task.handle.destroy();
             break;
         }
         default:
-            const u32 count = header->type3.NumWords();
-            UNREACHABLE_MSG("Unknown PM4 type 3 opcode {:#x} with count {}",
-                            static_cast<u32>(opcode), count);
+            LOG_ERROR(Render, "Skipping unknown CE PM4 opcode {:#x} with count {}",
+                      static_cast<u32>(opcode), header->type3.NumWords());
+            break;
         }
         ccb = NextPacket(ccb, header->type3.NumWords() + 1);
     }
@@ -219,20 +353,8 @@ Liverpool::Task Liverpool::ProcessCeUpdate(std::span<const u32> ccb) {
     FIBER_EXIT;
 }
 
-Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<const u32> ccb) {
+Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb) {
     FIBER_ENTER(dcb_task_name);
-
-    cblock.Reset();
-
-    // TODO: potentially, ASCs also can depend on CE and in this case the
-    // CE task should be moved into more global scope
-    Task ce_task{};
-
-    if (!ccb.empty()) {
-        // In case of CCB provided kick off CE asap to have the constant heap ready to use
-        ce_task = ProcessCeUpdate(ccb);
-        RESUME_GFX(ce_task);
-    }
 
     const auto base_addr = reinterpret_cast<uintptr_t>(dcb.data());
     while (!dcb.empty()) {
@@ -243,12 +365,15 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
 
         switch (type) {
         default:
-            UNREACHABLE_MSG("Wrong PM4 type {}", type);
-            break;
+            // Garbage in the command buffer; drop the rest of it rather than run random data.
+            LOG_ERROR(Render, "Wrong PM4 type {}, skipping the rest of the command buffer", type);
+            dcb = {};
+            continue;
         case 0:
-            UNREACHABLE_MSG("Unimplemented PM4 type 0, base reg: {}, size: {}",
-                            header->type0.base.Value(), header->type0.NumWords());
-            break;
+            LOG_ERROR(Render, "Skipping unimplemented PM4 type 0, base reg: {}, size: {}",
+                      header->type0.base.Value(), header->type0.NumWords());
+            dcb = NextPacket(dcb, header->type0.NumWords() + 1);
+            continue;
         case 2:
             // Type-2 packet are used for padding purposes
             dcb = NextPacket(dcb, 1);
@@ -268,6 +393,15 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     // There is no evidence that GPU CP drives flip events by parsing
                     // special NOP packets. For convenience lets assume that it does.
                     Platform::IrqC::Instance()->Signal(Platform::InterruptId::GfxFlip);
+                    break;
+                }
+                case PM4CmdNop::PayloadType::PatchedFlipEop: {
+                    // On real hardware the flip is driven by an end-of-pipe interrupt that is
+                    // also delivered to every equeue registered for kEqEventGfxEop. Games that
+                    // write their GPU fences without interrupts rely on that per-flip event to
+                    // wake the thread that processes the fences.
+                    Platform::IrqC::Instance()->Signal(Platform::InterruptId::GfxFlip);
+                    Platform::IrqC::Instance()->Signal(Platform::InterruptId::GfxEop);
                     break;
                 }
                 case PM4CmdNop::PayloadType::DebugMarkerPush: {
@@ -666,14 +800,8 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     // immediately
                     regs.cp_strmout_cntl.offset_update_done = 1;
                 } else if (event->event_index.Value() == EventIndex::ZpassDone) {
-                    if (event->event_type.Value() == EventType::PixelPipeStatDump) {
-                        static constexpr u64 OcclusionCounterValidMask = 0x8000000000000000ULL;
-                        static constexpr u64 OcclusionCounterStep = 0x2FFFFFFULL;
-                        u64* results = event->Address<u64*>();
-                        for (s32 i = 0; i < num_counter_pairs; ++i, results += 2) {
-                            *results = pixel_counter | OcclusionCounterValidMask;
-                        }
-                        pixel_counter += OcclusionCounterStep;
+                    if (event->event_type.Value() == EventType::PixelPipeStatDump && rasterizer) {
+                        rasterizer->DumpOcclusionCounter(event->Address<u64*>(), num_counter_pairs);
                     }
                 }
                 break;
@@ -715,7 +843,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 if (dma_data->dst_addr_lo == 0x3022C || !rasterizer) {
                     break;
                 }
-                ASSERT(dma_data->command.das == 0);
+                if (SkipRegisterSpaceDmaData(dma_data, "gfx")) {
+                    break;
+                }
                 if (dma_data->src_sel == DmaDataSrc::Data && dma_data->dst_sel == DmaDataDst::Gds) {
                     rasterizer->FillBuffer(dma_data->dst_addr_lo, dma_data->NumBytes(),
                                            dma_data->data, true);
@@ -742,23 +872,26 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                            dma_data->SrcAddress<VAddr>(), dma_data->NumBytes(),
                                            false, false);
                 } else {
-                    UNREACHABLE_MSG("WriteData src_sel = {}, dst_sel = {}", u32(dma_data->src_sel),
-                                    u32(dma_data->dst_sel));
+                    LOG_ERROR(Render, "Skipping DmaData with src_sel = {}, dst_sel = {}",
+                              u32(dma_data->src_sel), u32(dma_data->dst_sel));
                 }
                 break;
             }
             case PM4ItOpcode::WriteData: {
                 const auto* write_data = reinterpret_cast<const PM4CmdWriteData*>(header);
-                ASSERT(write_data->dst_sel.Value() == 2 || write_data->dst_sel.Value() == 5);
                 const u32 data_size = (header->type3.count.Value() - 2) * 4;
                 u64* address = write_data->Address<u64*>();
-                if (!write_data->wr_one_addr.Value()) {
+                if (write_data->dst_sel.Value() != 2 && write_data->dst_sel.Value() != 5) {
+                    LOG_ERROR(Render, "Skipping WriteData to dst_sel {}",
+                              u32(write_data->dst_sel.Value()));
+                } else if (!write_data->wr_one_addr.Value()) {
                     if (rasterizer) {
                         rasterizer->OnFence();
                     }
                     std::memcpy(address, write_data->data, data_size);
-                } else {
-                    UNREACHABLE();
+                } else if (data_size >= 4) {
+                    // Every dword goes to the same address, so only the last one remains.
+                    std::memcpy(address, &write_data->data[data_size / 4 - 1], sizeof(u32));
                 }
                 break;
             }
@@ -777,8 +910,17 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 if (mem_semaphore->IsSignaling()) {
                     mem_semaphore->Signal();
                 } else {
+                    SpinDiag diag{};
                     while (!mem_semaphore->Signaled()) {
+                        if (diag.Tick()) {
+                            LOG_WARNING(Render, "GFX MemSemaphore spinning > 2s: packet {:#x}",
+                                        reinterpret_cast<uintptr_t>(mem_semaphore));
+                        }
                         YIELD_GFX();
+                    }
+                    if (diag.reported) {
+                        LOG_WARNING(Render, "GFX MemSemaphore resolved after {:.1f}s",
+                                    diag.Seconds());
                     }
                     mem_semaphore->Decrement();
                 }
@@ -793,8 +935,16 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     break;
                 }
                 const PM4CmdRewind* rewind = reinterpret_cast<const PM4CmdRewind*>(header);
+                SpinDiag diag{};
                 while (!rewind->Valid()) {
+                    if (diag.Tick()) {
+                        LOG_WARNING(Render, "GFX Rewind spinning > 2s: packet {:#x}",
+                                    reinterpret_cast<uintptr_t>(rewind));
+                    }
                     YIELD_GFX();
+                }
+                if (diag.reported) {
+                    LOG_WARNING(Render, "GFX Rewind resolved after {:.1f}s", diag.Seconds());
                 }
                 break;
             }
@@ -811,22 +961,42 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     vo_port->WaitVoLabel([&] { return wait_reg_mem->Test(regs.reg_array); });
                     break;
                 }
+                SpinDiag diag{};
+                bool flushed_for_occlusion = false;
                 while (!wait_reg_mem->Test(regs.reg_array)) {
+                    if (diag.Tick()) {
+                        LogWaitRegMemSpin("GFX", *wait_reg_mem, vo_port->IsVoLabel(wait_addr),
+                                          num_submits, mapped_queues[GfxQueueId].submits.size(),
+                                          num_mapped_queues);
+                    }
+                    if (rasterizer && rasterizer->HasPendingOcclusionDumps()) {
+                        // The wait may be for occlusion counters, which are only written once
+                        // the host GPU has run the draws before them.
+                        if (!std::exchange(flushed_for_occlusion, true)) {
+                            rasterizer->Flush();
+                        }
+                        rasterizer->ResolveOcclusionDumps();
+                    }
                     YIELD_GFX();
+                }
+                if (diag.reported) {
+                    LOG_WARNING(Render, "GFX WaitRegMem resolved after {:.1f}s", diag.Seconds());
                 }
                 break;
             }
             case PM4ItOpcode::IndirectBuffer: {
                 const auto* indirect_buffer = reinterpret_cast<const PM4CmdIndirectBuffer*>(header);
                 auto task = ProcessGraphics(
-                    {indirect_buffer->Address<const u32>(), indirect_buffer->ib_size}, {});
+                    {indirect_buffer->Address<const u32>(), indirect_buffer->ib_size});
+                SCOPE_EXIT {
+                    task.handle.destroy();
+                };
                 RESUME_GFX(task);
 
                 while (!task.handle.done()) {
                     YIELD_GFX();
                     RESUME_GFX(task);
                 }
-                task.handle.destroy();
                 break;
             }
             case PM4ItOpcode::IncrementDeCounter: {
@@ -834,8 +1004,8 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 break;
             }
             case PM4ItOpcode::WaitOnCeCounter: {
-                while (cblock.ce_count <= cblock.de_count && !ce_task.handle.done()) {
-                    RESUME_GFX(ce_task);
+                while (cblock.ce_count <= cblock.de_count) {
+                    YIELD_GFX();
                 }
                 break;
             }
@@ -870,19 +1040,13 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 break;
             }
             default:
-                UNREACHABLE_MSG("Unknown PM4 type 3 opcode {:#x} with count {}",
-                                static_cast<u32>(opcode), count);
+                LOG_ERROR(Render, "Skipping unknown PM4 type 3 opcode {:#x} with count {}",
+                          static_cast<u32>(opcode), count);
+                break;
             }
             dcb = NextPacket(dcb, header->type3.NumWords() + 1);
             break;
         }
-    }
-
-    if (ce_task.handle) {
-        while (!ce_task.handle.done()) {
-            RESUME_GFX(ce_task);
-        }
-        ce_task.handle.destroy();
     }
 
     FIBER_EXIT;
@@ -939,8 +1103,14 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
         }
 
         if (header->type != 3) {
-            // No other types of packets were spotted so far
-            UNREACHABLE_MSG("Invalid PM4 type {}", header->type.Value());
+            LOG_ERROR(Render, "Skipping invalid PM4 type {} dword in compute queue",
+                      header->type.Value());
+            acb = NextPacket(acb, 1);
+            if constexpr (!is_indirect) {
+                *queue.read_addr += 1;
+                *queue.read_addr %= queue.ring_size_dw;
+            }
+            continue;
         }
 
         const PM4ItOpcode opcode = header->type3.opcode;
@@ -955,13 +1125,15 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
             const auto* indirect_buffer = reinterpret_cast<const PM4CmdIndirectBuffer*>(header);
             auto task = ProcessCompute<true>(
                 {indirect_buffer->Address<const u32>(), indirect_buffer->ib_size}, vqid);
+            SCOPE_EXIT {
+                task.handle.destroy();
+            };
             RESUME_ASC(task, vqid);
 
             while (!task.handle.done()) {
                 YIELD_ASC(vqid);
                 RESUME_ASC(task, vqid);
             }
-            task.handle.destroy();
             break;
         }
         case PM4ItOpcode::DmaData: {
@@ -969,7 +1141,9 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
             if (dma_data->dst_addr_lo == 0x3022C || !rasterizer) {
                 break;
             }
-            ASSERT(dma_data->command.das == 0);
+            if (SkipRegisterSpaceDmaData(dma_data, "compute")) {
+                break;
+            }
             if (dma_data->src_sel == DmaDataSrc::Data && dma_data->dst_sel == DmaDataDst::Gds) {
                 rasterizer->FillBuffer(dma_data->dst_addr_lo, dma_data->NumBytes(), dma_data->data,
                                        true);
@@ -1005,8 +1179,8 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
                     rasterizer->CopyBuffer(dst_addr, src_addr, num_bytes, false, false);
                 }
             } else {
-                UNREACHABLE_MSG("WriteData src_sel = {}, dst_sel = {}", u32(dma_data->src_sel),
-                                u32(dma_data->dst_sel));
+                LOG_ERROR(Render, "Skipping DmaData with src_sel = {}, dst_sel = {}",
+                          u32(dma_data->src_sel), u32(dma_data->dst_sel));
             }
             break;
         }
@@ -1092,15 +1266,18 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
         }
         case PM4ItOpcode::WriteData: {
             const auto* write_data = reinterpret_cast<const PM4CmdWriteData*>(header);
-            ASSERT(write_data->dst_sel.Value() == 2 || write_data->dst_sel.Value() == 5);
             const u32 data_size = (header->type3.count.Value() - 2) * 4;
-            if (!write_data->wr_one_addr.Value()) {
+            if (write_data->dst_sel.Value() != 2 && write_data->dst_sel.Value() != 5) {
+                LOG_ERROR(Render, "Skipping WriteData to dst_sel {}",
+                          u32(write_data->dst_sel.Value()));
+            } else if (!write_data->wr_one_addr.Value()) {
                 if (rasterizer) {
                     rasterizer->OnFence();
                 }
                 std::memcpy(write_data->Address<void*>(), write_data->data, data_size);
-            } else {
-                UNREACHABLE();
+            } else if (data_size >= 4) {
+                std::memcpy(write_data->Address<void*>(), &write_data->data[data_size / 4 - 1],
+                            sizeof(u32));
             }
             break;
         }
@@ -1109,8 +1286,17 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
             if (mem_semaphore->IsSignaling()) {
                 mem_semaphore->Signal();
             } else {
+                SpinDiag diag{};
                 while (!mem_semaphore->Signaled()) {
+                    if (diag.Tick()) {
+                        LOG_WARNING(Render, "ASC{} MemSemaphore spinning > 2s: packet {:#x}", vqid,
+                                    reinterpret_cast<uintptr_t>(mem_semaphore));
+                    }
                     YIELD_ASC(vqid);
+                }
+                if (diag.reported) {
+                    LOG_WARNING(Render, "ASC{} MemSemaphore resolved after {:.1f}s", vqid,
+                                diag.Seconds());
                 }
                 mem_semaphore->Decrement();
             }
@@ -1119,8 +1305,20 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
         case PM4ItOpcode::WaitRegMem: {
             const auto* wait_reg_mem = reinterpret_cast<const PM4CmdWaitRegMem*>(header);
             ASSERT(wait_reg_mem->engine.Value() == PM4CmdWaitRegMem::Engine::Me);
+            SpinDiag diag{};
             while (!wait_reg_mem->Test(regs.reg_array)) {
+                if (diag.Tick()) {
+                    const std::string name = fmt::format("ASC{}", vqid);
+                    LogWaitRegMemSpin(name.c_str(), *wait_reg_mem,
+                                      vo_port->IsVoLabel(wait_reg_mem->Address<u64*>()),
+                                      num_submits, mapped_queues[GfxQueueId].submits.size(),
+                                      num_mapped_queues);
+                }
                 YIELD_ASC(vqid);
+            }
+            if (diag.reported) {
+                LOG_WARNING(Render, "ASC{} WaitRegMem resolved after {:.1f}s", vqid,
+                            diag.Seconds());
             }
             break;
         }
@@ -1143,8 +1341,9 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
             break;
         }
         default:
-            UNREACHABLE_MSG("Unknown PM4 type 3 opcode {:#x} with count {}",
-                            static_cast<u32>(opcode), header->type3.NumWords());
+            LOG_ERROR(Render, "Skipping unknown compute PM4 opcode {:#x} with count {}",
+                      static_cast<u32>(opcode), header->type3.NumWords());
+            break;
         }
 
         acb = NextPacket(acb, next_dw_off);
@@ -1198,15 +1397,17 @@ void Liverpool::SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb) {
         std::tie(dcb, ccb) = CopyCmdBuffers(dcb, ccb);
     }
 
-    auto task = ProcessGraphics(dcb, ccb);
+    auto task = ProcessGraphics(dcb);
     {
-        std::scoped_lock lock{queue.m_access};
+        std::scoped_lock lock{submit_mutex, queue.m_access};
+        if (!ccb.empty()) {
+            ce_submits.emplace(ProcessCeUpdate(ccb).handle);
+            ++num_submits;
+        }
         queue.submits.emplace(task.handle);
+        ++num_submits;
+        submit_cv.notify_all();
     }
-
-    std::scoped_lock lk{submit_mutex};
-    ++num_submits;
-    submit_cv.notify_one();
 }
 
 void Liverpool::SubmitAsc(u32 gnm_vqid, std::span<const u32> acb) {
@@ -1223,7 +1424,7 @@ void Liverpool::SubmitAsc(u32 gnm_vqid, std::span<const u32> acb) {
     std::scoped_lock lk{submit_mutex};
     num_mapped_queues = std::max(num_mapped_queues, gnm_vqid + 1);
     ++num_submits;
-    submit_cv.notify_one();
+    submit_cv.notify_all();
 }
 
 } // namespace AmdGpu

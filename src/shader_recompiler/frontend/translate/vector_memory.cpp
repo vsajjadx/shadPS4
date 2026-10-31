@@ -7,6 +7,10 @@ namespace Shader::Gcn {
 
 void Translator::EmitVectorMemory(const GcnInst& inst) {
     switch (inst.opcode) {
+    case Opcode::BUFFER_WBINVL1_SC:
+    case Opcode::BUFFER_WBINVL1:
+        ir.DeviceMemoryBarrier();
+        return;
         // MUBUF / MTBUF
 
         // Buffer load operations
@@ -82,6 +86,8 @@ void Translator::EmitVectorMemory(const GcnInst& inst) {
         // Buffer atomic operations
     case Opcode::BUFFER_ATOMIC_ADD:
         return BUFFER_ATOMIC(AtomicOp::Add, inst);
+    case Opcode::BUFFER_ATOMIC_ADD_X2:
+        return BUFFER_ATOMIC<IR::U64>(AtomicOp::Add, inst);
     case Opcode::BUFFER_ATOMIC_SWAP:
         return BUFFER_ATOMIC(AtomicOp::Swap, inst);
     case Opcode::BUFFER_ATOMIC_CMPSWAP:
@@ -421,7 +427,9 @@ void Translator::BUFFER_ATOMIC(AtomicOp op, const GcnInst& inst) {
 
     if (mubuf.glc) {
         if constexpr (std::is_same_v<T, IR::U64>) {
-            UNREACHABLE();
+            const auto vector = ir.UnpackUint2x32(IR::U64{original_val});
+            ir.SetVectorReg(vdata, IR::U32{ir.CompositeExtract(vector, 0)});
+            ir.SetVectorReg(vdata + 1, IR::U32{ir.CompositeExtract(vector, 1)});
         } else {
             ir.SetVectorReg(vdata, T{original_val});
         }
@@ -627,7 +635,8 @@ IR::Value EmitImageSample(IR::IREmitter& ir, const GcnInst& inst, const IR::Scal
         info.gather_comp.Assign(std::bit_width(mimg.dmask) - 1);
         info.is_gather.Assign(true);
     } else {
-        info.has_derivatives.Assign(flags.test(MimgModifier::Derivative));
+        info.has_derivatives.Assign(flags.test(MimgModifier::Derivative) ||
+                                    flags.test(MimgModifier::CoarseDerivative));
     }
 
     // Load all dwords of T# and S#. We will use them as the handle that will guide

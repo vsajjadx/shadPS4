@@ -19,13 +19,14 @@ on:
 
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'push' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' || github.repository != 'shadps4-emu/shadPS4' || github.event_name != 'push' }}
 
 env:
   BUILD_TYPE: Release
 
 jobs:
   reuse:
+    if: false  # Windows-only build
     runs-on: ubuntu-24.04
     continue-on-error: true
     steps:
@@ -33,6 +34,7 @@ jobs:
     - uses: fsfe/reuse-action@v6
 
   clang-format:
+    if: false  # Windows-only build
     runs-on: ubuntu-24.04
     continue-on-error: true
     steps:
@@ -69,6 +71,7 @@ jobs:
         echo "fullhash=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
   test:
+    if: false  # Windows-only build
     name: Run C++ Tests on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -178,7 +181,18 @@ jobs:
       run: cmake --fresh -G Ninja -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=ON -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
     - name: Build
-      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --parallel $env:NUMBER_OF_PROCESSORS
+      shell: pwsh
+      run: |
+        cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --parallel $env:NUMBER_OF_PROCESSORS 2>&1 | Tee-Object -FilePath build.log
+        exit $LASTEXITCODE
+
+    - name: Report compile errors
+      if: failure()
+      shell: pwsh
+      run: |
+        $errs = Select-String -Path build.log -Pattern ' error[: ]|FAILED:|undefined|fatal error' | Select-Object -First 25 | ForEach-Object { $_.Line.Trim().Replace('%','%25') }
+        $msg = ($errs -join '%0A')
+        Write-Output "::error title=compile-errors::$msg"
 
     - name: Upload Windows SDL artifact
       uses: actions/upload-artifact@v7
@@ -186,7 +200,190 @@ jobs:
         name: shadps4-win64-sdl-${{ needs.get-info.outputs.date }}-${{ needs.get-info.outputs.shorthash }}
         path: ${{github.workspace}}/build/shadPS4.exe
 
+    - name: Upload Windows symbol map
+      uses: actions/upload-artifact@v7
+      with:
+        name: shadps4-win64-sdl-map-${{ needs.get-info.outputs.date }}-${{ needs.get-info.outputs.shorthash }}
+        path: ${{github.workspace}}/build/shadPS4.map
+        if-no-files-found: warn
+
+  windows-launcher:
+    runs-on: windows-2025
+    needs: get-info
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Check out and patch the Qt launcher
+      shell: bash
+      run: |
+        echo "FORK_TIME=$(git log -1 --format=%ct)" >> $GITHUB_ENV
+        git clone --filter=blob:none https://github.com/shadps4-emu/shadps4-qtlauncher qtlauncher
+        cd qtlauncher
+        git checkout "$(cat ../launcher/UPSTREAM_COMMIT)"
+        git submodule update --init --recursive --depth 1 || git submodule update --init --recursive
+        git -c user.name=ci -c user.email=ci@localhost am ../launcher/patches/*.patch
+
+    - name: Setup Qt
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: 6.10.0
+        host: windows
+        target: desktop
+        arch: win64_msvc2022_64
+        archives: qtbase qttools
+        modules: qtmultimedia
+
+    - name: Cache CMake Build
+      uses: hendrikmuhs/ccache-action@v1.2.21
+      env:
+          cache-name: ${{ runner.os }}-launcher-cache-cmake-build
+      with:
+        append-timestamp: false
+        key: ${{ env.cache-name }}-${{ hashFiles('launcher/**') }}
+
+    - name: Configure CMake
+      working-directory: qtlauncher
+      run: cmake --fresh -G Ninja -B build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DENABLE_UPDATER=ON -DFORK_BUNDLE_REV=${{ needs.get-info.outputs.fullhash }} -DFORK_BUNDLE_REPO=${{ github.repository }} -DFORK_BUNDLE_TIME=${{ env.FORK_TIME }} -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+    - name: Build
+      working-directory: qtlauncher
+      shell: pwsh
+      run: |
+        cmake --build build --config ${{env.BUILD_TYPE}} --parallel $env:NUMBER_OF_PROCESSORS -- -k 0 2>&1 | Tee-Object -FilePath build.log
+        exit $LASTEXITCODE
+
+    - name: Report compile errors
+      if: failure()
+      shell: pwsh
+      run: |
+        $errs = Select-String -Path qtlauncher/build.log -Pattern ' error[: ]|FAILED:|undefined|fatal error' | Select-Object -First 25 | ForEach-Object { $_.Line.Trim().Replace('%','%25') }
+        $msg = ($errs -join '%0A')
+        Write-Output "::error title=compile-errors::$msg"
+
+    - name: Deploy
+      working-directory: qtlauncher
+      run: |
+        mkdir upload
+        mkdir upload/qtplugins
+        move build/shadPS4QtLauncher.exe upload
+        cp dist/qt.conf upload/qt.conf
+        windeployqt --plugindir upload/qtplugins --no-compiler-runtime --no-system-d3d-compiler --no-system-dxc-compiler --dir upload upload/shadPS4QtLauncher.exe
+
+    - name: Upload launcher
+      uses: actions/upload-artifact@v7
+      with:
+        name: launcher-win64
+        path: qtlauncher/upload/
+        retention-days: 3
+
+  # DLSS5: NeuralScreen ships inside the Windows package. The base is the
+  # published full package (runtime + the NVIDIA dll are not in any
+  # repository); this job rebuilds only what the integration changes - the
+  # Python sources - from the compact-ui sources plus
+  # the patches under launcher/neuralscreen.
+  neuralscreen-overlay:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check out NeuralScreen and apply the integration patches
+        shell: bash
+        run: |
+          git clone --depth 1 --branch compact-ui-auto-quality https://github.com/vsajjadx/NeuralScreen.git ns
+          git -C ns -c user.name=ci -c user.email=ci@localhost am "$GITHUB_WORKSPACE"/launcher/neuralscreen/*.patch
+          python -m pip install -q numpy
+          python - <<'PY'
+          # config.default.json must already be canonical for the patched settings_io
+          import sys, json, types
+          from copy import deepcopy
+          from unittest.mock import MagicMock
+          for m in ('winreg', 'winapi', 'capture'): sys.modules[m] = MagicMock()
+          sys.path[:0] = ['ns', 'ns/app']
+          import settings_io as s
+          d = json.load(open('ns/config.default.json', encoding='utf-8'))
+          assert s._validate_config(deepcopy(d)) == d, 'config.default.json is not canonical'
+          PY
+          python -m py_compile ns/main.py ns/app/commands.py ns/app/control.py ns/app/settings_io.py ns/app/startup.py ns/app/overlay_ui.py ns/app/i18n.py ns/app/diagnostics.py ns/app/quality_governor.py
+
+      - name: Stage the overlay
+        shell: bash
+        run: |
+          mkdir -p overlay/NeuralScreen/app
+          cp ns/main.py ns/config.default.json overlay/NeuralScreen/
+          cp ns/app/commands.py ns/app/control.py ns/app/settings_io.py ns/app/startup.py ns/app/overlay_ui.py ns/app/i18n.py ns/app/diagnostics.py ns/app/quality_governor.py overlay/NeuralScreen/app/
+          ls -la overlay/NeuralScreen overlay/NeuralScreen/app
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: neuralscreen-overlay
+          path: overlay/
+
+  windows-bundle:
+    runs-on: ubuntu-24.04
+    needs: [get-info, windows-sdl, windows-launcher, neuralscreen-overlay]
+    steps:
+    - name: Download the emulator
+      uses: actions/download-artifact@v8
+      with:
+        name: shadps4-win64-sdl-${{ needs.get-info.outputs.date }}-${{ needs.get-info.outputs.shorthash }}
+        path: bundle
+
+    - name: Download the launcher
+      uses: actions/download-artifact@v8
+      with:
+        name: launcher-win64
+        path: bundle
+
+    - name: Download the NeuralScreen overlay
+      uses: actions/download-artifact@v8
+      with:
+        name: neuralscreen-overlay
+        path: ns-overlay
+
+    # DLSS5: the published full package embedded beside the emulator, with
+    # the integration's Python sources laid over it. The
+    # emulator starts qtplugins\NeuralScreen\runtime\pythonw.exe main.py with the game window.
+    - name: Embed NeuralScreen (DLSS5)
+      run: |
+        curl -fL --retry 3 -o ns-full.zip \
+          "https://github.com/vsajjadx/NeuralScreen/releases/download/build-25-compact-ui/NeuralScreen-full.zip"
+        # The release zip carries its own NeuralScreen/ root folder; lift its
+        # contents up so bundle/qtplugins/NeuralScreen is the program itself.
+        mkdir -p bundle/qtplugins/NeuralScreen ns-full
+        unzip -q ns-full.zip -d ns-full
+        cp -a ns-full/NeuralScreen/. bundle/qtplugins/NeuralScreen/
+        cp -a ns-overlay/NeuralScreen/. bundle/qtplugins/NeuralScreen/
+        rm -rf ns-full ns-full.zip
+        # The overlay lands on the full package, not beside it:
+        # the patched Python, and everything the worker loads.
+        # Only what the emulator runs stays: main.py, app, runtime, fonts,
+        # config.default.json and the seven runtime DLLs in native. The rest of the release is dropped.
+        cd bundle/qtplugins/NeuralScreen
+        rm -rf .github docs tests
+        rm -f .gitattributes .gitignore CHANGELOG.md README.md RELEASING.md TECHNICAL.md \
+          NeuralScreen.exe NeuralScreen.vbs NeuralScreen-diag.vbs NeuralScreen.bat \
+          build_release_zip.py verify_github.py runtime-manifest.json
+        find native -mindepth 1 -maxdepth 1 \
+          ! -name nvngx.dll ! -name nvngx_dlssnr.dll ! -name nvngx_dlssg.dll \
+          ! -name nvngx.dll_ns-forwarder.dll \
+          ! -name SpoutDX.dll ! -name amd_fidelityfx_loader_dx12.dll \
+          ! -name amd_fidelityfx_framegeneration_dx12.dll -exec rm -rf {} +
+        cd ../../..
+        test -f bundle/qtplugins/NeuralScreen/main.py
+        test -f bundle/qtplugins/NeuralScreen/app/control.py
+        test -f bundle/qtplugins/NeuralScreen/native/nvngx.dll
+        test -f bundle/qtplugins/NeuralScreen/native/nvngx_dlssnr.dll
+        test -f bundle/qtplugins/NeuralScreen/runtime/pythonw.exe
+        echo "NeuralScreen embedded: $(du -sh bundle/qtplugins/NeuralScreen | cut -f1)"
+
+    - name: Upload the package
+      uses: actions/upload-artifact@v7
+      with:
+        name: shadPS4-AntiCrash-win64-${{ needs.get-info.outputs.date }}-${{ needs.get-info.outputs.shorthash }}
+        path: bundle/
+
   macos-sdl:
+    if: false  # Windows-only build
     runs-on: macos-26
     needs: get-info
     steps:
@@ -247,6 +444,7 @@ jobs:
         path: upload/
 
   linux-sdl:
+    if: false  # Windows-only build
     runs-on: ubuntu-24.04
     needs: get-info
     steps:
@@ -311,6 +509,7 @@ jobs:
         path: Shadps4-sdl.AppImage
 
   linux-sdl-gcc:
+    if: false  # Windows-only build
     runs-on: ubuntu-24.04
     needs: get-info
     steps:

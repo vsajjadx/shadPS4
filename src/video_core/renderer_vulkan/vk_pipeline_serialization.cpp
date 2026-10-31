@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <charconv>
+#include <chrono>
+
+#include "common/scm_rev.h"
 #include "common/serdes.h"
 #include "core/emulator_settings.h"
 #include "shader_recompiler/frontend/fetch_shader.h"
@@ -12,9 +16,9 @@
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-static constexpr u32 ShaderBinaryVersion = 9u;
-static constexpr u32 ShaderMetaVersion = 6u;
-static constexpr u32 PipelineKeyVersion = 3u;
+static constexpr u32 ShaderBinaryVersion = 12u;
+static constexpr u32 ShaderMetaVersion = 9u;
+static constexpr u32 PipelineKeyVersion = 4u;
 } // namespace Serialization
 
 namespace Vulkan {
@@ -113,7 +117,8 @@ bool LoadShaderMeta(Serialization::Archive& ar, Shader::Info& info,
 
     spec.Deserialize(ar);
     info.Deserialize(ar);
-    return true;
+    // A cache entry that a crash cut short is discarded instead of loaded.
+    return !ar.Failed();
 }
 
 void ComputePipelineKey::Serialize(Serialization::Archive& ar) const {
@@ -142,6 +147,9 @@ bool PipelineCache::LoadComputePipeline(Serialization::Archive& ar) {
 
     ComputePipeline::SerializationSupport sdata{};
     sdata.Deserialize(ar);
+    if (ar.Failed()) {
+        return false;
+    }
 
     std::vector<u8> meta_blob;
     Storage::DataBase::Instance().Load(Storage::BlobType::ShaderMeta,
@@ -157,7 +165,13 @@ bool PipelineCache::LoadComputePipeline(Serialization::Archive& ar) {
     }
 
     const auto [it, is_new] = compute_pipelines.try_emplace(compute_key);
-    ASSERT(is_new);
+    if (!is_new) {
+        // The same pipeline is in the cache twice, which an archive can hold. The first one
+        // is kept and the extra entry is ignored instead of stopping the emulator.
+        infos.fill(nullptr);
+        modules.fill(nullptr);
+        return false;
+    }
 
     it.value() =
         std::make_unique<ComputePipeline>(instance, scheduler, desc_heap, profile, *pipeline_cache,
@@ -191,6 +205,7 @@ void GraphicsPipeline::SerializationSupport::Serialize(Serialization::Archive& a
     sdata.Write(multisampling);
     sdata.Write(tcs);
     sdata.Write(tes);
+    sdata.Write(fragment);
 }
 
 bool GraphicsPipeline::SerializationSupport::Deserialize(Serialization::Archive& ar) {
@@ -202,6 +217,7 @@ bool GraphicsPipeline::SerializationSupport::Deserialize(Serialization::Archive&
     sdata.Read(multisampling);
     sdata.Read(tcs);
     sdata.Read(tes);
+    sdata.Read(fragment);
     return true;
 }
 
@@ -210,6 +226,9 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar) {
 
     GraphicsPipeline::SerializationSupport sdata{};
     sdata.Deserialize(ar);
+    if (ar.Failed()) {
+        return false;
+    }
 
     for (int stage_idx = 0; stage_idx < MaxShaderStages; ++stage_idx) {
         const auto& hash = graphics_key.stage_hashes[stage_idx];
@@ -232,11 +251,19 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar) {
     }
 
     const auto [it, is_new] = graphics_pipelines.try_emplace(graphics_key);
-    ASSERT(is_new);
+    if (!is_new) {
+        infos.fill(nullptr);
+        modules.fill(nullptr);
+        fetch_shader = nullptr;
+        return false;
+    }
 
+    // The driver compilation runs on the workers, WarmUp waits for all of them.
     it.value() = std::make_unique<GraphicsPipeline>(
         instance, scheduler, desc_heap, profile, graphics_key, *pipeline_cache, infos,
-        runtime_infos, fetch_shader, modules, sdata, true);
+        runtime_infos, fetch_shader, modules, sdata, true, true);
+    auto* pipeline = it.value().get();
+    compile_workers.Submit([pipeline] { pipeline->TryBuild(); });
 
     infos.fill(nullptr);
     modules.fill(nullptr);
@@ -267,24 +294,19 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage) 
 
     vk::ShaderModule module{};
 
+    auto& next = next_permutation[program->info.pgm_hash];
+    next = std::max(next, perm_idx + 1);
+
     auto [it_pgm, new_program] = program_cache.try_emplace(program->info.pgm_hash);
     if (new_program) {
         module = CompileSPV(spv, instance.GetDevice());
         it_pgm.value() = std::move(program);
     } else {
+        // An equal specialization at another index is the same permutation compiled again in an
+        // earlier session. Its pipelines name this index, so it is kept here as well instead of
+        // leaving those pipelines to compile in game.
         const auto& it = std::ranges::find(it_pgm.value()->modules, spec, &Program::Module::spec);
         if (it != it_pgm.value()->modules.end()) {
-            // A matching permutation is valid only at its original index. A different index means
-            // the store holds entries from more than one cache generation, so this pipeline is
-            // left to compile at runtime.
-            const auto idx = std::distance(it_pgm.value()->modules.begin(), it);
-            if (perm_idx != idx) {
-                LOG_WARNING(Render_Vulkan,
-                            "Cached permutation {} of {}_{:x} conflicts with index {}, skipping "
-                            "preload",
-                            perm_idx, program->info.hw_stage, program->info.pgm_hash, idx);
-                return false;
-            }
             module = it->module;
         } else {
             module = CompileSPV(spv, instance.GetDevice());
@@ -308,34 +330,83 @@ void PipelineCache::WarmUp() {
 
     Storage::DataBase::Instance().Open();
 
+    auto& db = Storage::DataBase::Instance();
+    const std::string_view build_id{Common::g_shader_cache_hash};
+
+    const auto start_new_cache = [&] {
+        db.FinishPreload();
+        std::vector<u8> profile_blob(sizeof(profile));
+        std::memcpy(profile_blob.data(), &profile, sizeof(profile));
+        db.Save(Storage::BlobType::ShaderProfile, "profile", std::move(profile_blob));
+        db.Save(Storage::BlobType::ShaderProfile, "build",
+                std::vector<u8>(build_id.begin(), build_id.end()));
+    };
+
     // Check if cache is compatible
     std::vector<u8> profile_data{};
-    Storage::DataBase::Instance().Load(Storage::BlobType::ShaderProfile, "profile", profile_data);
+    db.Load(Storage::BlobType::ShaderProfile, "profile", profile_data);
+    LOG_INFO(Render, "Pipeline cache at {}, profile size {}",
+             Common::FS::PathToUTF8String(db.GetCachePath()), profile_data.size());
     if (profile_data.empty()) {
-        Storage::DataBase::Instance().FinishPreload();
-
-        profile_data.resize(sizeof(profile));
-        std::memcpy(profile_data.data(), &profile, sizeof(profile));
-        Storage::DataBase::Instance().Save(Storage::BlobType::ShaderProfile, "profile",
-                                           std::move(profile_data));
-        return;
-    }
-    if (profile_data.size() != sizeof(Shader::Profile)) {
-        LOG_WARNING(Render,
-                    "Pipeline cache profile has unexpected size ({} != {}). Ignoring the cache",
-                    profile_data.size(), sizeof(Shader::Profile));
-        Storage::DataBase::Instance().Close();
+        LOG_WARNING(Render, "Pipeline cache has no profile, starting a new cache");
+        start_new_cache();
         return;
     }
 
+    std::vector<u8> build_data{};
+    db.Load(Storage::BlobType::ShaderProfile, "build", build_data);
+
+    // Entries written by a build with a different shader recompiler can't be mixed with the
+    // ones of this build: a module, its metadata and the pipelines using it must all come from
+    // the same code, or shaders read their resources from the wrong places.
     Shader::Profile cached_profile{};
-    std::memcpy(&cached_profile, profile_data.data(), sizeof(cached_profile));
-    if (cached_profile != profile) {
-        LOG_WARNING(Render,
-                    "Pipeline cache isn't compatible with current system. Ignoring the cache");
-        Storage::DataBase::Instance().Close();
+    if (profile_data.size() == sizeof(cached_profile)) {
+        std::memcpy(&cached_profile, profile_data.data(), sizeof(cached_profile));
+    }
+    const char* reason = nullptr;
+    if (profile_data.size() != sizeof(Shader::Profile)) {
+        reason = "has an unexpected profile size";
+    } else if (cached_profile != profile) {
+        reason = "was made for a different system";
+    } else if (std::string_view{reinterpret_cast<const char*>(build_data.data()),
+                                build_data.size()} != build_id) {
+        reason = "was made by a build with a different shader recompiler";
+    }
+    if (reason) {
+        if (db.Reset()) {
+            LOG_WARNING(Render, "Pipeline cache {}, starting a new cache", reason);
+            start_new_cache();
+            return;
+        }
+        LOG_WARNING(Render, "Pipeline cache {}. Ignoring the cache", reason);
+        db.Close();
         return;
     }
+
+    const auto warm_up_start = std::chrono::steady_clock::now();
+
+    // New permutations go past the highest index on disk, loaded by the warm-up or not.
+    Storage::DataBase::Instance().ForEachBlobName(
+        Storage::BlobType::ShaderBinary, [&](std::string_view name) {
+            const auto separator = name.rfind('_');
+            if (separator == std::string_view::npos) {
+                return;
+            }
+            u64 hash{};
+            size_t index{};
+            const auto hash_str = name.substr(0, separator);
+            const auto index_str = name.substr(separator + 1);
+            const auto hash_digits = hash_str.starts_with("0x") ? hash_str.substr(2) : hash_str;
+            if (std::from_chars(hash_digits.data(), hash_digits.data() + hash_digits.size(), hash,
+                                16)
+                        .ec != std::errc{} ||
+                std::from_chars(index_str.data(), index_str.data() + index_str.size(), index).ec !=
+                    std::errc{}) {
+                return;
+            }
+            auto& next = next_permutation[hash];
+            next = std::max(next, index + 1);
+        });
 
     u32 num_pipelines{};
     u32 num_total_pipelines{};
@@ -368,7 +439,13 @@ void PipelineCache::WarmUp() {
             }
         });
 
-    LOG_INFO(Render, "Preloaded {} pipelines", num_pipelines);
+    // Every cached pipeline is compiled before the game starts, like RPCS3 does at boot.
+    compile_workers.WaitIdle();
+    const auto warm_up_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - warm_up_start)
+                                .count();
+    LOG_INFO(Render, "Preloaded {} pipelines in {} ms using {} threads", num_pipelines, warm_up_ms,
+             compile_workers.NumThreads());
     if (num_total_pipelines > num_pipelines) {
         LOG_WARNING(Render, "{} stale pipelines were found. Consider re-generating the cache",
                     num_total_pipelines - num_pipelines);

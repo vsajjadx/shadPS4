@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "common/hack_features.h"
 #include "common/types.h"
 #include "shader_recompiler/ir/type.h"
 #include "video_core/amdgpu/resource.h"
@@ -18,6 +19,11 @@ static constexpr u32 NUM_SAMPLERS = 16;
 static constexpr u32 NUM_FMASKS = 8;
 
 using SharpLocation = u16;
+
+/// False for T#s that can't describe a real texture: null or beyond-40-bit address, unknown or
+/// FMask formats, unknown or LinearGeneral tile modes, or format pairs with no Vulkan equivalent.
+/// They come from reading a T# slot the shader never samples this draw, or an SRT walker failure.
+bool IsPlausibleImageSharp(const AmdGpu::Image& sharp);
 
 constexpr SharpLocation UNKNOWN_LOCATION = std::numeric_limits<u16>::max();
 
@@ -72,6 +78,7 @@ enum class SharpFetchPostOp : u8 {
     ForceRepeatXyzClamp,
     ForceLastTexelXyClamp,
     ClearAnisoRatioAndThreshold,
+    ForceUnnormalizedCoords,
 };
 
 enum class BufferType : u8 {
@@ -125,6 +132,13 @@ enum class MipStorageFallbackMode : u16 {
     ConstantIndex,
 };
 
+/// Number of T#s and S#s a shader can reach in a descriptor heap: a buffer of sharps that shaders
+/// index at run time. Each heap a pipeline samples is bound as a descriptor set of its own, set 1
+/// onwards in the order of the heap images and then the heap samplers, holding one array at
+/// binding 0 that mirrors the guest heap slot for slot.
+constexpr u32 MaxHeapImages = 65536;
+constexpr u32 MaxHeapSamplers = 4096;
+
 struct ImageResource {
     SharpFetch<AmdGpu::Image> sharp_fetch{};
     bool is_depth{};
@@ -132,11 +146,21 @@ struct ImageResource {
     bool is_array{};
     bool is_written{};
     bool is_r128{};
+    /// The T# is picked at run time from an array of T#s in buffer heap_buffer.
+    bool is_heap{};
     u8 constant_mip_index{};
+    u16 heap_buffer{};
+    /// View type the sampling instruction expects from a heap T#.
+    AmdGpu::ImageType heap_type{AmdGpu::ImageType::Color2D};
     MipStorageFallbackMode mip_fallback_mode{};
     SharpFetchPostOp post_op{};
 
     constexpr AmdGpu::Image GetSharp(const auto& info) const noexcept {
+        if (is_heap) {
+            auto image = AmdGpu::Image::Null(is_depth);
+            image.type = u64(heap_type);
+            return image;
+        }
         AmdGpu::Image image{};
         if (!Fetch(info.flattened_ud_buf.data(), &image)) {
             return AmdGpu::Image::Null(is_depth);
@@ -146,6 +170,12 @@ struct ImageResource {
             image.depth = (image.depth + 1) * 6 - 1;
         }
         if (!image.Valid()) {
+            image = AmdGpu::Image::Null(is_depth);
+        } else if (Common::HackFeatures::isTheOrder1886 && !AmdGpu::IsFmask(image.GetDataFmt()) &&
+                   !IsPlausibleImageSharp(image)) {
+            // The Order: 1886 uber-shaders keep stale data in T# slots they don't sample. Treat
+            // those as null so compilation, specialization and binding all agree on a stable
+            // type instead of compiling a new permutation for every combination of garbage.
             image = AmdGpu::Image::Null(is_depth);
         } else if (is_depth) {
             const auto data_fmt = image.GetDataFmt();
@@ -171,6 +201,9 @@ struct ImageResource {
     }
 
     u32 NumBindings(const auto& info) const {
+        if (is_heap) {
+            return 0;
+        }
         const AmdGpu::Image tsharp = GetSharp(info);
         return (mip_fallback_mode == MipStorageFallbackMode::DynamicIndex)
                    ? (tsharp.last_level - tsharp.base_level + 1)
@@ -184,9 +217,15 @@ struct SamplerResource {
     SharpFetchPostOp post_op{};
     SharpLocation post_op_tsharp_dw3_off{};
     bool is_depth{};
+    /// The S# is picked at run time from an array of S#s in buffer heap_buffer.
+    bool is_heap{};
+    u16 heap_buffer{};
 
     constexpr AmdGpu::Sampler GetSharp(const auto& info) const noexcept {
         AmdGpu::Sampler sampler{};
+        if (is_heap) {
+            return sampler;
+        }
         sharp_fetch.Fetch(info.flattened_ud_buf.data(), &sampler);
         if (post_op == SharpFetchPostOp::DisableAnisoIfSingleLod) {
             const u32 tsharp_dw3 = info.flattened_ud_buf[post_op_tsharp_dw3_off];
@@ -204,6 +243,8 @@ struct SamplerResource {
         } else if (post_op == SharpFetchPostOp::ClearAnisoRatioAndThreshold) {
             sampler.max_aniso.Assign(AmdGpu::AnisoRatio::One);
             sampler.aniso_threshold.Assign(0);
+        } else if (post_op == SharpFetchPostOp::ForceUnnormalizedCoords) {
+            sampler.force_unnormalized.Assign(1);
         }
         return sampler;
     }

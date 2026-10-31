@@ -35,6 +35,22 @@ void* PS4_SYSV_ABI _runOnAnotherStack(void* arg, void* func, void* stackb) {
 
 namespace Libraries::Kernel {
 
+// Guest priorities run from 256 (highest) to 767 (lowest), 700 being the default. Give the host
+// scheduler a coarse version so threads a game marks important don't queue behind background
+// work. Never above ABOVE_NORMAL, so guest threads can't starve the GPU and present threads.
+static void ApplyHostPriority(Pthread* thread) {
+#ifdef _WIN32
+    if (thread == nullptr || !thread->native_thr) {
+        return;
+    }
+    const int prio = thread->attr.prio;
+    const int host_priority = prio < 450   ? THREAD_PRIORITY_ABOVE_NORMAL
+                              : prio > 720 ? THREAD_PRIORITY_BELOW_NORMAL
+                                           : THREAD_PRIORITY_NORMAL;
+    SetThreadPriority(reinterpret_cast<HANDLE>(thread->native_thr->GetHandle()), host_priority);
+#endif
+}
+
 extern PthreadAttr PthreadAttrDefault;
 extern std::array<Sigaction, 128> PosixActions;
 
@@ -363,6 +379,7 @@ int PS4_SYSV_ABI posix_pthread_create_name_np(PthreadT* thread, const PthreadAtt
     int ret = new_thread->native_thr->Create(RunThread, new_thread);
 
     ASSERT_MSG(ret == 0, "Failed to create thread with error {}", ret);
+    ApplyHostPriority(new_thread);
 
     if (attr != nullptr && *attr != nullptr && (*attr)->cpuset != nullptr) {
         new_thread->SetAffinity((*attr)->cpuset);
@@ -585,6 +602,7 @@ int PS4_SYSV_ABI posix_pthread_setschedparam(PthreadT pthread, SchedPolicy polic
     if (pthread->attr.sched_policy == policy &&
         (policy == SchedPolicy::Other || pthread->attr.prio == param->sched_priority)) {
         pthread->attr.prio = param->sched_priority;
+        ApplyHostPriority(pthread);
         pthread->lock->unlock();
         return 0;
     }
@@ -592,6 +610,7 @@ int PS4_SYSV_ABI posix_pthread_setschedparam(PthreadT pthread, SchedPolicy polic
     // TODO: _thr_setscheduler
     pthread->attr.sched_policy = policy;
     pthread->attr.prio = param->sched_priority;
+    ApplyHostPriority(pthread);
     pthread->lock->unlock();
     return 0;
 }
@@ -627,6 +646,7 @@ int PS4_SYSV_ABI posix_pthread_setprio(PthreadT thread, int prio) {
         // TODO: _thr_setscheduler
         thread->attr.prio = prio;
     }
+    ApplyHostPriority(thread);
 
     thread->lock->unlock();
     if (thread != g_curthread) {

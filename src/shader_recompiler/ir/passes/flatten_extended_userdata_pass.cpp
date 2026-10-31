@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstring>
+#include <mutex>
+#include <optional>
+#include <string_view>
 #include <unordered_map>
 #include <boost/container/flat_map.hpp>
 #include <queue>
@@ -8,6 +12,7 @@
 #include <xbyak/xbyak_util.h>
 #include "common/arch.h"
 #include "common/decoder.h"
+#include "common/hack_features.h"
 #include "common/io_file.h"
 #include "common/logging/log.h"
 #include "common/path_util.h"
@@ -27,15 +32,72 @@
 
 using namespace Xbyak::util;
 
-static Xbyak::CodeGenerator g_srt_codegen(32_MB);
+static Xbyak::CodeGenerator g_srt_codegen(128_MB);
 static const u8* g_srt_codegen_start = nullptr;
+// Shaders are translated and loaded from the cache on several threads.
+static std::recursive_mutex g_srt_codegen_mutex;
+
+// The permutations of a program share its walker, and each kept a copy that was never freed:
+// with the hundreds of permutations of some material shaders the 32 MB code buffer ran out
+// during a session ("code is too big") and the emulator stopped. Identical walkers are shared.
+static std::unordered_multimap<size_t, std::pair<const u8*, size_t>> g_srt_walkers;
+
+// Threads fault in the same walker at once; the second must see the first one's patch.
+static std::mutex g_srt_patch_mutex;
+static thread_local bool g_keep_srt_walkers_unpatched = false;
+
+static size_t SrtWalkerKey(const u8* code, size_t size) {
+    return std::hash<std::string_view>{}({reinterpret_cast<const char*>(code), size});
+}
+
+static const u8* FindSrtWalker(const u8* code, size_t size) {
+    const auto [begin, end] = g_srt_walkers.equal_range(SrtWalkerKey(code, size));
+    for (auto it = begin; it != end; ++it) {
+        // A walker the fault handler patched no longer matches its code and is not reused.
+        if (it->second.second == size && std::memcmp(it->second.first, code, size) == 0) {
+            return it->second.first;
+        }
+    }
+    return nullptr;
+}
+
+static void AddSrtWalker(const u8* code, size_t size) {
+    g_srt_walkers.emplace(SrtWalkerKey(code, size), std::pair{code, size});
+}
+
+namespace {
+static bool SrtWalkerSignalHandler(void* context, void* fault_address);
+} // namespace
+
+// Every walker, whether generated here or loaded from the pipeline cache, must lie past the
+// start address the fault handler checks, or a fault in it is not recovered.
+static void EnsureSrtWalkerHandler() {
+    if (g_srt_codegen_start != nullptr) {
+        return;
+    }
+    g_srt_codegen_start = g_srt_codegen.getCurr();
+    auto* signals = Core::Signals::Instance();
+    // Call after the memory invalidation handler
+    constexpr u32 priority = 1;
+    signals->RegisterAccessViolationHandler(SrtWalkerSignalHandler, priority);
+}
 
 namespace Shader {
 
+void KeepSrtWalkersUnpatchedOnThisThread() {
+    g_keep_srt_walkers_unpatched = true;
+}
+
 PFN_SrtWalker RegisterWalkerCode(const u8* ptr, size_t size) {
+    std::scoped_lock lock{g_srt_codegen_mutex};
+    EnsureSrtWalkerHandler();
+    if (const u8* existing = FindSrtWalker(ptr, size)) {
+        return reinterpret_cast<PFN_SrtWalker>(const_cast<u8*>(existing));
+    }
     const auto func_addr = (PFN_SrtWalker)g_srt_codegen.getCurr();
     g_srt_codegen.db(ptr, size);
     g_srt_codegen.ready();
+    AddSrtWalker(reinterpret_cast<const u8*>(func_addr), size);
     return func_addr;
 }
 
@@ -77,17 +139,31 @@ static bool SrtWalkerSignalHandler(void* context, void* fault_address) {
         return false; // Not in SRT code range
     }
 
+    std::scoped_lock lock{g_srt_patch_mutex};
+
     // Patch instruction to zero register
     ZydisDecodedInstruction instruction;
     ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
     ZyanStatus status = Common::Decoder::Instance()->decodeInstruction(instruction, operands,
                                                                        const_cast<void*>(code), 15);
 
+    if (ZYAN_SUCCESS(status) && instruction.mnemonic == ZYDIS_MNEMONIC_XOR) {
+        return true; // Another thread patched it while this one waited.
+    }
     ASSERT(ZYAN_SUCCESS(status) && instruction.mnemonic == ZYDIS_MNEMONIC_MOV &&
            operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
            operands[1].type == ZYDIS_OPERAND_TYPE_MEMORY);
 
     size_t len = instruction.length;
+    if (g_keep_srt_walkers_unpatched) {
+        // Writing the 32-bit r10d also clears the upper half of r10.
+        const bool is_rdi = operands[0].reg.value == ZYDIS_REGISTER_RDI;
+        ASSERT_MSG(is_rdi || operands[0].reg.value == ZYDIS_REGISTER_R10D,
+                   "Unsupported register for SRT walker patch");
+        *Common::GetGprPointer(context, is_rdi ? 7 : 10) = 0;
+        Common::IncrementRip(context, len);
+        return true;
+    }
     const size_t patch_size = 3;
     u8* code_patch = const_cast<u8*>(reinterpret_cast<const u8*>(code));
 
@@ -217,6 +293,35 @@ static inline void SetFlatbufOffset(IR::Inst* inst, u16 offset) {
     UNREACHABLE_MSG("Instruction not supported");
 }
 
+// Short textual form of an offset expression, used to diagnose trees the walker can't evaluate.
+static std::string DescribeOffsetValue(const IR::Value& value, u32 depth = 0) {
+    if (value.IsImmediate()) {
+        return fmt::format("#{:#x}", value.U32());
+    }
+    const IR::Inst* inst = value.Inst();
+    std::string out{magic_enum::enum_name(inst->GetOpcode())};
+    if (inst->GetOpcode() == IR::Opcode::GetUserData) {
+        return fmt::format("{}(s{})", out, static_cast<u32>(inst->Arg(0).ScalarReg()));
+    }
+    if (depth >= 5) {
+        return out + "(..)";
+    }
+    out += '(';
+    for (size_t arg = 0; arg < inst->NumArgs(); ++arg) {
+        if (arg != 0) {
+            out += ", ";
+        }
+        const IR::Value a = inst->Arg(arg);
+        if (!a.IsImmediate() || a.Type() == IR::Type::U32) {
+            out += DescribeOffsetValue(a, depth + 1);
+        } else {
+            out += "imm";
+        }
+    }
+    out += ')';
+    return out;
+}
+
 static bool ComputeOffset(Xbyak::CodeGenerator& c, Xbyak::Reg32 reg, PassInfo& pass_info,
                           const IR::Value& off_dw);
 
@@ -295,7 +400,6 @@ static bool EmitComputeOffsetShiftLeftLogical32(Xbyak::CodeGenerator& c, Xbyak::
     ASSERT(!inst->AreAllArgsImmediates());
     if (inst->Arg(0).IsImmediate()) {
         ABORT_ON_FAILURE(ComputeOffset(c, reg, pass_info, inst->Arg(1)));
-        c.shl(reg, inst->Arg(0).U32());
         c.mov(ecx, reg);
         c.mov(reg, inst->Arg(0).U32());
         c.shl(reg, cl);
@@ -508,9 +612,169 @@ static bool IsAllowedOffsetInstruction(const IR::Inst* inst) {
     }
 }
 
+// Lane and control flow constructs can wrap a value that is uniform across the wave, e.g. an SGPR
+// spilled to a VGPR lane and read back, or a loop phi carrying the same value on every edge.
+// The SRT walker can't evaluate them, so look through them to the value they carry.
+constexpr u32 MaxResolveDepth = 32;
+
+static IR::Value ResolveUniformValue(const IR::Value& value, u32 depth = 0);
+
+static bool IsUniformValue(const IR::Value& value, u32 depth) {
+    if (value.IsImmediate()) {
+        return true;
+    }
+    if (depth > MaxResolveDepth) {
+        return false;
+    }
+    const IR::Inst* inst = value.Inst();
+    switch (inst->GetOpcode()) {
+    case IR::Opcode::GetUserData:
+    case IR::Opcode::ReadConst:
+    case IR::Opcode::ReadConstBuffer:
+        return true;
+    default:
+        break;
+    }
+    if (!IsAllowedOffsetInstruction(inst)) {
+        return false;
+    }
+    for (size_t arg = 0; arg < inst->NumArgs(); ++arg) {
+        if (!IsUniformValue(ResolveUniformValue(inst->Arg(arg), depth + 1), depth + 1)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Returns the single value a phi web carries, an empty value if it only references itself,
+// or nullopt if it merges different values.
+static std::optional<IR::Value> ResolvePhi(IR::Inst* phi, u32 depth,
+                                           boost::container::small_vector<IR::Inst*, 8>& phis) {
+    if (depth > MaxResolveDepth) {
+        return std::nullopt;
+    }
+    phis.push_back(phi);
+    IR::Value same{};
+    for (size_t arg = 0; arg < phi->NumArgs(); ++arg) {
+        IR::Value op = phi->Arg(arg);
+        if (!op.IsImmediate() && op.Inst()->GetOpcode() == IR::Opcode::Phi) {
+            IR::Inst* op_phi = op.Inst();
+            if (std::ranges::find(phis, op_phi) != phis.end()) {
+                // Back edge into a phi we're already resolving
+                continue;
+            }
+            const auto resolved = ResolvePhi(op_phi, depth + 1, phis);
+            if (!resolved) {
+                return std::nullopt;
+            }
+            if (resolved->IsEmpty()) {
+                continue;
+            }
+            op = *resolved;
+        } else {
+            op = ResolveUniformValue(op, depth + 1);
+        }
+        if (same.IsEmpty()) {
+            same = op;
+        } else if (op != same) {
+            return std::nullopt;
+        }
+    }
+    return same;
+}
+
+static IR::Value ResolveUniformValue(const IR::Value& value, u32 depth) {
+    if (value.IsImmediate() || depth > MaxResolveDepth) {
+        return value;
+    }
+    IR::Inst* inst = value.Inst();
+    switch (inst->GetOpcode()) {
+    case IR::Opcode::Phi: {
+        boost::container::small_vector<IR::Inst*, 8> phis;
+        const auto resolved = ResolvePhi(inst, depth, phis);
+        return !resolved || resolved->IsEmpty() ? value : *resolved;
+    }
+    case IR::Opcode::ReadLane: {
+        if (inst->Arg(1).IsImmediate()) {
+            // Look for the WriteLane that put the value in this lane
+            const u32 lane = inst->Arg(1).U32();
+            IR::Value src = inst->Arg(0);
+            while (!src.IsImmediate() && src.Inst()->GetOpcode() == IR::Opcode::WriteLane) {
+                IR::Inst* write = src.Inst();
+                if (write->Arg(2).IsImmediate() && write->Arg(2).U32() == lane) {
+                    return ResolveUniformValue(write->Arg(1), depth + 1);
+                }
+                if (!write->Arg(2).IsImmediate()) {
+                    break;
+                }
+                src = write->Arg(0);
+            }
+        }
+        [[fallthrough]];
+    }
+    case IR::Opcode::ReadFirstLane: {
+        // Every lane holds the same value if it was computed from scalar sources only
+        const IR::Value src = ResolveUniformValue(inst->Arg(0), depth + 1);
+        if (IsUniformValue(src, depth + 1)) {
+            return src;
+        }
+        return value;
+    }
+    default:
+        return value;
+    }
+}
+
+// Rewrite the offset tree of a constant load so that it only contains instructions
+// ComputeOffset can emit.
+static void ResolveOffsetLaneOps(IR::Inst& inst) {
+    boost::container::small_vector<IR::Inst*, 16> visited;
+    std::queue<IR::Inst*> queue;
+
+    const IR::Value offset = ResolveUniformValue(inst.Arg(1));
+    if (offset != inst.Arg(1)) {
+        inst.SetArg(1, offset);
+    }
+    if (offset.IsImmediate()) {
+        return;
+    }
+    queue.push(offset.Inst());
+    while (!queue.empty()) {
+        IR::Inst* node = queue.front();
+        queue.pop();
+        if (!IsAllowedOffsetInstruction(node) || node->GetOpcode() == IR::Opcode::GetUserData ||
+            node->GetOpcode() == IR::Opcode::ReadConst ||
+            node->GetOpcode() == IR::Opcode::ReadConstBuffer) {
+            continue;
+        }
+        for (size_t arg = 0; arg < node->NumArgs(); ++arg) {
+            const IR::Value arg_value = node->Arg(arg);
+            if (arg_value.IsImmediate()) {
+                continue;
+            }
+            const IR::Value resolved = ResolveUniformValue(arg_value);
+            if (resolved != arg_value) {
+                node->SetArg(arg, resolved);
+            }
+            if (resolved.IsImmediate()) {
+                continue;
+            }
+            IR::Inst* arg_inst = resolved.Inst();
+            if (std::ranges::find(visited, arg_inst) == visited.end()) {
+                visited.push_back(arg_inst);
+                queue.push(arg_inst);
+            }
+        }
+    }
+}
+
 static bool ComputeOffset(Xbyak::CodeGenerator& c, Xbyak::Reg32 reg, PassInfo& pass_info,
                           const IR::Value& off_dw) {
     ASSERT(reg != ecx && reg != edx);
+    if (off_dw.IsImmediate()) {
+        c.mov(reg, off_dw.U32());
+        return true;
+    }
     auto inst = off_dw.Inst();
     switch (inst->GetOpcode()) {
     case IR::Opcode::GetUserData:
@@ -520,6 +784,14 @@ static bool ComputeOffset(Xbyak::CodeGenerator& c, Xbyak::Reg32 reg, PassInfo& p
     case IR::Opcode::ReadConstBuffer:
         if (u16 offset = GetFlatbufOffset(pass_info.DeduplicateInstruction(inst)); offset != 0) {
             c.mov(reg, ptr[rsi + (offset << 2)]);
+            return true;
+        }
+        if (Common::HackFeatures::isTheOrder1886) {
+            // Same fallback as the run-time selected indices below: the first table entry
+            // is a real texture, an unresolved slot is garbage that gets rejected.
+            LOG_WARNING(Render_Recompiler, "Unflattened SRT offset source replaced by 0: {}",
+                        DescribeOffsetValue(off_dw));
+            c.xor_(reg, reg);
             return true;
         }
         return false;
@@ -559,9 +831,25 @@ static bool ComputeOffset(Xbyak::CodeGenerator& c, Xbyak::Reg32 reg, PassInfo& p
     case IR::Opcode::BitFieldUExtract:
         ABORT_ON_FAILURE(EmitComputeOffsetBitFieldUExtract(c, reg, pass_info, inst));
         return true;
+    case IR::Opcode::ReadLane:
+    case IR::Opcode::ReadFirstLane:
+    case IR::Opcode::Phi:
+        if (Common::HackFeatures::isTheOrder1886) {
+            // The Order: 1886 picks T#s at run time: a waterfall loop scalarizes a per-pixel
+            // index loaded from a typed buffer (ReadLane(LoadBufferFormat(..), BallotFindLsb))
+            // or a loop counter walks a table. The walker can't know those values, and leaving
+            // the slot unresolved binds garbage (e.g. its irradiance volumes get rejected and
+            // every area outside direct light is black). Use the first table entry instead,
+            // which at least yields a real texture of the right kind.
+            LOG_WARNING(Render_Recompiler, "Dynamic SRT offset replaced by the first entry: {}",
+                        DescribeOffsetValue(off_dw));
+            c.xor_(reg, reg);
+            return true;
+        }
+        [[fallthrough]];
     default:
-        LOG_ERROR(Render_Recompiler, "Unexpected instruction for offset computation, {}",
-                  magic_enum::enum_name(inst->GetOpcode()));
+        LOG_ERROR(Render_Recompiler, "Unexpected instruction for offset computation, {}: {}",
+                  magic_enum::enum_name(inst->GetOpcode()), DescribeOffsetValue(off_dw));
         return false;
     }
 }
@@ -571,7 +859,11 @@ static inline bool PushPtr(Xbyak::CodeGenerator& c, PassInfo& pass_info, const I
     if (off_dw.IsImmediate()) {
         c.mov(rdi, ptr[rdi + (off_dw.U32() << 2)]);
     } else {
-        ABORT_ON_FAILURE(ComputeOffset(c, r10d, pass_info, off_dw));
+        if (!ComputeOffset(c, r10d, pass_info, off_dw)) {
+            // Undo the push above, or the walker returns through a stale stack slot
+            c.pop(rdi);
+            return false;
+        }
         c.shl(r10d, 2);
         c.mov(r10d, r10d);
         c.mov(rdi, ptr[rdi + r10]);
@@ -583,6 +875,35 @@ static inline bool PushPtr(Xbyak::CodeGenerator& c, PassInfo& pass_info, const I
 
 static inline void PopPtr(Xbyak::CodeGenerator& c) {
     c.pop(rdi);
+}
+
+// Finds a ReadConst in an offset tree that hasn't been given a flattened buffer slot yet. The
+// walker reads such values from the flattened buffer, so they must be copied before the offset
+// that uses them is evaluated.
+static const IR::Inst* FindUnflattenedDependency(PassInfo& pass_info, const IR::Value& value,
+                                                 u32 depth = 0) {
+    if (value.IsImmediate() || depth > MaxResolveDepth) {
+        return nullptr;
+    }
+    IR::Inst* inst = value.Inst();
+    switch (inst->GetOpcode()) {
+    case IR::Opcode::ReadConst:
+    case IR::Opcode::ReadConstBuffer:
+        return GetFlatbufOffset(pass_info.DeduplicateInstruction(inst)) == 0 ? inst : nullptr;
+    case IR::Opcode::GetUserData:
+        return nullptr;
+    default:
+        break;
+    }
+    if (!IsAllowedOffsetInstruction(inst)) {
+        return nullptr;
+    }
+    for (size_t arg = 0; arg < inst->NumArgs(); ++arg) {
+        if (const IR::Inst* dep = FindUnflattenedDependency(pass_info, inst->Arg(arg), depth + 1)) {
+            return dep;
+        }
+    }
+    return nullptr;
 }
 
 static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& pass_info,
@@ -605,12 +926,72 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
     // flattened buffer.
     // TODO src and dst are contiguous. Optimize with wider loads/stores
     // TODO if this subtree is dynamically indexed, don't compact it (keep it sparse)
-    for (auto [src_off_dw, use] : *use_list) {
+    //
+    // Uses are sorted by block address, not by dominance, so a use whose offset reads another
+    // value of this table (e.g. an index loaded inside a loop) can come before that value.
+    // Copy uses in dependency order so every value an offset needs is flattened first.
+    boost::container::small_vector<std::pair<IR::Value, IR::Inst*>, 32> ordered;
+    {
+        boost::container::small_vector<std::pair<IR::Value, IR::Inst*>, 32> pending(
+            use_list->begin(), use_list->end());
+        boost::container::small_vector<IR::Inst*, 32> placed;
+        const auto blocking_dependency = [&](const IR::Value& off) -> const IR::Inst* {
+            // Treat ReadConsts of this level that are already ordered as available
+            if (off.IsImmediate()) {
+                return nullptr;
+            }
+            const IR::Inst* dep = FindUnflattenedDependency(pass_info, off);
+            if (dep && std::ranges::find(placed, pass_info.DeduplicateInstruction(
+                                                     const_cast<IR::Inst*>(dep))) != placed.end()) {
+                return nullptr;
+            }
+            return dep;
+        };
+        bool progress = true;
+        while (!pending.empty() && progress) {
+            progress = false;
+            for (auto it = pending.begin(); it != pending.end();) {
+                if (!blocking_dependency(it->first)) {
+                    placed.push_back(pass_info.DeduplicateInstruction(it->second));
+                    ordered.push_back(*it);
+                    it = pending.erase(it);
+                    progress = true;
+                } else {
+                    ++it;
+                }
+            }
+        }
+        for (const auto& entry : pending) {
+            // The Order: 1886 hits this for every dword of its run-time selected T#s; the
+            // fallback in ComputeOffset already reports it once per value.
+            if (Common::HackFeatures::isTheOrder1886) {
+                ordered.push_back(entry);
+                continue;
+            }
+            LOG_ERROR(Render_Recompiler,
+                      "SRT offset depends on a value outside this table, {}: needs {}",
+                      DescribeOffsetValue(entry.first),
+                      DescribeOffsetValue(IR::Value{const_cast<IR::Inst*>(
+                          FindUnflattenedDependency(pass_info, entry.first))}));
+            ordered.push_back(entry);
+        }
+    }
+    for (auto [src_off_dw, use] : ordered) {
         if (src_off_dw.IsImmediate()) {
             c.mov(r10d, ptr[rdi + (src_off_dw.U32() << 2)]);
         } else {
+            // Placed uses only get their slot once emitted, so check against the real state
+            if (const IR::Inst* dep = FindUnflattenedDependency(pass_info, src_off_dw);
+                dep && !Common::HackFeatures::isTheOrder1886) {
+                LOG_ERROR(Render_Recompiler,
+                          "Failed to compute offset for SRT walker, {}: {} isn't flattened",
+                          DescribeOffsetValue(src_off_dw),
+                          DescribeOffsetValue(IR::Value{const_cast<IR::Inst*>(dep)}));
+                continue;
+            }
             if (!ComputeOffset(c, r10d, pass_info, src_off_dw)) {
-                LOG_ERROR(Render_Recompiler, "Failed to compute offset for SRT walker");
+                LOG_ERROR(Render_Recompiler, "Failed to compute offset for SRT walker, {}",
+                          DescribeOffsetValue(src_off_dw));
                 continue;
             }
             c.shl(r10d, 2);
@@ -640,15 +1021,10 @@ static void GenerateSrtProgram(Info& info, PassInfo& pass_info) {
         return;
     }
 
-    // Register the signal handler for SRT walker, if not already registered
-    if (g_srt_codegen_start == nullptr) {
-        g_srt_codegen_start = c.getCurr();
-        auto* signals = Core::Signals::Instance();
-        // Call after the memory invalidation handler
-        constexpr u32 priority = 1;
-        signals->RegisterAccessViolationHandler(SrtWalkerSignalHandler, priority);
-    }
+    std::scoped_lock lock{g_srt_codegen_mutex};
+    EnsureSrtWalkerHandler();
 
+    const size_t walker_start = c.getSize();
     info.srt_info.walker_func = c.getCurr<PFN_SrtWalker>();
     pass_info.dst_off_dw = NUM_USER_DATA_REGS;
     ASSERT(pass_info.dst_off_dw == info.srt_info.flattened_bufsize_dw);
@@ -662,6 +1038,13 @@ static void GenerateSrtProgram(Info& info, PassInfo& pass_info) {
 
     info.srt_info.walker_func_size =
         c.getCurr() - reinterpret_cast<const u8*>(info.srt_info.walker_func);
+    const auto* walker = reinterpret_cast<const u8*>(info.srt_info.walker_func);
+    if (const u8* existing = FindSrtWalker(walker, info.srt_info.walker_func_size)) {
+        c.setSize(walker_start);
+        info.srt_info.walker_func = reinterpret_cast<PFN_SrtWalker>(const_cast<u8*>(existing));
+    } else {
+        AddSrtWalker(walker, info.srt_info.walker_func_size);
+    }
 
     if (EmulatorSettings.IsDumpShaders()) {
         DumpSrtProgram(info, reinterpret_cast<const u8*>(info.srt_info.walker_func),
@@ -760,6 +1143,15 @@ void FlattenExtendedUserdataPass(IR::Program& program) {
                 continue;
             }
 
+            if (inst.GetOpcode() == IR::Opcode::ReadConst) {
+                // Reads through an address computed per invocation stay device address reads.
+                const IR::Inst* base = inst.Arg(0).TryInst();
+                if (base && base->GetOpcode() == IR::Opcode::CompositeConstructU32x2 &&
+                    (!IsReadConstSource(base->Arg(0)) || !IsReadConstSource(base->Arg(1)))) {
+                    continue;
+                }
+            }
+
             if (inst.GetOpcode() == IR::Opcode::ReadConstBuffer) {
                 // Only flatten ReadConstBuffer if it was marked as a sharp source in the
                 // resource discovery pass
@@ -770,6 +1162,7 @@ void FlattenExtendedUserdataPass(IR::Program& program) {
             }
 
             SimplifyReadConstAddressAdd(inst);
+            ResolveOffsetLaneOps(inst);
 
             all_readconsts.push_back(&inst);
 

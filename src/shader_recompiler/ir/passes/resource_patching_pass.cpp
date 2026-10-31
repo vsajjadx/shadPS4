@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
+#include <bit>
 #include <limits>
 #include "shader_recompiler/info.h"
 #include "shader_recompiler/ir/basic_block.h"
@@ -114,6 +116,8 @@ public:
     u32 Add(const ImageResource& desc) {
         const u32 index{Add(image_resources, desc, [&desc](const auto& existing) {
             return desc.sharp_fetch == existing.sharp_fetch && desc.is_array == existing.is_array &&
+                   desc.is_heap == existing.is_heap && desc.heap_buffer == existing.heap_buffer &&
+                   desc.heap_type == existing.heap_type && desc.is_depth == existing.is_depth &&
                    desc.mip_fallback_mode == existing.mip_fallback_mode &&
                    desc.constant_mip_index == existing.constant_mip_index &&
                    desc.post_op == existing.post_op;
@@ -128,7 +132,8 @@ public:
         const u32 index{Add(sampler_resources, desc, [this, &desc](const auto& existing) {
             return desc.sharp_fetch == existing.sharp_fetch && desc.post_op == existing.post_op &&
                    desc.post_op_tsharp_dw3_off == existing.post_op_tsharp_dw3_off &&
-                   desc.is_depth == existing.is_depth;
+                   desc.is_depth == existing.is_depth && desc.is_heap == existing.is_heap &&
+                   desc.heap_buffer == existing.heap_buffer;
         })};
         return index;
     }
@@ -227,6 +232,147 @@ void PatchBufferSharp(const ResourceDiscovery& resource, Info& info, Descriptors
     inst.SetArg(0, ir.Imm32(buffer_binding));
 }
 
+static std::pair<IR::Value, u32> SplitConstantOffset(IR::Value offset) {
+    u32 constant = 0;
+    while (const IR::Inst* const inst = offset.TryInst()) {
+        if (inst->GetOpcode() == IR::Opcode::IAdd32 && inst->Arg(1).IsImmediate()) {
+            constant += inst->Arg(1).U32();
+            offset = inst->Arg(0);
+        } else if (inst->GetOpcode() == IR::Opcode::IAdd32 && inst->Arg(0).IsImmediate()) {
+            constant += inst->Arg(0).U32();
+            offset = inst->Arg(1);
+        } else if (inst->GetOpcode() == IR::Opcode::ISub32 && inst->Arg(1).IsImmediate()) {
+            constant -= inst->Arg(1).U32();
+            offset = inst->Arg(0);
+        } else {
+            break;
+        }
+    }
+    return {offset, constant};
+}
+
+/// Returns how many of the low bits of a value are known at compile time, and those bits.
+static std::pair<u32, u32> KnownLowBits(const IR::Value& value, u32 depth = 0) {
+    if (value.IsImmediate()) {
+        return {32, value.U32()};
+    }
+    const IR::Inst* const inst = value.TryInst();
+    if (!inst || depth == 16) {
+        return {0, 0};
+    }
+    switch (inst->GetOpcode()) {
+    case IR::Opcode::ShiftLeftLogical32:
+    case IR::Opcode::ShiftRightLogical32: {
+        if (!inst->Arg(1).IsImmediate()) {
+            return {0, 0};
+        }
+        const u32 shift = inst->Arg(1).U32() & 31;
+        const auto [count, bits] = KnownLowBits(inst->Arg(0), depth + 1);
+        if (inst->GetOpcode() == IR::Opcode::ShiftLeftLogical32) {
+            return {std::min(count + shift, 32U), bits << shift};
+        }
+        return {count > shift ? count - shift : 0, bits >> shift};
+    }
+    case IR::Opcode::IAdd32:
+    case IR::Opcode::ISub32:
+    case IR::Opcode::IMul32:
+    case IR::Opcode::BitwiseAnd32:
+    case IR::Opcode::BitwiseOr32: {
+        const auto [count_a, bits_a] = KnownLowBits(inst->Arg(0), depth + 1);
+        const auto [count_b, bits_b] = KnownLowBits(inst->Arg(1), depth + 1);
+        const u32 count = std::min(count_a, count_b);
+        switch (inst->GetOpcode()) {
+        case IR::Opcode::IAdd32:
+            return {count, bits_a + bits_b};
+        case IR::Opcode::ISub32:
+            return {count, bits_a - bits_b};
+        case IR::Opcode::IMul32:
+            return {count, bits_a * bits_b};
+        case IR::Opcode::BitwiseAnd32:
+            return {count, bits_a & bits_b};
+        default:
+            return {count, bits_a | bits_b};
+        }
+    }
+    default:
+        return {0, 0};
+    }
+}
+
+/// A sharp whose dwords are all read from one buffer at consecutive offsets only known at run
+/// time is one of an array of sharps in that buffer, a descriptor heap, with a sharp every
+/// stride dwords. Returns the read of its first dword.
+static IR::Inst* FindHeapRead(const SharpReference& sharp, u32 stride) {
+    const auto unflattened_read = [](const IR::Value& dword) -> IR::Inst* {
+        IR::Inst* const read = dword.TryInst();
+        if (!read || read->GetOpcode() != IR::Opcode::ReadConstBuffer ||
+            !read->Arg(0).IsImmediate() || read->Flags<IR::BufferInstInfo>().flatbuf_off_dw != 0) {
+            return nullptr;
+        }
+        return read;
+    };
+    IR::Inst* const first = unflattened_read(sharp.dwords[0]);
+    if (!first || first->Arg(1).IsImmediate()) {
+        return nullptr;
+    }
+    const auto [root, base] = SplitConstantOffset(first->Arg(1));
+    for (u32 i = 1; i < sharp.num_dwords; ++i) {
+        const IR::Inst* const read = unflattened_read(sharp.dwords[i]);
+        if (!read || read->Arg(0).U32() != first->Arg(0).U32()) {
+            return nullptr;
+        }
+        const auto [dword_root, offset] = SplitConstantOffset(read->Arg(1));
+        if (dword_root != root || offset != base + i) {
+            return nullptr;
+        }
+    }
+    const auto [known_bits, low_bits] = KnownLowBits(first->Arg(1));
+    if (known_bits < static_cast<u32>(std::countr_zero(stride))) {
+        LOG_WARNING(Render_Recompiler,
+                    "Heap sharp offset is not known to be a multiple of {}, assuming it is",
+                    stride);
+    } else if (const u32 misalignment = low_bits & (stride - 1); misalignment != 0) {
+        LOG_WARNING(Render_Recompiler, "Heap sharp offset is {} past a multiple of {}",
+                    misalignment, stride);
+        return nullptr;
+    }
+    return first;
+}
+
+/// A T# picked at run time can't tell the type of the view the instruction samples, so it is
+/// taken from the address instead. Cubes pass the face V_CUBEID_F32 returns as third coordinate.
+static AmdGpu::ImageType HeapImageType(const IR::Inst& inst) {
+    const auto inst_info = inst.Flags<IR::TextureInstInfo>();
+    const auto plain_type =
+        inst_info.is_array ? AmdGpu::ImageType::Color2DArray : AmdGpu::ImageType::Color2D;
+    if (inst.GetOpcode() != IR::Opcode::ImageSampleRaw) {
+        return plain_type;
+    }
+    const u32 face_reg = inst_info.has_offset.Value() + inst_info.has_bias.Value() +
+                         inst_info.is_depth.Value() + (inst_info.has_derivatives ? 4 : 0) + 2;
+    const IR::Inst* const address = inst.Arg(2 + face_reg / 4).TryInst();
+    if (!address) {
+        return plain_type;
+    }
+    const auto is_cube_face = [](const IR::Value& value) {
+        const IR::Inst* const face = value.TryInst();
+        return face && face->GetOpcode() == IR::Opcode::CubeFaceIndex;
+    };
+    const IR::Value face = address->Arg(face_reg % 4);
+    if (is_cube_face(face)) {
+        return AmdGpu::ImageType::Cube;
+    }
+    // Cube arrays pass slice * 8 + face.
+    const IR::Inst* const face_inst = face.TryInst();
+    if (face_inst &&
+        ((face_inst->GetOpcode() == IR::Opcode::FPFma32 && is_cube_face(face_inst->Arg(2))) ||
+         (face_inst->GetOpcode() == IR::Opcode::FPAdd32 &&
+          (is_cube_face(face_inst->Arg(0)) || is_cube_face(face_inst->Arg(1)))))) {
+        return AmdGpu::ImageType::Cube;
+    }
+    return plain_type;
+}
+
 void PatchImageSharp(const ResourceDiscovery& resource, Info& info, Descriptors& descriptors,
                      const Profile& profile) {
     IR::Inst& inst = *resource.user;
@@ -239,8 +385,8 @@ void PatchImageSharp(const ResourceDiscovery& resource, Info& info, Descriptors&
     // need fallback (TODO is this 100% true?)
     const bool needs_mip_storage_fallback =
         inst_info.has_lod && is_written && !profile.supports_image_load_store_lod;
+    IR::Inst* const heap_read = is_written ? nullptr : FindHeapRead(resource.sharps[0], 8);
     ImageResource image_res = {
-        .sharp_fetch = ConstructSharpFetch<AmdGpu::Image>(resource.sharps[0]),
         .is_depth = bool(inst_info.is_depth),
         .is_atomic = is_atomic,
         .is_array = bool(inst_info.is_array),
@@ -248,6 +394,13 @@ void PatchImageSharp(const ResourceDiscovery& resource, Info& info, Descriptors&
         .is_r128 = bool(inst_info.is_r128),
         .post_op = resource.sharps[0].post_op,
     };
+    if (heap_read) {
+        image_res.is_heap = true;
+        image_res.heap_buffer = static_cast<u16>(heap_read->Arg(0).U32());
+        image_res.heap_type = HeapImageType(inst);
+    } else {
+        image_res.sharp_fetch = ConstructSharpFetch<AmdGpu::Image>(resource.sharps[0]);
+    }
 
     auto image = image_res.GetSharp(info);
     ASSERT(image.GetType() != AmdGpu::ImageType::Invalid);
@@ -321,16 +474,40 @@ void PatchImageSharp(const ResourceDiscovery& resource, Info& info, Descriptors&
     u32 image_binding = descriptors.Add(image_res);
 
     IR::IREmitter ir{*inst.GetParent(), IR::Block::InstructionList::s_iterator_to(inst)};
+    if (heap_read) {
+        const IR::U32 slot = ir.ShiftRightLogical(IR::U32{heap_read->Arg(1)}, ir.Imm32(3u));
+        ir.ImageHeapIndex(ir.Imm32(image_binding), ir.UMin(slot, ir.Imm32(MaxHeapImages - 1)));
+    }
 
     if (inst.GetOpcode() == IR::Opcode::ImageSampleRaw) {
-        auto& lod_prod = resource.sharps[1].post_op_data.lod_prod;
-        const u32 sampler_binding = descriptors.Add(SamplerResource{
-            .sharp_fetch = ConstructSharpFetch<AmdGpu::Sampler>(resource.sharps[1]),
-            .post_op = resource.sharps[1].post_op,
-            .post_op_tsharp_dw3_off =
-                lod_prod.IsEmpty() ? UNKNOWN_LOCATION : SharpLocationFromSource(lod_prod.Inst()),
+        const auto& ssharp = resource.sharps[1];
+        IR::Inst* const sampler_heap_read = FindHeapRead(ssharp, 4);
+        SamplerResource sampler_res{
+            .post_op = ssharp.post_op,
+            .post_op_tsharp_dw3_off = UNKNOWN_LOCATION,
             .is_depth = bool(inst_info.is_depth), // true for the _C (compare) opcodes
-        });
+        };
+        if (sampler_heap_read) {
+            sampler_res.is_heap = true;
+            sampler_res.heap_buffer = static_cast<u16>(sampler_heap_read->Arg(0).U32());
+        } else {
+            sampler_res.sharp_fetch = ConstructSharpFetch<AmdGpu::Sampler>(ssharp);
+        }
+        if (const auto& lod_prod = ssharp.post_op_data.lod_prod; !lod_prod.IsEmpty()) {
+            if (heap_read) {
+                // The mip count of a T# picked at run time is unknown here.
+                sampler_res.post_op = SharpFetchPostOp::None;
+            } else {
+                sampler_res.post_op_tsharp_dw3_off = SharpLocationFromSource(lod_prod.Inst());
+            }
+        }
+        const u32 sampler_binding = descriptors.Add(sampler_res);
+        if (sampler_heap_read) {
+            const IR::U32 slot =
+                ir.ShiftRightLogical(IR::U32{sampler_heap_read->Arg(1)}, ir.Imm32(2u));
+            ir.SamplerHeapIndex(ir.Imm32(sampler_binding),
+                                ir.UMin(slot, ir.Imm32(MaxHeapSamplers - 1)));
+        }
         inst.SetArg(0, ir.Imm32(image_binding | sampler_binding << 16));
     } else {
         inst.SetArg(0, ir.Imm32(image_binding));
@@ -578,8 +755,17 @@ IR::U32 CalculateBufferAddress(IR::IREmitter& ir, const IR::Inst& inst, const In
         index = ir.IAdd(index, vgpr_index);
     }
     if (buffer.add_tid_enable) {
-        ASSERT_MSG(info.sw_stage == SwStage::Compute,
-                   "Thread ID buffer addressing is not supported outside of compute.");
+        // FIX-030: the hardware adds the lane's thread id in every stage, not only compute.
+        // GT Sport's dealership compiled a pixel shader permutation whose buffer sets
+        // ADD_TID_ENABLE, and the assertion here stopped the emulator.
+        if (info.sw_stage != SwStage::Compute) {
+            static std::atomic<u32> logged{};
+            if (logged++ < 10) {
+                LOG_WARNING(Render_Recompiler,
+                            "FIX-030: thread id buffer addressing in stage {} (shader {:#x})",
+                            u32(info.sw_stage), info.pgm_hash);
+            }
+        }
         const IR::U32 thread_id{ir.LaneId()};
         index = ir.IAdd(index, thread_id);
     }

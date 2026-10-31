@@ -31,6 +31,7 @@
 #include "core/emulator_settings.h"
 #include "core/libraries/audio/audioout.h"
 #include "core/libraries/audio/audioout_backend.h"
+#include "core/libraries/audio/dualsense_speaker.h"
 #include "core/libraries/audio/openal_manager.h"
 #include "core/libraries/kernel/threads.h"
 
@@ -83,9 +84,15 @@ public:
         if (!Initialize(port.type)) {
             LOG_ERROR(Lib_AudioOut, "Failed to initialize OpenAL audio backend");
         }
+        if (port.type == OrbisAudioOutPort::PadSpk && EmulatorSettings.IsDualSenseSpeaker()) {
+            dualsense = DualSenseSpeaker::Open(sample_rate);
+            LOG_INFO(Lib_AudioOut, "Pad speaker port opened ({} ch, {} Hz), DualSense speaker {}",
+                     num_channels, sample_rate, dualsense ? "ready" : "unavailable");
+        }
     }
 
     ~OpenALPortBackend() override {
+        DualSenseSpeaker::Close(dualsense);
         // Unregister port before cleanup
         if (device_registered) {
             OpenALDevice::GetInstance().UnregisterPort(device_name);
@@ -116,6 +123,30 @@ public:
 
         if (fold_lfe) {
             FoldLfeIntoFronts();
+        }
+
+        if (dualsense != nullptr && buffer_frames != 0) {
+            // Pad speaker audio goes to the DualSense speaker when one takes it.
+            const float* samples = al_buffer_float.data();
+            size_t total = al_buffer_float.size();
+            if (!use_native_float) {
+                dualsense_scratch.resize(al_buffer_s16.size());
+                for (size_t i = 0; i < al_buffer_s16.size(); ++i) {
+                    dualsense_scratch[i] = al_buffer_s16[i] / 32768.0f;
+                }
+                samples = dualsense_scratch.data();
+                total = dualsense_scratch.size();
+            }
+            const u32 channels = static_cast<u32>(total / buffer_frames);
+            const float gain = game_gain.load(std::memory_order_acquire) *
+                               EmulatorSettings.GetDualSenseSpeakerVolume() * 0.01f;
+            if (channels != 0 &&
+                DualSenseSpeaker::Queue(dualsense, samples, buffer_frames, channels, gain) != 0) {
+                HandleTiming(current_time);
+                last_output_time.store(current_time, std::memory_order_release);
+                output_count++;
+                return;
+            }
         }
 
         // Reclaim processed buffers
@@ -1048,6 +1079,8 @@ private:
     // OpenAL objects
     OpenALDevice* device_context{nullptr};
     ALuint source{0};
+    DualSenseSpeaker::Stream* dualsense{nullptr};
+    std::vector<float> dualsense_scratch;
     std::vector<ALuint> buffers;
     std::vector<ALuint> available_buffers;
     ALenum format{AL_FORMAT_STEREO16};

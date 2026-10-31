@@ -118,10 +118,18 @@ private:
     u8 m_next_touch_id{1};
     u64 m_touch_down_timestamp{};
     u64 m_last_orientation_update{};
+    std::array<float, 3> m_up_reference{0.0f, 1.0f, 0.0f};
+    bool m_up_reference_valid{false};
     Colour colour;
     std::optional<Colour> override_colour{};
 
+    Libraries::Pad::OrbisPadButtonDataOffset TakeSingleReadButtons();
+
     State m_state;
+    // Completed taps per button not yet seen by a single-state read, and the buttons that read
+    // last reported, so taps shorter than the game's polling interval still reach it.
+    std::array<u8, 32> m_unread_taps{};
+    Libraries::Pad::OrbisPadButtonDataOffset m_last_reported_buttons{};
 
     std::mutex m_state_mutex;
     RingBufferQueue<State> m_states_queue;

@@ -618,14 +618,18 @@ bool EmulatorSettingsImpl::TransferSettings() {
         setFromToml(s.direct_memory_access_enabled, gpu, "directMemoryAccess");
         setFromToml(s.dump_shaders, gpu, "dumpShaders");
         setFromToml(s.patch_shaders, gpu, "patchShaders");
-        setFromToml(s.vblank_frequency, gpu, "vblankFrequency");
+        setFromToml(s.vblank_limit, gpu, "vblankFrequency");
         setFromToml(s.full_screen, gpu, "Fullscreen");
         setFromToml(s.full_screen_mode, gpu, "FullscreenMode");
         setFromToml(s.present_mode, gpu, "presentMode");
         setFromToml(s.hdr_allowed, gpu, "allowHDR");
         setFromToml(s.fsr_enabled, gpu, "fsrEnabled");
+        setFromToml(s.frame_generation_enabled, gpu, "frameGenerationEnabled");
+        setFromToml(s.gpu_thread_core_reserve, gpu, "gpuThreadCoreReserve");
         setFromToml(s.rcas_enabled, gpu, "rcasEnabled");
         setFromToml(s.rcas_attenuation, gpu, "rcasAttenuation");
+        setFromToml(s.brightness, gpu, "brightness");
+        setFromToml(s.contrast, gpu, "contrast");
     }
 
     if (og_data.contains("Vulkan")) {
@@ -643,6 +647,7 @@ bool EmulatorSettingsImpl::TransferSettings() {
         setFromToml(s.renderdoc_enabled, vk, "rdocEnable");
         setFromToml(s.pipeline_cache_enabled, vk, "pipelineCacheEnable");
         setFromToml(s.pipeline_cache_archived, vk, "pipelineCacheArchive");
+        setFromToml(s.async_pipeline_compilation, vk, "asyncPipelineCompilation");
     }
 
     if (og_data.contains("Debug")) {

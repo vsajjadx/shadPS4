@@ -428,7 +428,14 @@ struct SignalImpl : public PageManager::Impl {
         auto& impl = memory->GetAddressSpace();
         ASSERT_MSG(perms != Core::MemoryPermission::Write,
                    "Attempted to protect region as write-only which is not a valid permission");
-        impl.Protect(address, size, perms);
+        // Keep the execute permission of guest code. A GPU buffer over module code turned its
+        // pages non-executable, and every instruction fetch then faulted as a read of GPU-mapped
+        // memory and looped on the fault (a freeze with game threads at full CPU). An executable
+        // page stays readable on x86, so only CPU writes to code are tracked there. (From shadGT
+        // FIX-028.)
+        memory->ForEachExecRange(address, size, [&](VAddr start, u64 length, bool exec) {
+            impl.Protect(start, length, exec ? perms | Core::MemoryPermission::Execute : perms);
+        });
     }
 
     static bool GuestFaultSignalHandler(void* context, void* fault_address) {
@@ -436,6 +443,19 @@ struct SignalImpl : public PageManager::Impl {
         const auto size = std::min<u64>(8, PageManager::GetNextPageAddr(addr) - addr);
         const auto is_gpu_thread =
             std::this_thread::get_id() == rasterizer->GetGpuCommandProcessorThread();
+        if (Common::IsExecuteError(context)) {
+            // Tracking only ever removes read/write access; claiming an execute fault would
+            // re-run the faulting jump forever.
+            return false;
+        }
+#ifdef _WIN64
+        // Tracking only changes the protection of committed pages. Leave other faults, such as an
+        // SRT walker reading reserved memory, to the handlers after this one.
+        MEMORY_BASIC_INFORMATION info{};
+        if (VirtualQuery(fault_address, &info, sizeof(info)) == 0 || info.State != MEM_COMMIT) {
+            return false;
+        }
+#endif
         if (Common::IsWriteError(context)) {
             return rasterizer->InvalidateMemory(addr, size, is_gpu_thread);
         } else {

@@ -348,6 +348,29 @@ bool Instance::CreateDevice() {
     }
     image_view_min_lod = add_extension(VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME);
     supports_memory_budget = add_extension(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+    // Lets the driver move device memory out to system memory instead of failing an allocation
+    // when the card is full, which a 4 GB card is with this game.
+    const bool memory_priority = add_extension(VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME);
+    const bool pageable_extension =
+        memory_priority && add_extension(VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME);
+    if (pageable_extension) {
+        const auto pageable_chain = physical_device.getFeatures2<
+            vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceMemoryPriorityFeaturesEXT,
+            vk::PhysicalDevicePageableDeviceLocalMemoryFeaturesEXT>();
+        pageable_device_local_memory =
+            pageable_chain.get<vk::PhysicalDeviceMemoryPriorityFeaturesEXT>().memoryPriority &&
+            pageable_chain.get<vk::PhysicalDevicePageableDeviceLocalMemoryFeaturesEXT>()
+                .pageableDeviceLocalMemory;
+        LOG_INFO(Render_Vulkan, "- pageableDeviceLocalMemory: {}", pageable_device_local_memory);
+    }
+    device_fault = add_extension(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+    if (device_fault) {
+        device_fault =
+            physical_device
+                .getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceFaultFeaturesEXT>()
+                .get<vk::PhysicalDeviceFaultFeaturesEXT>()
+                .deviceFault;
+    }
     shader_clock = add_extension(VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
     if (shader_clock) {
         shader_clock_features = feature_chain.get<vk::PhysicalDeviceShaderClockFeaturesKHR>();
@@ -405,6 +428,7 @@ bool Instance::CreateDevice() {
                 .dualSrcBlend = features.dualSrcBlend,
                 .logicOp = features.logicOp,
                 .multiDrawIndirect = features.multiDrawIndirect,
+                .drawIndirectFirstInstance = features.drawIndirectFirstInstance,
                 .depthClamp = features.depthClamp,
                 .depthBiasClamp = features.depthBiasClamp,
                 .fillModeNonSolid = features.fillModeNonSolid,
@@ -412,6 +436,7 @@ bool Instance::CreateDevice() {
                 .wideLines = features.wideLines,
                 .multiViewport = features.multiViewport,
                 .samplerAnisotropy = features.samplerAnisotropy,
+                .occlusionQueryPrecise = features.occlusionQueryPrecise,
                 .vertexPipelineStoresAndAtomics = features.vertexPipelineStoresAndAtomics,
                 .fragmentStoresAndAtomics = features.fragmentStoresAndAtomics,
                 .shaderImageGatherExtended = features.shaderImageGatherExtended,
@@ -437,6 +462,13 @@ bool Instance::CreateDevice() {
             .shaderSharedInt64Atomics = vk12_features.shaderSharedInt64Atomics,
             .shaderFloat16 = vk12_features.shaderFloat16,
             .shaderInt8 = vk12_features.shaderInt8,
+            .shaderSampledImageArrayNonUniformIndexing =
+                vk12_features.shaderSampledImageArrayNonUniformIndexing,
+            .descriptorBindingSampledImageUpdateAfterBind =
+                vk12_features.descriptorBindingSampledImageUpdateAfterBind,
+            .descriptorBindingUpdateUnusedWhilePending =
+                vk12_features.descriptorBindingUpdateUnusedWhilePending,
+            .descriptorBindingPartiallyBound = vk12_features.descriptorBindingPartiallyBound,
             .scalarBlockLayout = vk12_features.scalarBlockLayout,
             .uniformBufferStandardLayout = vk12_features.uniformBufferStandardLayout,
             .separateDepthStencilLayouts = vk12_features.separateDepthStencilLayouts,
@@ -530,6 +562,15 @@ bool Instance::CreateDevice() {
         vk::PhysicalDeviceShaderClockFeaturesKHR{
             .shaderSubgroupClock = shader_clock_features.shaderSubgroupClock,
         },
+        vk::PhysicalDeviceMemoryPriorityFeaturesEXT{
+            .memoryPriority = true,
+        },
+        vk::PhysicalDevicePageableDeviceLocalMemoryFeaturesEXT{
+            .pageableDeviceLocalMemory = true,
+        },
+        vk::PhysicalDeviceFaultFeaturesEXT{
+            .deviceFault = true,
+        },
     };
 
     if (!custom_border_color) {
@@ -583,6 +624,13 @@ bool Instance::CreateDevice() {
     }
     if (!shader_clock) {
         device_chain.unlink<vk::PhysicalDeviceShaderClockFeaturesKHR>();
+    }
+    if (!pageable_device_local_memory) {
+        device_chain.unlink<vk::PhysicalDeviceMemoryPriorityFeaturesEXT>();
+        device_chain.unlink<vk::PhysicalDevicePageableDeviceLocalMemoryFeaturesEXT>();
+    }
+    if (!device_fault) {
+        device_chain.unlink<vk::PhysicalDeviceFaultFeaturesEXT>();
     }
 
     auto [device_result, dev] = physical_device.createDeviceUnique(device_chain.get());
@@ -790,6 +838,42 @@ u64 Instance::GetDeviceMemoryUsage() const {
         total_usage += memory_budget_props.heapUsage[heap];
     }
     return total_usage;
+}
+
+void Instance::LogDeviceFault() const {
+    if (!device_fault) {
+        return;
+    }
+    vk::DeviceFaultCountsEXT counts{};
+    if (device->getFaultInfoEXT(&counts, nullptr) != vk::Result::eSuccess) {
+        return;
+    }
+    counts.vendorBinarySize = 0;
+    std::vector<vk::DeviceFaultAddressInfoEXT> address_infos(counts.addressInfoCount);
+    std::vector<vk::DeviceFaultVendorInfoEXT> vendor_infos(counts.vendorInfoCount);
+    vk::DeviceFaultInfoEXT fault_info{
+        .pAddressInfos = address_infos.data(),
+        .pVendorInfos = vendor_infos.data(),
+    };
+    const vk::Result result = device->getFaultInfoEXT(&counts, &fault_info);
+    if (result != vk::Result::eSuccess && result != vk::Result::eIncomplete) {
+        LOG_CRITICAL(Render_Vulkan, "Failed to query the device fault: {}", vk::to_string(result));
+        return;
+    }
+    LOG_CRITICAL(Render_Vulkan, "Device fault: {}", fault_info.description.data());
+    for (u32 i = 0; i < counts.addressInfoCount; i++) {
+        const auto& info = address_infos[i];
+        const u64 precision = std::max<u64>(info.addressPrecision, 1);
+        const u64 base = info.reportedAddress & ~(precision - 1);
+        LOG_CRITICAL(Render_Vulkan, "- {} at {:#x} (within {:#x}-{:#x})",
+                     vk::to_string(info.addressType), info.reportedAddress, base,
+                     base + precision);
+    }
+    for (u32 i = 0; i < counts.vendorInfoCount; i++) {
+        const auto& info = vendor_infos[i];
+        LOG_CRITICAL(Render_Vulkan, "- vendor fault {:#x} (data {:#x}): {}", info.vendorFaultCode,
+                     info.vendorFaultData, info.description.data());
+    }
 }
 
 vk::FormatFeatureFlags2 Instance::GetFormatFeatureFlags(vk::Format format) const {

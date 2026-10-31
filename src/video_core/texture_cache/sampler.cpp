@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include "core/emulator_settings.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/texture_cache/sampler.h"
@@ -9,14 +10,33 @@
 namespace VideoCore {
 
 Sampler::Sampler(const Vulkan::Instance& instance, const AmdGpu::Sampler& sampler,
-                 const AmdGpu::BorderColorBuffer border_color_base, const bool is_depth) {
+                 const AmdGpu::BorderColorBuffer border_color_base, const bool is_depth,
+                 const bool samples_mipmaps) {
     using namespace Vulkan;
-    const bool anisotropy_enable = instance.IsAnisotropicFilteringSupported() &&
-                                   (AmdGpu::IsAnisoFilter(sampler.xy_mag_filter) ||
-                                    AmdGpu::IsAnisoFilter(sampler.xy_min_filter));
-    const float max_anisotropy =
-        anisotropy_enable ? std::clamp(sampler.MaxAniso(), 1.0f, instance.MaxSamplerAnisotropy())
-                          : 1.0f;
+    const bool game_aniso = AmdGpu::IsAnisoFilter(sampler.xy_mag_filter) ||
+                            AmdGpu::IsAnisoFilter(sampler.xy_min_filter);
+    // A forced anisotropy only applies to filtered, mipmapped colour textures: point-sampled
+    // lookups and depth compares must stay exact, and a texture without mips gains nothing from
+    // it. Post-processing reads its lookup tables (colour grading LUTs laid out as 2D slices)
+    // with linear samplers, and anisotropic taps across a slice edge mixed neighbouring slices
+    // into red and cyan speckles along every edge of the image.
+    const u32 forced_aniso = EmulatorSettings.GetAnisotropicFiltering();
+    const bool force_aniso = forced_aniso > 1 && !is_depth && samples_mipmaps &&
+                             sampler.xy_min_filter.Value() != AmdGpu::Filter::Point &&
+                             sampler.mip_filter.Value() != AmdGpu::MipFilter::None;
+    const bool anisotropy_enable =
+        instance.IsAnisotropicFilteringSupported() && (game_aniso || force_aniso);
+    float max_anisotropy = 1.0f;
+    if (anisotropy_enable) {
+        const float requested = force_aniso ? std::max(static_cast<float>(forced_aniso),
+                                                       game_aniso ? sampler.MaxAniso() : 1.0f)
+                                            : sampler.MaxAniso();
+        max_anisotropy = std::clamp(requested, 1.0f, instance.MaxSamplerAnisotropy());
+    }
+    const float lod_bias = std::clamp(sampler.LodBias() +
+                                          static_cast<float>(EmulatorSettings.GetTextureLodBias()) /
+                                              100.0f,
+                                      -instance.MaxSamplerLodBias(), instance.MaxSamplerLodBias());
     auto border_color = LiverpoolToVK::BorderColor(sampler.border_color_type);
     if (border_color == vk::BorderColor::eFloatCustomEXT &&
         !instance.IsCustomBorderColorSupported()) {
@@ -51,7 +71,7 @@ Sampler::Sampler(const Vulkan::Instance& instance, const AmdGpu::Sampler& sample
         .addressModeU = LiverpoolToVK::ClampMode(sampler.clamp_x),
         .addressModeV = LiverpoolToVK::ClampMode(sampler.clamp_y),
         .addressModeW = LiverpoolToVK::ClampMode(sampler.clamp_z),
-        .mipLodBias = std::min(sampler.LodBias(), instance.MaxSamplerLodBias()),
+        .mipLodBias = lod_bias,
         .anisotropyEnable = anisotropy_enable,
         .maxAnisotropy = max_anisotropy,
         // GCN compares per instruction; a plain read of a compare sampler is undefined in Vulkan.

@@ -26,6 +26,11 @@ void SetCurrentThreadName(const char* name);
 
 void SetThreadName(void* thread, const char* name);
 
+/// Gives the calling thread the fastest physical core of its own and keeps every other thread
+/// of the process off it, so no busy thread shares that core's hyperthreads. Does nothing on
+/// hosts with fewer than 6 logical CPUs or 4 physical cores. Windows only.
+void ReserveCoreForCurrentThread();
+
 bool AccurateSleep(std::chrono::nanoseconds duration, std::chrono::nanoseconds* remaining,
                    bool interruptible);
 

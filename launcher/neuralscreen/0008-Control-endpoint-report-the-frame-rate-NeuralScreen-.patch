@@ -1,0 +1,87 @@
+From eb24ed8d7a175fa10a28c072af9f3f420dd1de0c Mon Sep 17 00:00:00 2001
+From: vsajjadx <vsajjadx@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 08:34:33 +0000
+Subject: [PATCH] Control endpoint: report the frame rate NeuralScreen really
+ shows
+
+The emulator's counter counts the frames the game presents, which does not
+change when NeuralScreen slows the picture down. 'fps' answers the displayed
+rate (real + generated with Frame Generation, the NR rate otherwise) or none
+while NR is off and no Frame Generation runs.
+---
+ app/control.py | 20 ++++++++++++++++++++
+ main.py        |  6 ++++++
+ 2 files changed, 26 insertions(+)
+
+diff --git a/app/control.py b/app/control.py
+index 62056c9..ece6c3c 100644
+--- a/app/control.py
++++ b/app/control.py
+@@ -42,6 +42,20 @@ COMMANDS = {
+ }
+ 
+ 
++# The rate NeuralScreen really puts on the screen, written by the main loop
++# and read by "fps" below: an emulator cannot see it, because the work happens
++# in this process, after the emulator has presented its frame. None while
++# there is nothing to report (NR off and no Frame Generation).
++_fps_lock = threading.Lock()
++_fps: "float | None" = None
++
++
++def publish_fps(value: "float | None") -> None:
++    global _fps
++    with _fps_lock:
++        _fps = value
++
++
+ class ControlHandler(socketserver.StreamRequestHandler):
+ 
+     def handle(self) -> None:
+@@ -51,6 +65,12 @@ class ControlHandler(socketserver.StreamRequestHandler):
+                 if word == "ping":
+                     self.wfile.write(b"ok\n")
+                     continue
++                if word == "fps":
++                    with _fps_lock:
++                        value = _fps
++                    self.wfile.write(b"ok none\n" if value is None
++                                     else f"ok {value:.1f}\n".encode())
++                    continue
+                 cmd = COMMANDS.get(word)
+                 if cmd is None:
+                     self.wfile.write(f"err: unknown command {word!r}\n".encode())
+diff --git a/main.py b/main.py
+index b70326b..de56e29 100644
+--- a/main.py
++++ b/main.py
+@@ -677,6 +677,7 @@ def main() -> int:
+     parser.add_argument("--instance", default=None, metavar="NAME",
+                         help="run beside a copy with another --instance name")
+     args = parser.parse_args()
++    _publish_fps = None  # set when --ctl brings the control endpoint up
+     _init_logging()  # pythonw: stdout/stderr -> NeuralScreen.log
+ 
+     # One instance only: two copies fight over the screen capture (the
+@@ -758,6 +759,7 @@ def main() -> int:
+         # connection before that would hold a queue the loop never reads.
+         if args.ctl:
+             from control import start as start_control
++            from control import publish_fps as _publish_fps
+             start_control(args.ctl, st.tray_commands)
+ 
+         capture_failures = 0
+@@ -1715,6 +1717,10 @@ def main() -> int:
+             if not bypass:
+                 nr_rate.record(completed_at)
+             last_fps = nr_rate.rate(completed_at)
++            if _publish_fps is not None:
++                _shown_fps = settings_io._fg_displayed_fps(st)
++                _publish_fps(_shown_fps if _shown_fps is not None
++                             else (None if bypass else last_fps))
+             st.display.set_hud({
+                 "fps": last_fps,
+                 # NR ON but the worker is not evaluating: the picture is raw.
+-- 
+2.43.0
+

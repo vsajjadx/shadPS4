@@ -4,6 +4,10 @@
 #pragma once
 
 #include <deque>
+#include <mutex>
+#include <span>
+#include <unordered_map>
+#include <unordered_set>
 #include <boost/container/small_vector.hpp>
 
 #include "common/enum.h"
@@ -43,6 +47,8 @@ enum class ObtainBufferFlags {
     IsTexelBuffer = 1 << 1,
     IgnoreStreamBuffer = 1 << 2,
     InvalidateTextureCache = 1 << 3,
+    /// The write comes from the images in the range, so they stay valid.
+    FromImages = 1 << 4,
 };
 DECLARE_ENUM_FLAG_OPERATORS(ObtainBufferFlags)
 
@@ -53,6 +59,7 @@ class BufferCache {
     static constexpr u64 NUM_ARENA_PAGES = u64{1} << (ADDRESS_SPACE_BITS - ARENA_PAGE_BITS);
     static constexpr u64 MIN_BLOCK_SIZE = 16_KB;
     static constexpr u64 STREAM_THRESHOLD = 16_KB;
+    static constexpr u64 BACKING_SLAB_SIZE = 64_MB;
 
 public:
     explicit BufferCache(const Vulkan::Instance& instance, Vulkan::Scheduler& scheduler,
@@ -101,6 +108,10 @@ public:
     void ReadMemory(VAddr device_addr, u64 size, bool is_write = false, bool async = false,
                     bool assume_locks = false);
 
+    /// Starts downloading GPU writes to the pages the CPU reads back, so the data is in guest
+    /// memory by the time the CPU reads it instead of stalling the CPU, the GPU thread and the GPU.
+    void PrefetchReadbacks();
+
     /// Flushes GPU modified ranges of the uncovered part of the edge pages of an image.
     void ReadEdgeImagePages(const Image& image);
 
@@ -123,6 +134,9 @@ public:
     /// Synchronizes all buffers needed for DMA.
     void SynchronizeDmaBuffers();
 
+    /// Makes the pages that device address accesses faulted on resident and returns their count.
+    u32 ResolveDmaFaults();
+
     /// Commits pending sparse buffer memory binds. Must be called before every scheduler submit.
     void SubmitPendingArenaBinds(Vulkan::SubmitInfo& info);
 
@@ -142,6 +156,8 @@ private:
 
     const Buffer* GetArena(u64 first_block, u64 last_block);
 
+    void AllocateBackingSlab();
+
     void EnsureResident(const Buffer* arena, u64 first_block, u64 last_block);
 
     void DownloadMemory(const Buffer* arena, VAddr device_addr, u64 size, bool is_write,
@@ -149,6 +165,16 @@ private:
 
     bool SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 size, bool is_written,
                            bool is_texel_buffer);
+
+    static constexpr u64 MaxUploadPartBytes = 256_MB;
+    static constexpr u64 ReadWatchMaxBytes = 64_KB;
+    static constexpr u64 ReadbackPageBits = 12;
+
+    void NoteGpuWrite(VAddr device_addr, u64 size);
+
+    [[nodiscard]] u64 PrefetchTick(VAddr device_addr, u64 size);
+
+    void UploadInParts(const Buffer* arena, std::span<const vk::BufferCopy> ranges);
 
     bool SynchronizeMemoryFromImage(const Buffer* arena, VAddr device_addr, u32 size);
 
@@ -165,6 +191,12 @@ private:
     Buffer gds_buffer;
     std::unique_ptr<Buffer> null_index_buffer;
     RangeSet gpu_modified_ranges;
+    std::unordered_set<u64> readback_pages;
+    std::unordered_map<u64, u64> readback_page_write_seq;
+    std::unordered_map<u64, u64> readback_page_tick;
+    std::mutex readback_tick_mutex;
+    u64 readback_write_seq{};
+    IntervalList<Interval> pending_prefetches;
 
     std::unique_ptr<FaultManager> fault_manager;
     std::unique_ptr<Buffer> bda_pagetable_buffer;
@@ -186,6 +218,10 @@ private:
         }
     };
     IntervalList<Backing> resident_ranges;
+    vk::DeviceMemory backing_slab{};
+    u64 backing_slab_blocks{};
+    u64 backing_slab_used{};
+    u32 num_backing_slabs{};
 
     u32 arena_memory_type_index{};
     u32 block_size{};

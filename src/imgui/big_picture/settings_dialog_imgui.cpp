@@ -12,6 +12,7 @@
 #include "common/path_util.h"
 #include "core/cpu_patches.h"
 #include "core/devtools/layer.h"
+#include "core/neural_screen.h"
 #include "imgui/imgui_std.h"
 #include "settings_dialog_imgui.h"
 
@@ -53,6 +54,8 @@ void SettingsWindow::LoadSettings(std::string profile) {
     volumeSetting = EmulatorSettings.GetVolumeSlider();
     showSplashSetting = EmulatorSettings.IsShowSplash();
     audioBackendSetting = EmulatorSettings.GetAudioBackend();
+    dualsenseSpeakerSetting = EmulatorSettings.IsDualSenseSpeaker();
+    dualsenseSpeakerVolumeSetting = static_cast<int>(EmulatorSettings.GetDualSenseSpeakerVolume());
 
     /////////// Graphics Tab
     fullscreenModeSetting =
@@ -64,6 +67,25 @@ void SettingsWindow::LoadSettings(std::string profile) {
     fsrEnabledSetting = EmulatorSettings.IsFsrEnabled();
     rcasEnabledSetting = EmulatorSettings.IsRcasEnabled();
     rcasAttenuationSetting = static_cast<float>(EmulatorSettings.GetRcasAttenuation() * 0.001f);
+    {
+        const auto& ns = NeuralScreen::GetSettings();
+        dlss5EnabledSetting = ns.enabled;
+        dlss5BoostSetting = ns.boost;
+        dlss5AutoQualitySetting = ns.autoQuality;
+        dlss5ResolutionSetting = ns.networkResolutionPercent;
+        dlss5PassesSetting = ns.passes;
+        dlss5ProfileSetting = ns.profile;
+        dlss5ModelSetting = ns.model;
+        dlss5IntensitySetting = ns.intensity;
+        dlss5LocalToneSetting = ns.localTone;
+        dlss5LocalStructureSetting = ns.localStructure;
+        dlss5SkinStructureSetting = ns.skinStructure;
+    }
+    {
+        const u32 aniso = EmulatorSettings.GetAnisotropicFiltering();
+        anisotropySetting = aniso >= 16 ? 4 : aniso >= 8 ? 3 : aniso >= 4 ? 2 : aniso >= 2 ? 1 : 0;
+    }
+    textureLodBiasSetting = EmulatorSettings.GetTextureLodBias();
 
     /////////// Input Tab
     motionControlsSetting = EmulatorSettings.IsMotionControlsEnabled();
@@ -108,6 +130,9 @@ void SettingsWindow::SaveSettings(std::string profile) {
     EmulatorSettings.SetVolumeSlider(volumeSetting, isSpecific);
     EmulatorSettings.SetShowSplash(showSplashSetting, isSpecific);
     EmulatorSettings.SetAudioBackend(audioBackendSetting, isSpecific);
+    EmulatorSettings.SetDualSenseSpeaker(dualsenseSpeakerSetting, isSpecific);
+    EmulatorSettings.SetDualSenseSpeakerVolume(static_cast<u32>(dualsenseSpeakerVolumeSetting),
+                                               isSpecific);
 
     /////////// Graphics Tab
     bool isFullscreen = fullscreenModeSetting != 0;
@@ -121,6 +146,26 @@ void SettingsWindow::SaveSettings(std::string profile) {
     EmulatorSettings.SetRcasEnabled(rcasEnabledSetting, isSpecific);
     EmulatorSettings.SetRcasAttenuation(static_cast<int>(rcasAttenuationSetting * 1000),
                                         isSpecific);
+    EmulatorSettings.SetAnisotropicFiltering(anisotropySetting == 0 ? 0u : 1u << anisotropySetting,
+                                             isSpecific);
+    EmulatorSettings.SetTextureLodBias(textureLodBiasSetting, isSpecific);
+
+    {
+        auto& ns = NeuralScreen::GetSettings();
+        ns.enabled = dlss5EnabledSetting;
+        ns.boost = dlss5BoostSetting;
+        ns.autoQuality = dlss5AutoQualitySetting;
+        ns.networkResolutionPercent = dlss5ResolutionSetting;
+        ns.passes = dlss5PassesSetting;
+        ns.profile = dlss5ProfileSetting;
+        ns.model = dlss5ModelSetting;
+        ns.intensity = dlss5IntensitySetting;
+        ns.localTone = dlss5LocalToneSetting;
+        ns.localStructure = dlss5LocalStructureSetting;
+        ns.skinStructure = dlss5SkinStructureSetting;
+        NeuralScreen::SaveSettings();
+        NeuralScreen::ApplySettings();
+    }
 
     /////////// Input Tab
     EmulatorSettings.SetMotionControlsEnabled(motionControlsSetting, isSpecific);
@@ -709,6 +754,11 @@ void SettingsWindow::DrawSettingsTable(SettingsCategory category) {
             AddSettingSliderInt("Volume", volumeSetting, 0, 500);
             AddSettingCheckbox("Show Splash Screen When Launching Game", showSplashSetting);
             AddSettingCombo("Audio Backend", audioBackendSetting, audioBackendOptions);
+            AddSettingCheckbox("Controller Speaker Sound (DualSense)", dualsenseSpeakerSetting);
+            if (dualsenseSpeakerSetting) {
+                AddSettingSliderInt("Controller Speaker Volume", dualsenseSpeakerVolumeSetting, 0,
+                                    100);
+            }
 
             ImGui::EndTable();
         }
@@ -731,6 +781,32 @@ void SettingsWindow::DrawSettingsTable(SettingsCategory category) {
             if (rcasEnabledSetting && fsrEnabledSetting) {
                 AddSettingSliderFloat("RCAS Attenuation", rcasAttenuationSetting, 0.0f, 3.0f, 3);
             }
+
+            AddSettingCheckbox("Enable DLSS5 (NeuralScreen)", dlss5EnabledSetting);
+            if (dlss5EnabledSetting) {
+                AddSettingCheckbox("DLSS5 Boost", dlss5BoostSetting);
+                if (dlss5BoostSetting) {
+                    AddSettingCheckbox("DLSS5 Auto Quality (Automatic Resolution)",
+                                       dlss5AutoQualitySetting);
+                }
+                AddSettingSliderInt("DLSS5 Resolution Network Runs At", dlss5ResolutionSetting, 30,
+                                    100);
+                AddSettingSliderInt("DLSS5 Passes", dlss5PassesSetting, 1, 4);
+                AddSettingCombo("DLSS5 Profile", dlss5ProfileSetting,
+                                NeuralScreen::ProfileOptions());
+                AddSettingSliderFloat("DLSS5 Intensity", dlss5IntensitySetting, 0.0f, 1.0f, 3);
+                AddSettingCombo("DLSS5 Fine Tuning: Model", dlss5ModelSetting,
+                                NeuralScreen::ModelOptions());
+                AddSettingSliderFloat("DLSS5 Fine Tuning: Local Tone", dlss5LocalToneSetting, 0.0f,
+                                      2.0f, 3);
+                AddSettingSliderFloat("DLSS5 Fine Tuning: Local Structure",
+                                      dlss5LocalStructureSetting, 0.0f, 2.0f, 3);
+                AddSettingSliderFloat("DLSS5 Fine Tuning: Skin Structure",
+                                      dlss5SkinStructureSetting, -1.0f, 2.5f, 3);
+            }
+
+            AddSettingCombo("Anisotropic Filtering", anisotropySetting, anisotropyOptions);
+            AddSettingSliderInt("Texture LOD Bias (1/100 mip)", textureLodBiasSetting, -200, 100);
 
             ImGui::EndTable();
         }
@@ -783,7 +859,8 @@ void SettingsWindow::DrawSettingsTable(SettingsCategory category) {
             ImGui::TableSetupColumn("Value");
 
             AddSettingSliderInt("Additional DMem Allocation", extraDmemSetting, 0, 20000);
-            AddSettingSliderInt("Vblank Frequency", vblankFrequencySetting, 30, 360);
+            AddSettingSliderInt("Vblank Frequency (0 = unlimited)", vblankFrequencySetting, 0,
+                                1000);
             AddSettingCombo("Readbacks Mode", readbacksModeSetting, readbacksModeOptions);
             AddSettingCheckbox("Enable Readback Linear Images", readbackLinearImagesSetting);
             AddSettingCheckbox("Enable Direct Memory Access", directMemoryAccessSetting);

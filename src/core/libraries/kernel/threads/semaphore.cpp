@@ -1,9 +1,12 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <limits>
 #include <list>
+#include <memory>
 #include <mutex>
 #include <semaphore>
 
@@ -14,6 +17,7 @@
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/kernel/orbis_error.h"
 #include "core/libraries/kernel/posix_error.h"
+#include "core/libraries/kernel/threads/hang_diag.h"
 #include "core/libraries/kernel/threads/pthread.h"
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/libs.h"
@@ -68,6 +72,7 @@ static s32 PthreadSemWait(PthreadSem* sem, const OrbisKernelTimespec* abstime, u
     const bool is_reltime = abstime == THR_RELTIME;
     auto reltime_deadline = std::chrono::steady_clock::time_point{};
     bool first_sleep = true;
+    HANG_DIAG_WAIT(PosixSem, sem);
 
     for (;;) {
         // libkernel checks and decrements the value before validating a timeout.
@@ -157,7 +162,16 @@ public:
     ~OrbisSem() = default;
 
     s32 Wait(bool can_block, s32 need_count, u32* timeout) {
+        if (need_count <= 0 || need_count > max_count) {
+            // No signal could ever satisfy it.
+            return ORBIS_KERNEL_ERROR_EINVAL;
+        }
         std::unique_lock lk{mutex};
+        if (deleted) {
+            // The semaphore was found before another thread deleted it; no future signal can wake
+            // this wait
+            return ORBIS_KERNEL_ERROR_ESRCH;
+        }
         if (token_count >= need_count) {
             token_count -= need_count;
             return ORBIS_OK;
@@ -184,9 +198,13 @@ public:
 
     bool Signal(s32 signal_count) {
         std::scoped_lock lk{mutex};
-        if (token_count + signal_count > max_count) {
+        if (signal_count > max_count) {
             return false;
         }
+        // The waiters take their tokens before the maximum is checked: a signal that would only
+        // exceed it counting the tokens a waiter is about to take must still wake that waiter.
+        // Refusing the whole signal left the waiter asleep for good. Only what is left after the
+        // waiters is clamped to the maximum, which is reported. (As fpPS4's sema_post.)
         token_count += signal_count;
 
         // Wake up threads in order of priority.
@@ -201,7 +219,10 @@ public:
             waiter->was_signaled = true;
             waiter->sem.release();
         }
-
+        if (token_count > max_count) {
+            token_count = max_count;
+            return false;
+        }
         return true;
     }
 
@@ -221,6 +242,7 @@ public:
 
     void Delete() {
         std::scoped_lock lk{mutex};
+        deleted = true;
         for (auto* waiter : wait_list) {
             waiter->was_deleted = true;
             waiter->sem.release();
@@ -308,13 +330,70 @@ public:
     s32 max_count;
     s32 init_count;
     bool is_fifo;
+    bool deleted{};
+
+    std::atomic<u32> signals{};
+    std::atomic<const Pthread*> last_signaler{};
+    std::atomic<u64> last_signal_caller{};
+    std::atomic<u64> last_signal_ms{};
+    std::atomic<const Pthread*> last_taker{};
+    std::atomic<u64> last_take_caller{};
+    std::atomic<u64> last_take_ms{};
+
+    void NoteSignal(const void* caller) {
+        signals.fetch_add(1, std::memory_order_relaxed);
+        last_signaler.store(g_curthread, std::memory_order_relaxed);
+        last_signal_caller.store(reinterpret_cast<u64>(caller), std::memory_order_relaxed);
+        last_signal_ms.store(DiagNowMs(), std::memory_order_relaxed);
+    }
+
+    void NoteTake(const void* caller) {
+        last_taker.store(g_curthread, std::memory_order_relaxed);
+        last_take_caller.store(reinterpret_cast<u64>(caller), std::memory_order_relaxed);
+        last_take_ms.store(DiagNowMs(), std::memory_order_relaxed);
+    }
+
+    static u64 DiagNowMs() {
+        return static_cast<u64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now().time_since_epoch())
+                                    .count());
+    }
 };
+
+bool GetSemaDiag(const void* sema, SemaDiag& out) {
+    if (sema == nullptr) {
+        return false;
+    }
+    auto* s = const_cast<OrbisSem*>(static_cast<const OrbisSem*>(sema));
+    out.tokens = s->token_count.load(std::memory_order_relaxed);
+    out.max_tokens = s->max_count;
+    if (s->mutex.try_lock()) {
+        out.waiters = static_cast<s32>(s->wait_list.size());
+        s->mutex.unlock();
+    }
+    out.signals = s->signals.load(std::memory_order_relaxed);
+    out.last_signaler = s->last_signaler.load(std::memory_order_relaxed);
+    out.last_signal_caller = s->last_signal_caller.load(std::memory_order_relaxed);
+    out.last_signal_ms = s->last_signal_ms.load(std::memory_order_relaxed);
+    out.last_taker = s->last_taker.load(std::memory_order_relaxed);
+    out.last_take_caller = s->last_take_caller.load(std::memory_order_relaxed);
+    out.last_take_ms = s->last_take_ms.load(std::memory_order_relaxed);
+    return true;
+}
 
 static constexpr u32 MAX_ORBIS_SEMAPHORES = std::numeric_limits<u16>::max();
 
 using OrbisKernelSema = Common::SlotId;
 
-static Common::SlotVector<OrbisSem> orbis_sems;
+// Hold a reference for each semaphore call because guest threads can create, use and delete
+// concurrently; deletion must not free a mutex a waking waiter still needs
+static std::mutex orbis_sems_mutex;
+static Common::SlotVector<std::shared_ptr<OrbisSem>> orbis_sems;
+
+static std::shared_ptr<OrbisSem> FindSema(OrbisKernelSema sem) {
+    std::scoped_lock lk{orbis_sems_mutex};
+    return orbis_sems.IsAllocated(sem) ? orbis_sems[sem] : nullptr;
+}
 
 s32 PS4_SYSV_ABI sceKernelCreateSema(OrbisKernelSema* sem, const char* pName, u32 attr,
                                      s32 initCount, s32 maxCount, const void* pOptParam) {
@@ -322,47 +401,79 @@ s32 PS4_SYSV_ABI sceKernelCreateSema(OrbisKernelSema* sem, const char* pName, u3
         LOG_ERROR(Lib_Kernel, "Semaphore creation parameters are invalid!");
         return ORBIS_KERNEL_ERROR_EINVAL;
     }
-    *sem = orbis_sems.Insert(initCount, maxCount, pName, attr == 1);
+    auto new_sem = std::make_shared<OrbisSem>(initCount, maxCount, pName, attr == 1);
+    OrbisKernelSema id;
+    {
+        std::scoped_lock lk{orbis_sems_mutex};
+        id = orbis_sems.Insert(std::move(new_sem));
+    }
+    *sem = id;
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceKernelWaitSema(OrbisKernelSema sem, s32 needCount, u32* pTimeout) {
-    if (!orbis_sems.IsAllocated(sem)) {
+    const auto s = FindSema(sem);
+    if (!s) {
         return ORBIS_KERNEL_ERROR_ESRCH;
     }
-    return orbis_sems[sem].Wait(true, needCount, pTimeout);
+    const void* caller = __builtin_return_address(0);
+    s32 result;
+    {
+        HANG_DIAG_WAIT(Sema, s.get());
+        result = s->Wait(true, needCount, pTimeout);
+    }
+    if (result == ORBIS_OK) {
+        s->NoteTake(caller);
+    }
+    return result;
 }
 
 s32 PS4_SYSV_ABI sceKernelSignalSema(OrbisKernelSema sem, s32 signalCount) {
-    if (!orbis_sems.IsAllocated(sem)) {
+    const auto s = FindSema(sem);
+    if (!s) {
         return ORBIS_KERNEL_ERROR_ESRCH;
     }
-    if (!orbis_sems[sem].Signal(signalCount)) {
+    s->NoteSignal(__builtin_return_address(0));
+    if (!s->Signal(signalCount)) {
+        LOG_WARNING(Lib_Kernel, "sceKernelSignalSema '{}' signalled {} past its maximum {}",
+                    s->name, signalCount, s->max_count);
         return ORBIS_KERNEL_ERROR_EINVAL;
     }
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceKernelPollSema(OrbisKernelSema sem, s32 needCount) {
-    if (!orbis_sems.IsAllocated(sem)) {
+    const auto s = FindSema(sem);
+    if (!s) {
         return ORBIS_KERNEL_ERROR_ESRCH;
     }
-    return orbis_sems[sem].Wait(false, needCount, nullptr);
+    const s32 result = s->Wait(false, needCount, nullptr);
+    if (result == ORBIS_OK) {
+        s->NoteTake(__builtin_return_address(0));
+    }
+    return result;
 }
 
 s32 PS4_SYSV_ABI sceKernelCancelSema(OrbisKernelSema sem, s32 setCount, s32* pNumWaitThreads) {
-    if (!orbis_sems.IsAllocated(sem)) {
+    const auto s = FindSema(sem);
+    if (!s) {
         return ORBIS_KERNEL_ERROR_ESRCH;
     }
-    return orbis_sems[sem].Cancel(setCount, pNumWaitThreads);
+    return s->Cancel(setCount, pNumWaitThreads);
 }
 
 s32 PS4_SYSV_ABI sceKernelDeleteSema(OrbisKernelSema sem) {
-    if (!orbis_sems.IsAllocated(sem)) {
-        return ORBIS_KERNEL_ERROR_ESRCH;
+    std::shared_ptr<OrbisSem> s;
+    {
+        std::scoped_lock lk{orbis_sems_mutex};
+        if (!orbis_sems.IsAllocated(sem)) {
+            return ORBIS_KERNEL_ERROR_ESRCH;
+        }
+        s = std::move(orbis_sems[sem]);
+        orbis_sems.Erase(sem);
     }
-    orbis_sems[sem].Delete();
-    orbis_sems.Erase(sem);
+    // Wake waiters with EACCES and free the semaphore when the last reference is released
+    s->Delete();
     return ORBIS_OK;
 }
 

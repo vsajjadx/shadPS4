@@ -591,6 +591,10 @@ void EmitContext::DefineVertexBlock() {
     const std::array<Id, 8> zero{f32_zero_value, f32_zero_value, f32_zero_value, f32_zero_value,
                                  f32_zero_value, f32_zero_value, f32_zero_value, f32_zero_value};
     output_position = DefineVariable(F32[4], spv::BuiltIn::Position, spv::StorageClass::Output);
+    // GCN computes the same position from the same instructions in every program. Games draw
+    // a mesh again with an equal or less-equal depth test, so the driver must not compute it
+    // differently from one pipeline to the next.
+    Decorate(output_position, spv::Decoration::Invariant);
     const bool needs_clip_distance_emulation = sw_stage == SwStage::Vertex &&
                                                hw_stage == HwStage::Vertex &&
                                                profile.needs_clip_distance_emulation;
@@ -1003,13 +1007,20 @@ void EmitContext::DefineImagesAndSamplers() {
         Id pointee_type = image_type;
         if (mip_fallback_mode == MipStorageFallbackMode::DynamicIndex) {
             pointee_type = TypeArray(pointee_type, ConstU32(num_bindings));
+        } else if (image_desc.is_heap) {
+            pointee_type = TypeArray(pointee_type, ConstU32(MaxHeapImages));
         }
 
         const Id pointer_type{TypePointer(spv::StorageClass::UniformConstant, pointee_type)};
         const Id id{AddGlobalVariable(pointer_type, spv::StorageClass::UniformConstant)};
-        Decorate(id, spv::Decoration::Binding, binding.unified);
-        binding.unified += num_bindings;
-        Decorate(id, spv::Decoration::DescriptorSet, 0U);
+        if (image_desc.is_heap) {
+            Decorate(id, spv::Decoration::Binding, 0U);
+            Decorate(id, spv::Decoration::DescriptorSet, 1U + binding.heap++);
+        } else {
+            Decorate(id, spv::Decoration::Binding, binding.unified);
+            binding.unified += num_bindings;
+            Decorate(id, spv::Decoration::DescriptorSet, 0U);
+        }
         Name(id, fmt::format("{}_{}{}", hw_stage, "img", images.size()));
         images.push_back({
             .data_types = &data_types,
@@ -1019,6 +1030,7 @@ void EmitContext::DefineImagesAndSamplers() {
             .view_type = sharp.GetViewType(image_desc.is_array),
             .is_integer = is_integer,
             .is_storage = is_storage,
+            .is_heap = image_desc.is_heap,
             .mip_fallback_mode = mip_fallback_mode,
         });
         interfaces.push_back(id);
@@ -1034,11 +1046,23 @@ void EmitContext::DefineImagesAndSamplers() {
     sampler_type = TypeSampler();
     sampler_pointer_type = TypePointer(spv::StorageClass::UniformConstant, sampler_type);
     for (const auto& samp_desc : info.samplers) {
-        const Id id{AddGlobalVariable(sampler_pointer_type, spv::StorageClass::UniformConstant)};
-        Decorate(id, spv::Decoration::Binding, binding.unified++);
-        Decorate(id, spv::Decoration::DescriptorSet, 0U);
+        const Id pointer_type =
+            samp_desc.is_heap ? TypePointer(spv::StorageClass::UniformConstant,
+                                            TypeArray(sampler_type, ConstU32(MaxHeapSamplers)))
+                              : sampler_pointer_type;
+        const Id id{AddGlobalVariable(pointer_type, spv::StorageClass::UniformConstant)};
+        if (samp_desc.is_heap) {
+            Decorate(id, spv::Decoration::Binding, 0U);
+            Decorate(id, spv::Decoration::DescriptorSet, 1U + binding.heap++);
+        } else {
+            Decorate(id, spv::Decoration::Binding, binding.unified++);
+            Decorate(id, spv::Decoration::DescriptorSet, 0U);
+        }
         Name(id, fmt::format("{}_{}{}", hw_stage, "samp", samplers.size()));
-        samplers.push_back(id);
+        samplers.push_back({
+            .id = id,
+            .is_heap = samp_desc.is_heap,
+        });
         interfaces.push_back(id);
     }
 }
@@ -1095,7 +1119,8 @@ void EmitContext::DefineSharedMemory() {
 }
 
 Id EmitContext::DefineFloat32ToUfloatM5(u32 mantissa_bits, const std::string_view name) {
-    // https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/util/format_r11g11b10f.h
+    // https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/util/format_r11g11b10f.h, rounding
+    // toward zero like the PS4.
     const auto func_type{TypeFunction(U32[1], F32[1])};
     const auto func{OpFunction(U32[1], spv::FunctionControlMask::MaskNone, func_type)};
     const auto value{OpFunctionParameter(F32[1])};
@@ -1114,9 +1139,8 @@ Id EmitContext::DefineFloat32ToUfloatM5(u32 mantissa_bits, const std::string_vie
     const auto is_denorm{OpSLessThanEqual(U1[1], exponent, ConstS32(-15))};
 
     const auto denorm_mantissa{OpConvertFToU(
-        U32[1],
-        OpRoundEven(F32[1], OpFMul(F32[1], value,
-                                   ConstF32(static_cast<float>(1 << (mantissa_bits + 14))))))};
+        U32[1], OpTrunc(F32[1], OpFMul(F32[1], value,
+                                       ConstF32(static_cast<float>(1 << (mantissa_bits + 14))))))};
     const auto denorm_overflow{
         OpINotEqual(U1[1], OpShiftRightLogical(U32[1], denorm_mantissa, ConstU32(mantissa_bits)),
                     ConstU32(0U))};
@@ -1124,10 +1148,9 @@ Id EmitContext::DefineFloat32ToUfloatM5(u32 mantissa_bits, const std::string_vie
         OpSelect(U32[1], denorm_overflow, ConstU32(1U << mantissa_bits), denorm_mantissa)};
 
     const auto norm_mantissa{OpConvertFToU(
-        U32[1],
-        OpRoundEven(F32[1],
-                    OpLdexp(F32[1], value,
-                            OpISub(S32[1], ConstS32(static_cast<int>(mantissa_bits)), exponent))))};
+        U32[1], OpTrunc(F32[1], OpLdexp(F32[1], value,
+                                        OpISub(S32[1], ConstS32(static_cast<int>(mantissa_bits)),
+                                               exponent))))};
     const auto norm_overflow{
         OpUGreaterThanEqual(U1[1], norm_mantissa, ConstU32(2U << mantissa_bits))};
     const auto norm_final_mantissa{OpBitwiseAnd(

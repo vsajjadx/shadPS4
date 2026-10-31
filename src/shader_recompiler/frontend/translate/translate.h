@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
@@ -68,6 +68,7 @@ public:
     void Translate(IR::Block* block, u32 pc, IR::Condition cond,
                    std::span<const GcnInst> inst_list);
     void TranslateInstruction(const GcnInst& inst);
+    void AnalyzeMovRel(std::span<const GcnInst> inst_list);
 
     // Instruction categories
     void EmitPrologue(IR::Block* first_block);
@@ -133,6 +134,7 @@ public:
     void S_FLBIT_I32_B64(const GcnInst& inst);
     void S_BITSET_B32(const GcnInst& inst, u32 bit_value);
     void S_BITSET_B64(const GcnInst& inst, u32 bit_value);
+    void S_GETREG_B32(const GcnInst& inst);
     void S_GETPC_B64(const GcnInst& inst);
     void S_SAVEEXEC_B64(NegateMode negate, bool is_or, const GcnInst& inst);
     void S_ABS_I32(const GcnInst& inst);
@@ -382,6 +384,7 @@ private:
     IR::U32 GetCarryIn(const GcnInst& inst);
     void SetCarryOut(const GcnInst& inst, const IR::U1& carry);
     IR::F32 LegacyMul(const IR::F32& a, const IR::F32& b);
+    u32 GetMovRelEndVgpr(u32 base_vgprno) const;
     IR::U32 VMovRelSHelper(u32 src_vgprno, const IR::U32 m0);
     void VMovRelDHelper(u32 dst_vgprno, const IR::U32 src_val, const IR::U32 m0);
 
@@ -399,6 +402,7 @@ private:
     u32 next_vgpr_num;
     std::unordered_map<u32, IR::VectorReg> vgpr_map;
     std::array<IR::Attribute, MaxInterpVgpr> vgpr_to_interp{};
+    std::vector<u32> movrel_cluster_starts;
     FetchShaderData fetch_data{};
     bool opcode_missing = false;
     u32 pc{};

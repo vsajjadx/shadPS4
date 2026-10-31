@@ -384,14 +384,14 @@ vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool e
             .pValues = &enable_gpuav,
         },
         vk::LayerSettingEXT{
-            .pLayerName = "lunarg_crash_diagnostic",
+            .pLayerName = CRASH_DIAGNOSTIC_LAYER_NAME,
             .pSettingName = "output_path",
             .type = vk::LayerSettingTypeEXT::eString,
             .valueCount = 1,
             .pValues = &log_path,
         },
         vk::LayerSettingEXT{
-            .pLayerName = "lunarg_crash_diagnostic",
+            .pLayerName = CRASH_DIAGNOSTIC_LAYER_NAME,
             .pSettingName = "sync_after_commands",
             .type = vk::LayerSettingTypeEXT::eBool32,
             .valueCount = 1,

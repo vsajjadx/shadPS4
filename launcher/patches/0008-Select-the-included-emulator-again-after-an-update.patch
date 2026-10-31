@@ -1,0 +1,43 @@
+From ae7352543cbb6aaa50f51dc187635a58bc3573c5 Mon Sep 17 00:00:00 2001
+From: vsajjadx <noreply@github.com>
+Date: Wed, 21 Oct 2026 04:44:42 +0330
+Subject: [PATCH 8/8] Select the included emulator again after it is replaced
+ by an update
+
+---
+ src/qt_gui/main_window.cpp | 11 +++++++----
+ 1 file changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/src/qt_gui/main_window.cpp b/src/qt_gui/main_window.cpp
+index 9dcb151..ebb6fa9 100644
+--- a/src/qt_gui/main_window.cpp
++++ b/src/qt_gui/main_window.cpp
+@@ -1957,7 +1957,8 @@ void MainWindow::LoadVersionComboBox() {
+ 
+ void MainWindow::UseBundledEmulator() {
+     // The emulator that ships next to the launcher is listed as a version and selected the first
+-    // time, or whenever the selected emulator is missing. A later choice in the list is kept.
++    // time, after it is replaced by an update, or whenever the selected emulator is missing. A
++    // later choice in the list is kept until the next update.
+ #ifdef Q_OS_WIN
+     const QString exeName = "shadPS4.exe";
+ #else
+@@ -1982,10 +1983,12 @@ void MainWindow::UseBundledEmulator() {
+         });
+     }
+     const QString selected = m_gui_settings->GetValue(gui::vm_versionSelected).toString();
+-    if (!m_gui_settings->GetValue(gui::vm_bundledAdopted).toBool() || selected.isEmpty() ||
+-        !QFileInfo::exists(selected)) {
++    const QString bundledStamp =
++        QString::number(QFileInfo(bundled).lastModified().toSecsSinceEpoch());
++    if (m_gui_settings->GetValue(gui::vm_bundledAdopted).toString() != bundledStamp ||
++        selected.isEmpty() || !QFileInfo::exists(selected)) {
+         m_gui_settings->SetValue(gui::vm_versionSelected, bundled);
+-        m_gui_settings->SetValue(gui::vm_bundledAdopted, true);
++        m_gui_settings->SetValue(gui::vm_bundledAdopted, bundledStamp);
+     }
+ }
+ 
+-- 
+2.43.0
+

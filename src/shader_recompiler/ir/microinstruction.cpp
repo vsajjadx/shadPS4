@@ -42,6 +42,8 @@ bool Inst::MayHaveSideEffects() const noexcept {
     case Opcode::DeviceMemoryBarrier:
     case Opcode::SubgroupBarrier:
     case Opcode::ConditionRef:
+    case Opcode::ImageHeapIndex:
+    case Opcode::SamplerHeapIndex:
     case Opcode::Prologue:
     case Opcode::Epilogue:
     case Opcode::Discard:
@@ -52,6 +54,7 @@ bool Inst::MayHaveSideEffects() const noexcept {
     case Opcode::StoreBufferU8:
     case Opcode::StoreBufferU16:
     case Opcode::StoreBufferU32:
+    case Opcode::WriteConst:
     case Opcode::StoreBufferU32x2:
     case Opcode::StoreBufferU32x3:
     case Opcode::StoreBufferU32x4:

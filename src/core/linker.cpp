@@ -468,7 +468,10 @@ void* Linker::TlsGetAddr(u64 module_index, u64 offset) {
     std::scoped_lock lk{mutex};
 
     DtvEntry* dtv_table = GetTcbBase()->tcb_dtv;
-    if (dtv_table[0].counter != dtv_generation_counter) {
+    if (dtv_table[0].counter != dtv_generation_counter && dtv_table[1].counter == max_tls_index) {
+        // The thread was created while a module loaded, its table already holds that module.
+        dtv_table[0].counter = dtv_generation_counter;
+    } else if (dtv_table[0].counter != dtv_generation_counter) {
         // Generation counter changed, a dynamic module was either loaded or unloaded.
         const u32 old_num_dtvs = dtv_table[1].counter;
         ASSERT_MSG(max_tls_index > old_num_dtvs, "Module unloading unsupported");

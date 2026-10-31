@@ -3,9 +3,14 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <atomic>
+#include <bit>
 #include <ctime>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 #include <fmt/format.h>
 
 #include "core/libraries/fiber/fiber.h"
@@ -20,6 +25,7 @@
 #include <mach/mach_time.h>
 #include <pthread.h>
 #elif defined(_WIN32)
+#include <tlhelp32.h>
 #include <windows.h>
 #include "common/string_util.h"
 #else
@@ -47,7 +53,7 @@ void SetCurrentThreadRealtime(const std::chrono::nanoseconds period_ns) {
     const std::chrono::nanoseconds computation_ns = period_ns / 2;
 
     // Determine the timebase for converting time to ticks.
-    struct mach_timebase_info timebase{};
+    struct mach_timebase_info timebase {};
     mach_timebase_info(&timebase);
     const auto ticks_per_ns =
         static_cast<double>(timebase.denom) / static_cast<double>(timebase.numer);
@@ -117,10 +123,19 @@ bool AccurateSleep(const std::chrono::nanoseconds duration, std::chrono::nanosec
     LARGE_INTEGER interval{
         .QuadPart = -1 * (duration.count() / 100u),
     };
-    HANDLE timer = ::CreateWaitableTimer(NULL, TRUE, NULL);
+    // A plain waitable timer only fires on the ~15.6 ms system tick, so short guest sleeps
+    // overshoot badly. Use a high-resolution timer where available, created once per thread.
+    thread_local const HANDLE timer = [] {
+        constexpr DWORD HighResolution = 0x00000002; // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+        HANDLE handle =
+            ::CreateWaitableTimerExW(nullptr, nullptr, HighResolution, TIMER_ALL_ACCESS);
+        if (handle == nullptr) {
+            handle = ::CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_ALL_ACCESS);
+        }
+        return handle;
+    }();
     SetWaitableTimer(timer, &interval, 0, NULL, NULL, 0);
     const auto ret = WaitForSingleObjectEx(timer, INFINITE, interruptible);
-    ::CloseHandle(timer);
 
     if (remaining) {
         const auto end_sleep = std::chrono::high_resolution_clock::now();
@@ -239,7 +254,17 @@ AccurateTimer::AccurateTimer(std::chrono::nanoseconds target_interval)
 void AccurateTimer::Start() {
     const auto begin_sleep = std::chrono::high_resolution_clock::now();
     if (total_wait.count() > 0) {
-        AccurateSleep(total_wait, nullptr, false);
+        // OS timers wake up to a millisecond late. This timer paces vblank and therefore the
+        // frames a variable refresh rate display shows, so sleep most of the wait and spin the
+        // rest to keep every interval even. (From the Bloodborne DLSS/FSR build by IFreemz.)
+        constexpr std::chrono::nanoseconds spin = std::chrono::microseconds(1500);
+        if (total_wait > spin) {
+            AccurateSleep(total_wait - spin, nullptr, false);
+        }
+        const auto deadline = begin_sleep + total_wait;
+        while (std::chrono::high_resolution_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
     }
     start_time = std::chrono::high_resolution_clock::now();
     total_wait -= std::chrono::duration_cast<std::chrono::nanoseconds>(start_time - begin_sleep);
@@ -276,5 +301,180 @@ std::string GetCurrentThreadName() {
     return std::string{name};
 #endif
 }
+
+#ifdef _WIN32
+
+namespace {
+
+struct PhysicalCore {
+    u64 mask;
+    u8 efficiency_class;
+};
+
+std::vector<PhysicalCore> EnumeratePhysicalCores() {
+    std::vector<PhysicalCore> cores;
+    DWORD length = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &length);
+    if (length == 0) {
+        return cores;
+    }
+    std::vector<std::byte> buffer(length);
+    auto* info = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buffer.data());
+    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, info, &length)) {
+        return cores;
+    }
+    for (std::byte* it = buffer.data(); it < buffer.data() + length;) {
+        const auto* entry = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(it);
+        if (entry->Relationship == RelationProcessorCore && entry->Processor.GroupCount > 0 &&
+            entry->Processor.GroupMask[0].Group == 0 && entry->Processor.GroupMask[0].Mask != 0) {
+            cores.push_back({static_cast<u64>(entry->Processor.GroupMask[0].Mask),
+                             entry->Processor.EfficiencyClass});
+        }
+        it += entry->Size;
+    }
+    // The last core is the highest numbered one of the most performant class.
+    std::ranges::sort(cores, [](const PhysicalCore& a, const PhysicalCore& b) {
+        if (a.efficiency_class != b.efficiency_class) {
+            return a.efficiency_class < b.efficiency_class;
+        }
+        return std::countr_zero(a.mask) < std::countr_zero(b.mask);
+    });
+    return cores;
+}
+
+/// The logical CPUs of the largest L3 cache when the L3 caches differ in size (Ryzen with 3D
+/// V-Cache), 0 otherwise.
+u64 LargestL3CacheMask() {
+    DWORD length = 0;
+    GetLogicalProcessorInformationEx(RelationCache, nullptr, &length);
+    if (length == 0) {
+        return 0;
+    }
+    std::vector<std::byte> buffer(length);
+    auto* info = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buffer.data());
+    if (!GetLogicalProcessorInformationEx(RelationCache, info, &length)) {
+        return 0;
+    }
+    DWORD largest = 0;
+    DWORD smallest = ~DWORD{0};
+    u64 largest_mask = 0;
+    for (std::byte* it = buffer.data(); it < buffer.data() + length;) {
+        const auto* entry = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(it);
+        it += entry->Size;
+        if (entry->Relationship != RelationCache || entry->Cache.Level != 3 ||
+            entry->Cache.GroupMask.Group != 0) {
+            continue;
+        }
+        const DWORD size = entry->Cache.CacheSize;
+        smallest = std::min(smallest, size);
+        if (size > largest) {
+            largest = size;
+            largest_mask = 0;
+        }
+        if (size == largest) {
+            largest_mask |= static_cast<u64>(entry->Cache.GroupMask.Mask);
+        }
+    }
+    return largest > smallest ? largest_mask : 0;
+}
+
+std::atomic<u64> reserved_core_mask{0};
+std::atomic<DWORD> reserved_core_owner{0};
+
+void ExcludeReservedCoreFromOtherThreads() {
+    const u64 reserved = reserved_core_mask.load(std::memory_order_acquire);
+    if (reserved == 0) {
+        return;
+    }
+    DWORD_PTR process_mask = 0;
+    DWORD_PTR system_mask = 0;
+    if (!GetProcessAffinityMask(GetCurrentProcess(), &process_mask, &system_mask)) {
+        return;
+    }
+    const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    const DWORD pid = GetCurrentProcessId();
+    const DWORD owner = reserved_core_owner.load(std::memory_order_acquire);
+    THREADENTRY32 entry{.dwSize = sizeof(THREADENTRY32)};
+    for (BOOL ok = Thread32First(snapshot, &entry); ok; ok = Thread32Next(snapshot, &entry)) {
+        if (entry.th32OwnerProcessID != pid || entry.th32ThreadID == owner) {
+            continue;
+        }
+        const HANDLE thread = OpenThread(THREAD_SET_INFORMATION | THREAD_QUERY_INFORMATION, FALSE,
+                                         entry.th32ThreadID);
+        if (thread == nullptr) {
+            continue;
+        }
+        GROUP_AFFINITY affinity{};
+        u64 current = static_cast<u64>(process_mask);
+        if (GetThreadGroupAffinity(thread, &affinity) && affinity.Group == 0) {
+            current = static_cast<u64>(affinity.Mask);
+        }
+        const u64 next = current & ~reserved;
+        if ((current & reserved) != 0 && next != 0) {
+            affinity = GROUP_AFFINITY{.Mask = static_cast<KAFFINITY>(next), .Group = 0};
+            SetThreadGroupAffinity(thread, &affinity, nullptr);
+        }
+        CloseHandle(thread);
+    }
+    CloseHandle(snapshot);
+}
+
+} // Anonymous namespace
+
+void ReserveCoreForCurrentThread() {
+    if (std::thread::hardware_concurrency() < 6 || reserved_core_mask.load() != 0) {
+        return;
+    }
+    const auto cores = EnumeratePhysicalCores();
+    if (cores.size() < 4) {
+        return;
+    }
+    DWORD_PTR process_mask = 0;
+    DWORD_PTR system_mask = 0;
+    if (!GetProcessAffinityMask(GetCurrentProcess(), &process_mask, &system_mask)) {
+        return;
+    }
+    u64 core = cores.back().mask;
+    if (const u64 l3_mask = LargestL3CacheMask()) {
+        for (auto it = cores.rbegin(); it != cores.rend(); ++it) {
+            if ((it->mask & l3_mask) == it->mask &&
+                it->efficiency_class == cores.back().efficiency_class) {
+                core = it->mask;
+                break;
+            }
+        }
+    }
+    core &= static_cast<u64>(process_mask);
+    if (core == 0 || (static_cast<u64>(process_mask) & ~core) == 0) {
+        return;
+    }
+    if (SetThreadAffinityMask(GetCurrentThread(), static_cast<DWORD_PTR>(core)) == 0) {
+        LOG_WARNING(Common, "Could not reserve CPU core {:#x}: {}", core, GetLastErrorMsg());
+        return;
+    }
+    reserved_core_owner = GetCurrentThreadId();
+    reserved_core_mask = core;
+    LOG_INFO(Common, "Reserved CPU core {:#x} of {} physical cores for {}", core, cores.size(),
+             GetCurrentThreadName());
+    ExcludeReservedCoreFromOtherThreads();
+    // Windows threads do not inherit their creator's affinity, so threads started later are
+    // moved off the core periodically.
+    std::thread([] {
+        SetCurrentThreadName("shadPS4:CoreReserve");
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            ExcludeReservedCoreFromOtherThreads();
+        }
+    }).detach();
+}
+
+#else
+
+void ReserveCoreForCurrentThread() {}
+
+#endif
 
 } // namespace Common

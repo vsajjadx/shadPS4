@@ -287,6 +287,13 @@ void SetupCapabilities(const Info& info, const Profile& profile, const RuntimeIn
     if (info.has_image_gather) {
         ctx.AddCapability(spv::Capability::ImageGatherExtended);
     }
+    if (std::ranges::any_of(info.images,
+                            [](const ImageResource& image) { return image.is_heap; }) ||
+        std::ranges::any_of(info.samplers,
+                            [](const SamplerResource& sampler) { return sampler.is_heap; })) {
+        ctx.AddCapability(spv::Capability::ShaderNonUniform);
+        ctx.AddCapability(spv::Capability::SampledImageArrayNonUniformIndexing);
+    }
     if (info.has_image_query) {
         ctx.AddCapability(spv::Capability::ImageQuery);
     }
@@ -457,10 +464,12 @@ void DefineEntryPoint(const Info& info, const RuntimeInfo& runtime_info, EmitCon
 void SetupDenormFlushMode(EmitContext& ctx, const Profile& profile, const RuntimeInfo& runtime_info,
                           Id main_func) {
     const auto fp32_denorm_mode = runtime_info.props.fp_denorm_mode32;
+    bool fp32_mode_set = false;
     if (fp32_denorm_mode == AmdGpu::FpDenormMode::InOutFlush) {
         if (profile.support_fp32_denorm_flush) {
             ctx.AddCapability(spv::Capability::DenormFlushToZero);
             ctx.AddExecutionMode(main_func, spv::ExecutionMode::DenormFlushToZero, 32U);
+            fp32_mode_set = true;
         } else {
             static std::once_flag logged;
             std::call_once(logged, [] {
@@ -472,6 +481,14 @@ void SetupDenormFlushMode(EmitContext& ctx, const Profile& profile, const Runtim
     }
 
     if (!ctx.info.uses_fp16 && !ctx.info.uses_fp64) {
+        return;
+    }
+    // Drivers that cannot take an fp32 mode may let a 16/64-bit one change how fp32 denorms are
+    // treated too, so a position computed the same way in a depth prepass and its colour pass
+    // would round differently whenever only one of them uses 16-bit math.
+    const bool computes_positions =
+        ctx.sw_stage != SwStage::Fragment && ctx.sw_stage != SwStage::Compute;
+    if (computes_positions && !fp32_mode_set) {
         return;
     }
 
@@ -593,6 +610,9 @@ void SetupRoundingMode(EmitContext& ctx, const Profile& profile, const RuntimeIn
 
 void SetupInfNanPreserveMode(EmitContext& ctx, const Profile& profile,
                              const RuntimeInfo& runtime_info, Id main_func) {
+    if (profile.fast_shader_math) {
+        return;
+    }
     if (profile.support_fp16_signed_zero_inf_nan_preserve ||
         profile.support_fp32_signed_zero_inf_nan_preserve ||
         profile.support_fp64_signed_zero_inf_nan_preserve) {

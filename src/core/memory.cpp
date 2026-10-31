@@ -107,8 +107,11 @@ u64 MemoryManager::ClampRangeSize(VAddr virtual_addr, u64 size) {
     }
 
     std::shared_lock lk{mutex};
-    ASSERT_MSG(IsValidMapping(virtual_addr), "Attempted to access invalid address {:#x}",
-               virtual_addr);
+    if (!IsValidMapping(virtual_addr)) {
+        LOG_WARNING(Kernel_Vmm, "Range of {:#x} bytes at unmapped address {:#x}", size,
+                    virtual_addr);
+        return 0;
+    }
 
     // Clamp size to the remaining size of the current VMA.
     auto vma = FindVMA(virtual_addr);
@@ -127,6 +130,27 @@ u64 MemoryManager::ClampRangeSize(VAddr virtual_addr, u64 size) {
                   virtual_addr, size, clamped_size);
     }
     return clamped_size;
+}
+
+bool MemoryManager::IsMappedRange(VAddr virtual_addr, u64 size) {
+    std::shared_lock lk{mutex};
+    if (!IsValidMapping(virtual_addr)) {
+        return false;
+    }
+    const VAddr end_addr = virtual_addr + size;
+    if (end_addr < virtual_addr) {
+        return false;
+    }
+    auto vma = FindVMA(virtual_addr);
+    VAddr addr = virtual_addr;
+    while (addr < end_addr) {
+        if (vma == vma_map.end() || !vma->second.IsMapped() || vma->second.base > addr) {
+            return false;
+        }
+        addr = vma->second.base + vma->second.size;
+        ++vma;
+    }
+    return true;
 }
 
 void MemoryManager::SetPrtArea(u32 id, VAddr address, u64 size) {
@@ -335,7 +359,9 @@ s32 MemoryManager::Free(PAddr phys_addr, u64 size, bool is_checked) {
                 const u64 phys_offset =
                     std::max<u64>(phys_mapping.base, phys_addr) - phys_mapping.base;
                 const VAddr addr_in_vma = mapping.base + offset_in_vma + phys_offset;
-                const u64 unmap_size = std::min<u64>(phys_mapping.size - phys_offset, size);
+                const u64 unmap_size =
+                    std::min<u64>(phys_mapping.base + phys_mapping.size, phys_addr + size) -
+                    (phys_mapping.base + phys_offset);
 
                 // Unmapping might erase from vma_map. We can't do it here.
                 remove_list.emplace_back(addr_in_vma, unmap_size);
@@ -354,7 +380,7 @@ s32 MemoryManager::Free(PAddr phys_addr, u64 size, bool is_checked) {
     std::scoped_lock lk2{mutex};
 
     for (const auto& [addr, size] : remove_list) {
-        LOG_INFO(Kernel_Vmm, "Unmapping direct mapping {:#x} with size {:#x}", addr, size);
+        LOG_DEBUG(Kernel_Vmm, "Unmapping direct mapping {:#x} with size {:#x}", addr, size);
         UnmapMemoryImpl(addr, size);
     }
 

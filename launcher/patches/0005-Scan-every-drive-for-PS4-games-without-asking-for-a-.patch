@@ -1,0 +1,316 @@
+From c4c5fd899db0b39be6270b3da99d2bef2fcb5ca2 Mon Sep 17 00:00:00 2001
+From: vsajjadx <vsajjadx@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 01:53:55 +0330
+Subject: [PATCH 5/8] Scan every drive for PS4 games without asking for a
+ folder
+
+---
+ src/qt_gui/main_window.cpp | 259 ++++++++++++++++++++++++++++++++++---
+ 1 file changed, 242 insertions(+), 17 deletions(-)
+
+diff --git a/src/qt_gui/main_window.cpp b/src/qt_gui/main_window.cpp
+index e0f0d68..9dcb151 100644
+--- a/src/qt_gui/main_window.cpp
++++ b/src/qt_gui/main_window.cpp
+@@ -2,6 +2,13 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include <algorithm>
++#include <atomic>
++#include <filesystem>
++#include <fstream>
++#include <memory>
++#include <set>
++#include <string>
++#include <vector>
+ #include <QComboBox>
+ #include <QCoreApplication>
+ #include <QDateTime>
+@@ -9,11 +16,15 @@
+ #include <QDockWidget>
+ #include <QFileDialog>
+ #include <QFileInfo>
++#include <QFutureWatcher>
+ #include <QKeyEvent>
++#include <QMap>
+ #include <QMessageBox>
+ #include <QPlainTextEdit>
+ #include <QProgressDialog>
++#include <QStorageInfo>
+ #include <QStatusBar>
++#include <QtConcurrent/QtConcurrent>
+ 
+ #include "about_dialog.h"
+ #include "cheats_patches.h"
+@@ -890,7 +901,7 @@ void MainWindow::CreateConnects() {
+     ui->menuFile->insertAction(ui->bootGameAct, installPkgAct);
+     connect(installPkgAct, &QAction::triggered, this, &MainWindow::InstallPkg);
+ 
+-    auto* scanGamesAct = new QAction(tr("Scan for PS4 games..."), this);
++    auto* scanGamesAct = new QAction(tr("Scan for PS4 games"), this);
+     scanGamesAct->setObjectName("scanGamesAct");
+     ui->menuFile->insertAction(ui->bootGameAct, scanGamesAct);
+     connect(scanGamesAct, &QAction::triggered, this, &MainWindow::ScanGames);
+@@ -1216,29 +1227,243 @@ void MainWindow::InstallDirectory() {
+     RefreshGameTable();
+ }
+ 
+-void MainWindow::ScanGames() {
+-    const QString selectedPath =
+-        QFileDialog::getExistingDirectory(this, tr("Select a folder to scan for PS4 games"),
+-                                          QDir::homePath());
+-    if (selectedPath.isEmpty()) {
++namespace {
++
++namespace fs = std::filesystem;
++
++constexpr int ScanDeferDepth = 2;
++constexpr int ScanMaxDepth = 32;
++
++#ifdef _WIN32
++constexpr Qt::CaseSensitivity ScanPathCase = Qt::CaseInsensitive;
++#else
++constexpr Qt::CaseSensitivity ScanPathCase = Qt::CaseSensitive;
++#endif
++
++bool IsSkippedScanDirectory(const QString& lowerName) {
++    static const std::set<QString> skipped = {
++        "windows",       "windows.old",   "$recycle.bin", "system volume information",
++        "recovery",      "$windows.~bt",  "$winreagent",  "appdata",
++        "programdata",
++    };
++    return skipped.contains(lowerName) || lowerName.endsWith("-update") ||
++           lowerName.endsWith("-patch");
++}
++
++bool IsPs4ParamSfo(const fs::path& path) {
++    std::ifstream file(path, std::ios::binary);
++    if (!file) {
++        return false;
++    }
++    std::string content(65536, '\0');
++    file.read(content.data(), static_cast<std::streamsize>(content.size()));
++    content.resize(static_cast<size_t>(file.gcount()));
++    return content.find("CUSA") != std::string::npos;
++}
++
++void ScanDirectory(const fs::path& dir, int depth, const std::atomic_bool& cancel,
++                   std::vector<fs::path>& games, std::vector<fs::path>* deferred) {
++    if (cancel.load() || depth > ScanMaxDepth) {
++        return;
++    }
++    if (deferred && depth == ScanDeferDepth) {
++        deferred->push_back(dir);
+         return;
+     }
+ 
+-    const QString scanPath = QDir(selectedPath).canonicalPath();
+-    if (scanPath.isEmpty()) {
+-        QMessageBox::warning(this, tr("Scan for PS4 games"),
+-                             tr("The selected folder could not be accessed."));
++    std::error_code ec;
++    fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec);
++    if (ec) {
+         return;
+     }
+ 
+-    EmulatorSettings.AddGameInstallDir(Common::FS::PathFromQString(scanPath));
+-    EmulatorSettings.Save();
+-    ReloadGameTable(false);
++    std::vector<fs::path> subdirs;
++    bool hasEboot = false;
++    bool hasSceSys = false;
++    while (it != fs::directory_iterator()) {
++        std::error_code statusEc;
++        const fs::file_status status = it->symlink_status(statusEc);
++        if (!statusEc) {
++            const QString name =
++                QString::fromStdU16String(it->path().filename().u16string()).toLower();
++            if (fs::is_directory(status)) {
++                if (name == "sce_sys") {
++                    hasSceSys = true;
++                }
++                subdirs.push_back(it->path());
++            } else if (fs::is_regular_file(status) && name == "eboot.bin") {
++                hasEboot = true;
++            }
++        }
++        it.increment(ec);
++        if (ec) {
++            break;
++        }
++    }
+ 
+-    QMessageBox::information(
+-        this, tr("Scan complete"),
+-        tr("Found %1 PS4 game(s) with CUSA title IDs in the library.")
+-            .arg(m_game_info->m_games_backup.size()));
++    if (hasEboot && hasSceSys && IsPs4ParamSfo(dir / "sce_sys" / "param.sfo")) {
++        games.push_back(dir);
++        return;
++    }
++
++    for (const fs::path& subdir : subdirs) {
++        if (cancel.load()) {
++            return;
++        }
++        const QString name = QString::fromStdU16String(subdir.filename().u16string()).toLower();
++        if (!IsSkippedScanDirectory(name)) {
++            ScanDirectory(subdir, depth + 1, cancel, games, deferred);
++        }
++    }
++}
++
++std::vector<fs::path> GetScanRoots() {
++    std::vector<fs::path> roots;
++    for (const QStorageInfo& volume : QStorageInfo::mountedVolumes()) {
++        if (!volume.isValid() || !volume.isReady()) {
++            continue;
++        }
++        const QString root = volume.rootPath();
++#ifndef _WIN32
++        if (root.startsWith("/proc") || root.startsWith("/sys") || root.startsWith("/dev") ||
++            root.startsWith("/run") || root.startsWith("/snap") || root.startsWith("/boot")) {
++            continue;
++        }
++#endif
++        roots.push_back(Common::FS::PathFromQString(root));
++    }
++    return roots;
++}
++
++QStringList FindPs4Games(const std::atomic_bool& cancel) {
++    std::vector<fs::path> games;
++    std::vector<fs::path> deferred;
++    for (const fs::path& root : GetScanRoots()) {
++        ScanDirectory(root, 0, cancel, games, &deferred);
++    }
++
++    const auto found = QtConcurrent::mapped(deferred, [&cancel](const fs::path& dir) {
++                           std::vector<fs::path> dirGames;
++                           ScanDirectory(dir, ScanDeferDepth, cancel, dirGames, nullptr);
++                           QStringList result;
++                           for (const fs::path& game : dirGames) {
++                               QString path;
++                               Common::FS::PathToQString(path, game);
++                               result.append(path);
++                           }
++                           return result;
++                       }).results();
++
++    QStringList result;
++    for (const fs::path& game : games) {
++        QString path;
++        Common::FS::PathToQString(path, game);
++        result.append(path);
++    }
++    for (const QStringList& list : found) {
++        result.append(list);
++    }
++    for (QString& path : result) {
++        path = QDir::cleanPath(path);
++    }
++    result.removeDuplicates();
++    return result;
++}
++
++bool IsSameOrInside(const QString& path, const QString& parent) {
++    return path.compare(parent, ScanPathCase) == 0 ||
++           path.startsWith(parent.endsWith(QLatin1Char('/')) ? parent : parent + QLatin1Char('/'), ScanPathCase);
++}
++
++QStringList ChooseInstallDirs(const QStringList& games) {
++    QMap<QString, QStringList> byParent;
++    for (const QString& game : games) {
++        byParent[QFileInfo(game).absoluteDir().absolutePath().toLower()].append(game);
++    }
++
++    QStringList candidates;
++    for (const QStringList& group : byParent) {
++        const QDir parent = QFileInfo(group.front()).absoluteDir();
++        if (group.size() > 1 && !parent.isRoot()) {
++            candidates.append(parent.absolutePath());
++        } else {
++            candidates.append(group);
++        }
++    }
++
++    QStringList existing;
++    for (const fs::path& dir : EmulatorSettings.GetGameInstallDirs()) {
++        QString path;
++        Common::FS::PathToQString(path, dir);
++        existing.append(QDir::cleanPath(path));
++    }
++
++    QStringList chosen;
++    for (const QString& candidate : candidates) {
++        const bool covered = std::any_of(
++            existing.begin(), existing.end(),
++            [&](const QString& dir) { return IsSameOrInside(candidate, dir); });
++        const bool nested = std::any_of(candidates.begin(), candidates.end(),
++                                        [&](const QString& other) {
++                                            return other != candidate &&
++                                                   IsSameOrInside(candidate, other);
++                                        });
++        if (!covered && !nested) {
++            chosen.append(candidate);
++        }
++    }
++    chosen.removeDuplicates();
++    return chosen;
++}
++
++} // namespace
++
++void MainWindow::ScanGames() {
++    auto* progress = new QProgressDialog(tr("Scanning all drives for PS4 games..."), tr("Cancel"),
++                                         0, 0, this);
++    progress->setWindowTitle(tr("Scan for PS4 games"));
++    progress->setWindowModality(Qt::WindowModal);
++    progress->setMinimumDuration(0);
++    progress->setAutoClose(false);
++    progress->setAutoReset(false);
++    progress->show();
++
++    auto cancel = std::make_shared<std::atomic_bool>(false);
++    connect(progress, &QProgressDialog::canceled, this, [cancel] { cancel->store(true); });
++
++    auto* watcher = new QFutureWatcher<QStringList>(this);
++    connect(watcher, &QFutureWatcher<QStringList>::finished, this,
++            [this, cancel, progress, watcher] {
++                const QStringList games = watcher->result();
++                progress->close();
++                progress->deleteLater();
++                watcher->deleteLater();
++                if (cancel->load()) {
++                    return;
++                }
++
++                if (games.isEmpty()) {
++                    QMessageBox::information(this, tr("Scan for PS4 games"),
++                                             tr("No PS4 games were found on this computer."));
++                    return;
++                }
++
++                const QStringList installDirs = ChooseInstallDirs(games);
++                for (const QString& dir : installDirs) {
++                    EmulatorSettings.AddGameInstallDir(Common::FS::PathFromQString(dir));
++                }
++                if (!installDirs.isEmpty()) {
++                    EmulatorSettings.Save();
++                    ReloadGameTable(false);
++                }
++
++                QMessageBox::information(
++                    this, tr("Scan for PS4 games"),
++                    tr("Found %1 PS4 game(s). Added %2 new folder(s) to the library.")
++                        .arg(games.size())
++                        .arg(installDirs.size()));
++            });
++    watcher->setFuture(QtConcurrent::run([cancel] { return FindPs4Games(*cancel); }));
+ }
+ 
+ void MainWindow::SetLastUsedTheme() {
+-- 
+2.43.0
+

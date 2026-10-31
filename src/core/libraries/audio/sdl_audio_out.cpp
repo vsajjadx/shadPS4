@@ -13,6 +13,7 @@
 #include "core/emulator_settings.h"
 #include "core/libraries/audio/audioout.h"
 #include "core/libraries/audio/audioout_backend.h"
+#include "core/libraries/audio/dualsense_speaker.h"
 #include "core/libraries/kernel/threads.h"
 
 // SIMD support detection
@@ -66,9 +67,15 @@ public:
         if (!Initialize(port.type)) {
             LOG_ERROR(Lib_AudioOut, "Failed to initialize SDL audio backend");
         }
+        if (port.type == OrbisAudioOutPort::PadSpk && EmulatorSettings.IsDualSenseSpeaker()) {
+            dualsense = DualSenseSpeaker::Open(sample_rate);
+            LOG_INFO(Lib_AudioOut, "Pad speaker port opened ({} ch, {} Hz), DualSense speaker {}",
+                     num_channels, sample_rate, dualsense ? "ready" : "unavailable");
+        }
     }
 
     ~SDLPortBackend() override {
+        DualSenseSpeaker::Close(dualsense);
         Cleanup();
     }
 
@@ -85,6 +92,18 @@ public:
         const u64 current_time = Kernel::sceKernelGetProcessTime();
         convert(ptr, internal_buffer, buffer_frames, nullptr);
         HandleTiming(current_time);
+
+        if (dualsense != nullptr && !ps4_downmix) {
+            // Pad speaker audio goes to the DualSense speaker when one takes it; otherwise it
+            // keeps playing on the pad speaker output device.
+            const float gain = game_gain.load(std::memory_order_acquire) *
+                               EmulatorSettings.GetDualSenseSpeakerVolume() * 0.01f;
+            if (DualSenseSpeaker::Queue(dualsense, static_cast<const float*>(internal_buffer),
+                                        buffer_frames, num_channels, gain) != 0) {
+                last_output_time.store(current_time, std::memory_order_release);
+                return;
+            }
+        }
 
         if ((output_count++ & 0xF) == 0) { // Check every 16 outputs
             ManageAudioQueue();
@@ -217,30 +236,35 @@ private:
     }
 
     void HandleTiming(u64 current_time) {
-        if (next_output_time == 0) [[unlikely]] {
-            // First output - set initial timing
+        // The schedule is kept as frames since a base time rather than adding a period rounded
+        // to whole microseconds, which ran slightly ahead of the device until the queue had to
+        // be cleared (an audible pop). (From KytyPS5, #966.)
+        const auto restart = [&] {
+            timing_base_time = current_time;
+            timing_frames = buffer_frames;
             next_output_time = current_time + period_us;
+        };
+        if (next_output_time == 0) [[unlikely]] {
+            restart();
             return;
         }
 
         const s64 time_diff = static_cast<s64>(current_time - next_output_time);
-
         if (time_diff > static_cast<s64>(TIMING_RESYNC_THRESHOLD_US)) [[unlikely]] {
             // We're far behind - resync
-            next_output_time = current_time + period_us;
-        } else if (time_diff < 0) {
+            restart();
+            return;
+        }
+
+        timing_frames += buffer_frames;
+        next_output_time = timing_base_time + timing_frames * 1000000ULL / sample_rate;
+        if (time_diff < 0) {
             // We're ahead of schedule - wait
             const u64 time_to_wait = static_cast<u64>(-time_diff);
-            next_output_time += period_us;
-
             if (time_to_wait > MIN_SLEEP_THRESHOLD_US) {
-                // Sleep for most of the wait period
                 const u64 sleep_duration = time_to_wait - MIN_SLEEP_THRESHOLD_US;
                 std::this_thread::sleep_for(std::chrono::microseconds(sleep_duration));
             }
-        } else {
-            // Slightly behind or on time - just advance
-            next_output_time += period_us;
         }
     }
 
@@ -637,6 +661,8 @@ private:
     alignas(64) u64 period_us{0};
     alignas(64) std::atomic<u64> last_output_time{0};
     u64 next_output_time{0};
+    u64 timing_base_time{0};
+    u64 timing_frames{0};
     u64 last_volume_check_time{0};
     u32 output_count{0};
 
@@ -653,6 +679,7 @@ private:
 
     // SDL audio stream
     SDL_AudioStream* stream{nullptr};
+    DualSenseSpeaker::Stream* dualsense{nullptr};
     u32 queue_threshold{0};
 };
 

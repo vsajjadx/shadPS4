@@ -1,10 +1,20 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <fstream>
+#include <list>
+#include <mutex>
 #include <system_error>
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 #if defined(__linux__) || defined(__FreeBSD__) || defined(__APPLE__)
 #include <sys/stat.h>
 #endif
@@ -15,17 +25,133 @@
 
 namespace Core::FileSys {
 
+namespace {
+
+FileStat MakeFileStat(const Common::FS::FileInfo& info, u32 inode) {
+    return {
+        .size = info.size,
+        .inode = inode,
+        .mtime_sec = info.mtime_sec,
+        .mtime_nsec = info.mtime_nsec,
+        .atime_sec = info.atime_sec,
+        .atime_nsec = info.atime_nsec,
+        .ctime_sec = info.ctime_sec,
+        .ctime_nsec = info.ctime_nsec,
+        .is_directory = info.is_directory,
+    };
+}
+
+} // namespace
+
 // Guest code expects POSIX sharing: opening a file already open for writing must not fail.
 HostFile::HostFile(std::filesystem::path host_path, Common::FS::FileAccessMode mode, bool read_only)
     : m_path(std::move(host_path)), m_file(m_path, mode, Common::FS::FileType::BinaryFile,
                                            Common::FS::FileShareFlag::ShareReadWrite),
-      m_read_only(read_only) {}
+      m_read_only(read_only) {
+    if (const auto info = m_file.GetInfo()) {
+        m_inode = GetGuestInode(FileIdentity{.host = info->identity}).value_or(0);
+    }
+}
 
 s64 HostFile::Read(void* dst, u64 size) {
     if (!m_file.IsOpen()) {
         return -1;
     }
     return static_cast<s64>(m_file.ReadRaw<u8>(dst, size));
+}
+
+HostFile::~HostFile() {
+    if (m_positional_handle == -1) {
+        return;
+    }
+#ifdef _WIN32
+    CloseHandle(reinterpret_cast<HANDLE>(m_positional_handle));
+#else
+    ::close(static_cast<int>(m_positional_handle));
+#endif
+}
+
+bool HostFile::OpenPositionalHandle() {
+    std::call_once(m_positional_once, [this] {
+#ifdef _WIN32
+        // Overlapped, so concurrent reads on this handle are not serialized by the I/O manager.
+        const HANDLE handle = CreateFileW(m_path.c_str(), GENERIC_READ,
+                                          FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                          nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+        if (handle != INVALID_HANDLE_VALUE) {
+            m_positional_handle = reinterpret_cast<intptr_t>(handle);
+        }
+#else
+        const int fd = ::open(m_path.c_str(), O_RDONLY | O_CLOEXEC);
+        if (fd >= 0) {
+            m_positional_handle = fd;
+        }
+#endif
+    });
+    return m_positional_handle != -1;
+}
+
+bool HostFile::SupportsReadAt() const {
+    return m_read_only && m_file.IsOpen();
+}
+
+s64 HostFile::ReadAt(void* dst, u64 size, u64 offset) {
+    if (!SupportsReadAt() || !OpenPositionalHandle()) {
+        return -1;
+    }
+    auto* out = static_cast<u8*>(dst);
+    u64 total = 0;
+#ifdef _WIN32
+    thread_local HANDLE event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (event == nullptr) {
+        return -1;
+    }
+    const auto handle = reinterpret_cast<HANDLE>(m_positional_handle);
+    while (total < size) {
+        const u64 position = offset + total;
+        const DWORD chunk = static_cast<DWORD>(std::min<u64>(size - total, 1ull << 30));
+        OVERLAPPED overlapped{};
+        overlapped.Offset = static_cast<DWORD>(position);
+        overlapped.OffsetHigh = static_cast<DWORD>(position >> 32);
+        overlapped.hEvent = event;
+        ResetEvent(event);
+        DWORD transferred = 0;
+        if (!ReadFile(handle, out + total, chunk, nullptr, &overlapped) &&
+            GetLastError() != ERROR_IO_PENDING) {
+            if (GetLastError() == ERROR_HANDLE_EOF) {
+                break;
+            }
+            return total > 0 ? static_cast<s64>(total) : -1;
+        }
+        if (!GetOverlappedResult(handle, &overlapped, &transferred, TRUE)) {
+            if (GetLastError() == ERROR_HANDLE_EOF) {
+                break;
+            }
+            return total > 0 ? static_cast<s64>(total) : -1;
+        }
+        if (transferred == 0) {
+            break;
+        }
+        total += transferred;
+    }
+#else
+    const int fd = static_cast<int>(m_positional_handle);
+    while (total < size) {
+        const ssize_t got =
+            ::pread(fd, out + total, size - total, static_cast<off_t>(offset + total));
+        if (got < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return total > 0 ? static_cast<s64>(total) : -1;
+        }
+        if (got == 0) {
+            break;
+        }
+        total += static_cast<u64>(got);
+    }
+#endif
+    return static_cast<s64>(total);
 }
 
 s64 HostFile::Write(const void* src, u64 size) {
@@ -71,44 +197,9 @@ bool HostFile::IsOpen() const {
 }
 
 void HostFile::Stat(FileStat& out) {
-    out.size = Size();
-    out.is_directory = false;
-#if defined(__linux__) || defined(__FreeBSD__)
-    struct stat st = {};
-    if (::stat(m_path.string().c_str(), &st) == 0) {
-        out.mtime_sec = static_cast<s64>(st.st_mtim.tv_sec);
-        out.mtime_nsec = static_cast<s64>(st.st_mtim.tv_nsec);
-        out.atime_sec = static_cast<s64>(st.st_atim.tv_sec);
-        out.atime_nsec = static_cast<s64>(st.st_atim.tv_nsec);
-        out.ctime_sec = static_cast<s64>(st.st_ctim.tv_sec);
-        out.ctime_nsec = static_cast<s64>(st.st_ctim.tv_nsec);
-    }
-#elif defined(__APPLE__)
-    struct stat st = {};
-    if (::stat(m_path.string().c_str(), &st) == 0) {
-        out.mtime_sec = static_cast<s64>(st.st_mtimespec.tv_sec);
-        out.mtime_nsec = static_cast<s64>(st.st_mtimespec.tv_nsec);
-        out.atime_sec = static_cast<s64>(st.st_atimespec.tv_sec);
-        out.atime_nsec = static_cast<s64>(st.st_atimespec.tv_nsec);
-        out.ctime_sec = static_cast<s64>(st.st_ctimespec.tv_sec);
-        out.ctime_nsec = static_cast<s64>(st.st_ctimespec.tv_nsec);
-    }
-#else
-    std::error_code ec;
-    const auto ft = std::filesystem::last_write_time(m_path, ec);
-    if (!ec) {
-        const auto sctp = std::chrono::time_point_cast<std::chrono::nanoseconds>(
-            ft - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now());
-        const auto secs = std::chrono::time_point_cast<std::chrono::seconds>(sctp);
-        const auto nsecs = std::chrono::duration_cast<std::chrono::nanoseconds>(sctp - secs);
-        out.mtime_sec = static_cast<s64>(secs.time_since_epoch().count());
-        out.mtime_nsec = static_cast<s64>(nsecs.count());
-        out.atime_sec = out.mtime_sec;
-        out.atime_nsec = out.mtime_nsec;
-        out.ctime_sec = out.mtime_sec;
-        out.ctime_nsec = out.mtime_nsec;
-    }
-#endif
+    m_file.Flush();
+    const auto info = m_file.GetInfo();
+    out = info ? MakeFileStat(*info, m_inode) : FileStat{};
 }
 
 HostDirectory::HostDirectory(const std::filesystem::path& root) : m_root(root) {
@@ -216,6 +307,66 @@ bool HostFsBackend::IsDirectory(std::string_view rel_path) {
     return std::filesystem::is_directory(Resolve(rel_path), ec);
 }
 
+namespace {
+
+// Games open and close the same archive files over and over while streaming; reopening a
+// host file costs a path lookup and an fopen each time.
+class RecycledFiles {
+public:
+    static RecycledFiles& Instance() {
+        static RecycledFiles instance;
+        return instance;
+    }
+
+    void Park(std::unique_ptr<HostFile> file) {
+        std::scoped_lock lk{mutex};
+        files.push_front(std::move(file));
+        if (files.size() > Capacity) {
+            files.pop_back();
+        }
+    }
+
+    std::unique_ptr<HostFile> Take(const std::filesystem::path& path) {
+        std::scoped_lock lk{mutex};
+        for (auto it = files.begin(); it != files.end(); ++it) {
+            if ((*it)->Path() == path) {
+                auto file = std::move(*it);
+                files.erase(it);
+                return file;
+            }
+        }
+        return nullptr;
+    }
+
+private:
+    static constexpr size_t Capacity = 64;
+    std::mutex mutex;
+    std::list<std::unique_ptr<HostFile>> files;
+};
+
+} // Anonymous namespace
+
+void RecycleFile(std::unique_ptr<IFile> file) {
+    if (!file || !file->IsRecyclable() || !file->Seek(0, Common::FS::SeekOrigin::SetOrigin)) {
+        return;
+    }
+    RecycledFiles::Instance().Park(
+        std::unique_ptr<HostFile>{static_cast<HostFile*>(file.release())});
+}
+
+bool HostFsBackend::Stat(std::string_view rel_path, FileStat& out) {
+    const auto info = Common::FS::GetFileInfo(Resolve(rel_path));
+    if (!info) {
+        return false;
+    }
+    const auto inode = GetGuestInode(FileIdentity{.host = info->identity});
+    if (!inode) {
+        return false;
+    }
+    out = MakeFileStat(*info, *inode);
+    return true;
+}
+
 std::unique_ptr<IFile> HostFsBackend::Open(std::string_view rel_path,
                                            Common::FS::FileAccessMode mode) {
     const bool writable = mode != Common::FS::FileAccessMode::Read;
@@ -223,6 +374,11 @@ std::unique_ptr<IFile> HostFsBackend::Open(std::string_view rel_path,
         return nullptr;
     }
     const auto path = Resolve(rel_path);
+    if (m_read_only) {
+        if (auto recycled = RecycledFiles::Instance().Take(path)) {
+            return recycled;
+        }
+    }
     std::error_code ec;
     if (mode != Common::FS::FileAccessMode::Create && !std::filesystem::is_regular_file(path, ec)) {
         return nullptr;
@@ -230,6 +386,9 @@ std::unique_ptr<IFile> HostFsBackend::Open(std::string_view rel_path,
     auto handle = std::make_unique<HostFile>(path, mode, m_read_only || !writable);
     if (!handle->IsOpen()) {
         return nullptr;
+    }
+    if (m_read_only) {
+        handle->SetRecyclable();
     }
     return handle;
 }

@@ -18,6 +18,9 @@ public:
         float gamma = 1.0f;
         u32 hdr = 0;
         u32 srgb_input = 0;
+        u32 anti_aliasing = 0;
+        float brightness = 1.0f;
+        float contrast = 1.0f;
     };
 
     void Create(vk::Device device, vk::Format surface_format);

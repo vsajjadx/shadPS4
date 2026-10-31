@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -142,20 +143,35 @@ public:
     [[nodiscard]] ImageView& FindTexture(ImageId image_id, const ImageDesc& desc);
 
     /// Retrieves the render target with specified properties
-    [[nodiscard]] ImageView& FindRenderTarget(ImageId image_id, const ImageDesc& desc);
+    [[nodiscard]] ImageView& FindRenderTarget(ImageId image_id, const ImageDesc& desc,
+                                              bool sync_aliases = true);
 
     /// Retrieves the depth target with specified properties
-    [[nodiscard]] ImageView& FindDepthTarget(ImageId image_id, const ImageDesc& desc);
+    [[nodiscard]] ImageView& FindDepthTarget(ImageId image_id, const ImageDesc& desc,
+                                             bool sync_aliases = true);
 
     /// Links the stencil plane of a depth surface to its depth image.
     void AssociateStencil(ImageId depth_id, const ImageInfo& depth_info);
 
     /// Updates image contents if it was modified by CPU.
+    /// Keeps an image that is in use outside of a binding from being collected.
+    void TouchImage(ImageId image_id) {
+        TouchImage(slot_images[image_id]);
+    }
+
+    /// Called when an image leaves the cache, before its slot can be reused.
+    std::function<void(ImageId)> on_unregister;
+
     void UpdateImage(ImageId image_id) {
         Image& image = slot_images[image_id];
         TouchImage(image);
         TrackImage(image_id);
         RefreshImage(image);
+    }
+
+    /// Records a GPU write to the image made outside of a target or storage binding.
+    void MarkAsGpuWritten(Image& image) {
+        image.alias_write_seq = ++alias_seq;
     }
 
     /// Resolves overlap between existing cache image and pending merged image
@@ -176,8 +192,8 @@ public:
 
     /// Retrieves the sampler that matches the provided S# descriptor.
     [[nodiscard]] vk::Sampler GetSampler(const AmdGpu::Sampler& sampler,
-                                         AmdGpu::BorderColorBuffer border_color_base,
-                                         bool is_depth);
+                                         AmdGpu::BorderColorBuffer border_color_base, bool is_depth,
+                                         bool samples_mipmaps);
 
     /// Retrieves the image with the specified id.
     [[nodiscard]] Image& GetImage(ImageId id) {
@@ -220,6 +236,7 @@ public:
         u64 owner_uid{};
         u32 num_samples = 1;
         s32 clear_mask = -1;
+        bool htile_stencil{}; ///< HTILE words also carry stencil state.
     };
 
     /// Returns metadata information if the specified address belongs to a live image.
@@ -339,7 +356,7 @@ private:
     /// Iterate over all page indices in a range
     template <typename Func>
     static void ForEachPage(PAddr addr, size_t size, Func&& func) {
-        static constexpr bool RETURNS_BOOL = std::is_same_v<std::invoke_result<Func, u64>, bool>;
+        static constexpr bool RETURNS_BOOL = std::is_same_v<std::invoke_result_t<Func, u64>, bool>;
         const u64 page_end = (addr + size - 1) >> Traits::PAGE_BITS;
         for (u64 page = addr >> Traits::PAGE_BITS; page <= page_end; ++page) {
             if constexpr (RETURNS_BOOL) {
@@ -355,6 +372,17 @@ private:
     /// Copies image memory back to CPU.
     void DownloadImageMemory(ImageId image_id,
                              DownloadMemoryFlags flags = DownloadMemoryFlags::None);
+
+    /// Builds the copies of every mip and layer of an image to or from its guest layout.
+    boost::container::small_vector<vk::BufferImageCopy, 8> GuestCopies(const Image& image) const;
+
+    /// Reloads an image from the buffer cache when an image aliasing its memory was written
+    /// after it and still holds what it wrote, writing those images back in the order they
+    /// were written.
+    void SyncAliasedImages(ImageId image_id, const ImageViewInfo& view);
+
+    /// Writes the part of an image within [begin, end) back to the buffer cache.
+    void WriteAliasToBuffer(ImageId image_id, VAddr begin, VAddr end);
 
     /// Register image in the page table
     void RegisterImage(ImageId image);
@@ -380,6 +408,12 @@ private:
 
     /// Touch the image in the LRU cache.
     void TouchImage(Image& image);
+
+    /// Removes image from the cache and keeps it to be reused at the same address.
+    void ParkImage(ImageId image_id);
+
+    /// Returns the image parked at the address of info if it can stand for info.
+    [[nodiscard]] ImageId TakeParkedImage(const ImageInfo& info);
 
     /// Removes image from the cache and schedules it for deletion.
     void FreeImage(ImageId image_id) {
@@ -409,6 +443,19 @@ private:
     TileManager tile_manager;
     absl::flat_hash_map<u64, SamplerId> samplers;
     absl::flat_hash_set<ImageId> download_images;
+    tsl::robin_map<VAddr, ImageId> parked_images;
+    struct FoundImage {
+        u64 generation = 0;
+        VAddr guest_address = 0;
+        u32 guest_size = 0;
+        Extent3D size{};
+        vk::Format pixel_format{};
+        AmdGpu::ImageType type{};
+        bool exact_fmt = false;
+        ImageId image_id{};
+    };
+    std::array<FoundImage, 2048> found_images{};
+    u64 image_set_generation = 1;
     u64 total_used_memory = 0;
     u64 trigger_gc_memory = 0;
     u64 pressure_gc_memory = 0;
@@ -418,6 +465,7 @@ private:
     u64 pressure_gc_samplers = 0;
     u64 critical_gc_samplers = 0;
     u64 gc_tick = 0;
+    u64 alias_seq = 0;
     Common::LRUCache<Image> image_lru_cache;
     Common::LRUCache<Sampler> sampler_lru_cache;
     const bool readback_linear_images;

@@ -40,6 +40,7 @@ option(ENABLE_DISCORD_RPC "Enable the Discord RPC integration" ON)
 option(ENABLE_UPDATER "Enables the options to updater" ON)
 option(ENABLE_TESTS "Build unit tests (requires GTest)" OFF)
 option(ENABLE_SYSTEM_LIBRARIES "Enable building against system libraries" OFF)
+cmake_dependent_option(ENABLE_FSR_FRAMEGEN "Enable FSR 3.1 frame generation (superseded by NeuralScreen DLSS5)" OFF WIN32 OFF)
 
 # First, determine whether to use CMAKE_OSX_ARCHITECTURES or CMAKE_SYSTEM_PROCESSOR.
 if (APPLE AND CMAKE_OSX_ARCHITECTURES)
@@ -213,14 +214,42 @@ execute_process(
 
 # Set Version
 set(EMULATOR_VERSION_MAJOR "0")
-set(EMULATOR_VERSION_MINOR "20")
-set(EMULATOR_VERSION_PATCH "1")
+set(EMULATOR_VERSION_MINOR "21")
+set(EMULATOR_VERSION_PATCH "0")
 
 set_source_files_properties(src/dist/shadps4.rc PROPERTIES COMPILE_DEFINITIONS "EMULATOR_VERSION_MAJOR=${EMULATOR_VERSION_MAJOR};EMULATOR_VERSION_MINOR=${EMULATOR_VERSION_MINOR};EMULATOR_VERSION_PATCH=${EMULATOR_VERSION_PATCH}")
 
 set(APP_VERSION_NUM "${EMULATOR_VERSION_MAJOR}.${EMULATOR_VERSION_MINOR}.${EMULATOR_VERSION_PATCH}")
 set(APP_VERSION "${APP_VERSION_NUM} WIP")
 set(APP_IS_RELEASE false)
+set(APP_BUILD_NAME "COD")
+# Pipeline cache entries are only valid for the code that produced them. Hash the sources that
+# decide the recompiled shaders and their metadata, so a build that changes any of them starts a
+# new cache instead of mixing entries from different generations.
+file(GLOB_RECURSE SHADER_CACHE_SOURCES CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/shader_recompiler/*.cpp"
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/shader_recompiler/*.h"
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/video_core/amdgpu/*.cpp"
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/video_core/amdgpu/*.h"
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/video_core/renderer_vulkan/vk_pipeline_*.cpp"
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/video_core/renderer_vulkan/vk_pipeline_*.h"
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/video_core/renderer_vulkan/vk_graphics_pipeline.*"
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/video_core/renderer_vulkan/vk_compute_pipeline.*"
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/video_core/renderer_vulkan/liverpool_to_vk.*"
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/common/hack_features.*")
+# The command processor submits work but does not shape the shaders or pipelines a build caches.
+list(REMOVE_ITEM SHADER_CACHE_SOURCES
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/video_core/amdgpu/liverpool.cpp")
+list(SORT SHADER_CACHE_SOURCES)
+set(SHADER_CACHE_DIGESTS "")
+foreach(SHADER_CACHE_SOURCE ${SHADER_CACHE_SOURCES})
+  file(SHA256 "${SHADER_CACHE_SOURCE}" SHADER_CACHE_SOURCE_HASH)
+  file(RELATIVE_PATH SHADER_CACHE_SOURCE_REL "${CMAKE_CURRENT_SOURCE_DIR}" "${SHADER_CACHE_SOURCE}")
+  string(APPEND SHADER_CACHE_DIGESTS "${SHADER_CACHE_SOURCE_REL}:${SHADER_CACHE_SOURCE_HASH};")
+endforeach()
+string(SHA256 SHADER_CACHE_HASH "${SHADER_CACHE_DIGESTS}")
+message(STATUS "Shader cache hash: ${SHADER_CACHE_HASH}")
+
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/common/scm_rev.cpp.in" "${CMAKE_CURRENT_BINARY_DIR}/src/common/scm_rev.cpp" @ONLY)
 
 message("-- end git things, remote: ${GIT_REMOTE_NAME}, branch: ${GIT_BRANCH}, link: ${GIT_REMOTE_URL}")
@@ -298,11 +327,14 @@ set(AUDIO_LIB src/core/libraries/audio/audioin.cpp
               src/core/libraries/audio/sdl_audio_in.cpp
               src/core/libraries/voice/voice.cpp
               src/core/libraries/voice/voice.h
+              src/core/libraries/voice/voice_error.h
               src/core/libraries/audio/audioout.cpp
               src/core/libraries/audio/audioout.h
               src/core/libraries/audio/audioout_backend.h
               src/core/libraries/audio/audioout_error.h
               src/core/libraries/audio/sdl_audio_out.cpp
+              src/core/libraries/audio/dualsense_speaker.cpp
+              src/core/libraries/audio/dualsense_speaker.h
               src/core/libraries/audio/openal_audio_out.cpp
               src/core/libraries/audio/openal_manager.h
               src/core/libraries/ngs2/ngs2.cpp
@@ -339,6 +371,8 @@ set(KERNEL_LIB src/core/libraries/kernel/coredump/coredump.cpp
                src/core/libraries/kernel/threads/pthread_spec.cpp
                src/core/libraries/kernel/threads/rwlock.cpp
                src/core/libraries/kernel/threads/semaphore.cpp
+               src/core/libraries/kernel/threads/hang_diag.cpp
+               src/core/libraries/kernel/threads/hang_diag.h
                src/core/libraries/kernel/threads/sleepq.cpp
                src/core/libraries/kernel/threads/sleepq.h
                src/core/libraries/kernel/threads/stack.cpp
@@ -590,12 +624,18 @@ set(RANDOM_LIB src/core/libraries/random/random.cpp
 set(USBD_LIB src/core/libraries/usbd/usbd.cpp
              src/core/libraries/usbd/usbd.h
              src/core/libraries/usbd/usb_backend.h
+             src/core/libraries/usbd/usbstorage.cpp
+             src/core/libraries/usbd/usbstorage.h
              src/core/libraries/usbd/emulated/dimensions.cpp
              src/core/libraries/usbd/emulated/dimensions.h
              src/core/libraries/usbd/emulated/infinity.cpp
              src/core/libraries/usbd/emulated/infinity.h
              src/core/libraries/usbd/emulated/skylander.cpp
              src/core/libraries/usbd/emulated/skylander.h
+)
+
+set(MUSIC_LIB src/core/libraries/music/music_player_service.cpp
+              src/core/libraries/music/music_player_service.h
 )
 
 set(FIBER_LIB src/core/libraries/fiber/fiber_context.cpp
@@ -641,8 +681,9 @@ set(NP_LIBS src/core/libraries/np/np_error.h
             src/core/libraries/np/trophy_ui.h
             src/core/libraries/np/np_party.cpp
             src/core/libraries/np/np_party.h
-            src/core/libraries/np/np_auth.cpp
-            src/core/libraries/np/np_auth.h
+            src/core/libraries/np/np_auth/np_auth.cpp
+            src/core/libraries/np/np_auth/np_auth.h
+            src/core/libraries/np/np_auth/np_auth_ctx.h
             src/core/libraries/np/np_sns_facebook_dialog.cpp
             src/core/libraries/np/np_sns_facebook_dialog.h
             src/core/libraries/np/np_partner.cpp
@@ -651,6 +692,7 @@ set(NP_LIBS src/core/libraries/np/np_error.h
             src/core/libraries/np/np_handler/np_handler.cpp
             src/core/libraries/np/np_handler/np_handler.h
             src/core/libraries/np/np_handler/np_handler_friends.cpp
+            src/core/libraries/np/np_handler/np_handler_auth.cpp
             src/core/libraries/np/np_handler/np_handler_invitation.cpp
             src/core/libraries/np/np_handler/np_handler_score.cpp
             src/core/libraries/np/np_handler/np_handler_trophy.cpp
@@ -812,6 +854,7 @@ set(COMMON src/common/logging/classes.cpp
            src/common/polyfill_thread.h
            src/common/rdtsc.cpp
            src/common/rdtsc.h
+           src/common/recoverable.h
            src/common/recursive_lock.cpp
            src/common/recursive_lock.h
            src/common/scope_exit.h
@@ -845,6 +888,7 @@ set(COMMON src/common/logging/classes.cpp
            src/common/memory_patcher.h
            src/common/memory_patcher.cpp
            src/common/multi_level_page_table.h
+           src/common/hack_features.cpp
            ${CMAKE_CURRENT_BINARY_DIR}/src/common/scm_rev.cpp
            src/common/scm_rev.h
            src/common/key_manager.cpp
@@ -969,6 +1013,7 @@ set(CORE src/core/aerolib/stubs.cpp
          ${PLAYGO_LIB}
          ${RANDOM_LIB}
          ${USBD_LIB}
+         ${MUSIC_LIB}
          ${ZLIB_LIB}
          ${MISC_LIBS}
          ${IME_LIB}
@@ -990,6 +1035,8 @@ set(CORE src/core/aerolib/stubs.cpp
          src/core/platform.h
          src/core/signals.cpp
          src/core/signals.h
+         src/core/guest_fault_recovery.cpp
+         src/core/guest_fault_recovery.h
          src/core/thread.cpp
          src/core/thread.h
          src/core/tls.cpp
@@ -997,6 +1044,8 @@ set(CORE src/core/aerolib/stubs.cpp
          src/core/emulator_state.cpp
          src/core/emulator_state.h
          src/core/emulator_settings.cpp
+         src/core/neural_screen.cpp
+         src/core/neural_screen.h
          src/core/emulator_settings.h
          src/core/user_manager.cpp
          src/core/user_manager.h
@@ -1179,6 +1228,9 @@ set(VIDEO_CORE src/video_core/amdgpu/cb_db_extent.h
                src/video_core/renderer_vulkan/vk_platform.h
                src/video_core/renderer_vulkan/vk_presenter.cpp
                src/video_core/renderer_vulkan/vk_presenter.h
+               src/video_core/renderer_vulkan/vk_frame_generation.h
+               src/video_core/renderer_vulkan/vk_occlusion_counter.cpp
+               src/video_core/renderer_vulkan/vk_occlusion_counter.h
                src/video_core/renderer_vulkan/vk_rasterizer.cpp
                src/video_core/renderer_vulkan/vk_rasterizer.h
                src/video_core/renderer_vulkan/vk_resource_pool.cpp
@@ -1240,6 +1292,8 @@ set(IMGUI src/imgui/imgui_config.h
           src/imgui/shadnet_notifications_layer.h
           src/imgui/notifications_layer.cpp
           src/imgui/notifications_layer.h
+          src/imgui/brightness_layer.cpp
+          src/imgui/brightness_layer.h
           src/imgui/renderer/imgui_core.cpp
           src/imgui/renderer/imgui_core.h
           src/imgui/renderer/imgui_impl_sdl3.cpp
@@ -1328,11 +1382,16 @@ add_executable(shadps4
 create_target_directory_groups(shadps4)
 
 target_link_libraries(shadps4 PRIVATE spdlog::spdlog)
-target_link_libraries(shadps4 PRIVATE magic_enum::magic_enum fmt::fmt toml11::toml11 tsl::robin_map xbyak::xbyak Tracy::TracyClient RenderDoc::API FFmpeg::ffmpeg Dear_ImGui ImGuiFileDialog gcn half::half ZLIB::ZLIB PNG::PNG minimp3)
-target_link_libraries(shadps4 PRIVATE Boost::headers GPUOpen::VulkanMemoryAllocator LibAtrac9 sirit Vulkan::Headers xxHash::xxhash Zydis::Zydis SDL3::SDL3 pugixml::pugixml)
+target_link_libraries(shadps4 PRIVATE magic_enum::magic_enum fmt::fmt toml11::toml11 tsl::robin_map xbyak::xbyak Tracy::TracyClient RenderDoc::API FFmpeg::ffmpeg Dear_ImGui ImGuiFileDialog gcn half::half ZLIB::ZLIB PNG::PNG minimp3 dr_flac)
+target_link_libraries(shadps4 PRIVATE Boost::headers GPUOpen::VulkanMemoryAllocator LibAtrac9 Opus::opus sirit Vulkan::Headers xxHash::xxhash Zydis::Zydis SDL3::SDL3 pugixml::pugixml)
 target_link_libraries(shadps4 PRIVATE stb::headers lfreist-hwinfo::hwinfo nlohmann_json::nlohmann_json miniz::miniz fdk-aac CLI11::CLI11 OpenAL::OpenAL Cpp_Httplib miniupnpc::miniupnpc)
 target_link_libraries(shadps4 PRIVATE Freetype::Freetype)
 target_link_libraries(shadps4 PRIVATE libprotobuf)
+
+if (WIN32)
+    # NeuralScreen DLSS5 control channel (localhost TCP)
+    target_link_libraries(shadps4 PRIVATE ws2_32)
+endif()
 target_link_libraries(shadps4 PRIVATE ZArchive::zarchive)
 target_link_libraries(shadps4 PRIVATE zstd::libzstd)
 target_include_directories(shadps4 PRIVATE "${SHADNET_PROTO_OUT}")
@@ -1349,6 +1408,15 @@ target_compile_definitions(Dear_ImGui PRIVATE IMGUI_USER_CONFIG="${PROJECT_SOURC
 
 if (ENABLE_DISCORD_RPC)
     target_compile_definitions(shadps4 PRIVATE ENABLE_DISCORD_RPC)
+endif()
+
+if (ENABLE_FSR_FRAMEGEN)
+    target_sources(shadps4 PRIVATE
+        src/video_core/renderer_vulkan/vk_frame_generation.cpp
+        src/video_core/renderer_vulkan/vk_fsr_vulkan_shims.cpp
+    )
+    target_link_libraries(shadps4 PRIVATE ffx-vulkan::fsr3-vk-framegeneration-3.1.6)
+    target_compile_definitions(shadps4 PRIVATE ENABLE_FSR_FRAMEGEN)
 endif()
 
 if (${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
@@ -1422,6 +1490,8 @@ if (WIN32)
     # Disable ASLR so we can reserve the user area
     if (MSVC)
         target_link_options(shadps4 PRIVATE /DYNAMICBASE:NO)
+        # Symbol map for resolving the shadPS4.exe+offset addresses printed by hang dumps.
+        target_link_options(shadps4 PRIVATE /MAP:${CMAKE_BINARY_DIR}/shadPS4.map)
     else()
         target_link_options(shadps4 PRIVATE -Wl,--disable-dynamicbase)
     endif()

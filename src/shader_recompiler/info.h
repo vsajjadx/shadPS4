@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <span>
 #include <vector>
 #include <boost/container/static_vector.hpp>
@@ -58,6 +59,7 @@ struct InfoPersistent {
     bool has_fetch_shader{};
     bool has_bitwise_xor{};
     bool uses_dma{};
+    bool uses_device_address{};
 
     InfoPersistent() = default;
     InfoPersistent(HwStage hw_stage_, SwStage sw_stage_, u64 pgm_hash_)
@@ -102,7 +104,13 @@ struct Info : InfoPersistent {
 
     std::span<const u32> user_data;
     std::vector<u32> flattened_ud_buf;
+    /// The flat buffer as it was when the draw that requested this translation was recorded.
+    /// The memory the SRT walker reads may be rewritten by the time a worker translates.
+    std::vector<u32> flat_buf_snapshot;
     PersistentSrtInfo srt_info;
+    /// Images to bind as null for the current draw, because it reuses a permutation compiled for
+    /// a different image type in these slots. Set by the pipeline cache on every lookup.
+    u64 null_image_mask{};
 
     AttributeFlags loads{};
     AttributeFlags stores{};
@@ -160,12 +168,23 @@ struct Info : InfoPersistent {
     }
 
     void AddBindings(Backend::Bindings& bnd) const {
+        const auto num_heap_images = static_cast<u32>(std::ranges::count_if(
+            images, [](const ImageResource& image) { return image.is_heap; }));
+        const auto num_heap_samplers = static_cast<u32>(std::ranges::count_if(
+            samplers, [](const SamplerResource& sampler) { return sampler.is_heap; }));
         bnd.buffer += buffers.size();
-        bnd.unified += buffers.size() + images.size() + samplers.size();
+        bnd.unified +=
+            buffers.size() + images.size() - num_heap_images + samplers.size() - num_heap_samplers;
+        bnd.heap += num_heap_images + num_heap_samplers;
     }
 
     void RefreshFlatBuf() {
         flattened_ud_buf.resize(srt_info.flattened_bufsize_dw);
+        if (flat_buf_snapshot.size() == flattened_ud_buf.size()) {
+            std::memcpy(flattened_ud_buf.data(), flat_buf_snapshot.data(),
+                        flat_buf_snapshot.size() * sizeof(u32));
+            return;
+        }
         ASSERT(user_data.size() <= NUM_USER_DATA_REGS);
         std::memcpy(flattened_ud_buf.data(), user_data.data(), user_data.size_bytes());
         if (srt_info.walker_func) {

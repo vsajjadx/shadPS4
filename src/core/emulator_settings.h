@@ -127,7 +127,7 @@ struct OverrideItem {
 };
 
 template <typename Struct, typename T>
-inline OverrideItem make_override(const char* key, Setting<T> Struct::* member) {
+inline OverrideItem make_override(const char* key, Setting<T> Struct::*member) {
     return OverrideItem{
         key,
         [member, key](void* base, const nlohmann::json& entry, std::vector<std::string>& changed) {
@@ -199,6 +199,7 @@ struct GeneralSettings {
     Setting<int> big_picture_scale{1000};
     Setting<int> big_picture_folder_depth{2};
     Setting<bool> redzone_patches{false};
+    Setting<bool> guest_fault_recovery{true};
     // return a vector of override descriptors (runtime, but tiny)
     std::vector<OverrideItem> GetOverrideableFields() const {
         return std::vector<OverrideItem>{
@@ -217,7 +218,9 @@ struct GeneralSettings {
             make_override<GeneralSettings>("trophy_notification_side",
                                            &GeneralSettings::trophy_notification_side),
             make_override<GeneralSettings>("console_language", &GeneralSettings::console_language),
-            make_override<GeneralSettings>("redzone_patches", &GeneralSettings::redzone_patches)};
+            make_override<GeneralSettings>("redzone_patches", &GeneralSettings::redzone_patches),
+            make_override<GeneralSettings>("guest_fault_recovery",
+                                           &GeneralSettings::guest_fault_recovery)};
     }
 };
 
@@ -227,7 +230,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GeneralSettings, install_dirs, addon_install_
                                    trophy_popup_disabled, trophy_notification_duration, show_splash,
                                    trophy_notification_side, discord_rpc_enabled, show_fps_counter,
                                    console_language, big_picture_scale, big_picture_folder_depth,
-                                   redzone_patches)
+                                   redzone_patches, guest_fault_recovery)
 
 // -------------------------------
 // Network settings
@@ -381,10 +384,16 @@ struct AudioSettings {
     Setting<std::string> openal_padSpk_output_device{"Default Device"};
     Setting<u32> openal_hrtf{OpenALHrtfMode::HrtfAuto};
     Setting<u32> openal_output_mode{OpenALOutputMode::OutputAuto};
+    // Play pad speaker ports on a connected DualSense's speaker (USB or Bluetooth).
+    Setting<bool> dualsense_speaker{true};
+    Setting<u32> dualsense_speaker_volume{100};
 
     std::vector<OverrideItem> GetOverrideableFields() const {
         return std::vector<OverrideItem>{
             make_override<AudioSettings>("audio_backend", &AudioSettings::audio_backend),
+            make_override<AudioSettings>("dualsense_speaker", &AudioSettings::dualsense_speaker),
+            make_override<AudioSettings>("dualsense_speaker_volume",
+                                         &AudioSettings::dualsense_speaker_volume),
             make_override<AudioSettings>("sdl_mic_device", &AudioSettings::sdl_mic_device),
             make_override<AudioSettings>("sdl_main_output_device",
                                          &AudioSettings::sdl_main_output_device),
@@ -403,7 +412,8 @@ struct AudioSettings {
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(AudioSettings, audio_backend, sdl_mic_device,
                                    sdl_main_output_device, sdl_padSpk_output_device,
                                    openal_mic_device, openal_main_output_device,
-                                   openal_padSpk_output_device, openal_hrtf, openal_output_mode)
+                                   openal_padSpk_output_device, openal_hrtf, openal_output_mode,
+                                   dualsense_speaker, dualsense_speaker_volume)
 
 // -------------------------------
 // GPU settings
@@ -420,16 +430,34 @@ struct GPUSettings {
     Setting<bool> direct_memory_access_enabled{false};
     Setting<bool> dump_shaders{false};
     Setting<bool> patch_shaders{false};
-    Setting<u32> vblank_frequency{60};
+    // 0 = unlimited: vblank is signalled as fast as frames are presented.
+    Setting<u32> vblank_limit{0};
     Setting<bool> full_screen{false};
     Setting<std::string> full_screen_mode{"Windowed"};
     Setting<std::string> present_mode{"Mailbox"};
     Setting<bool> hdr_allowed{false};
     Setting<bool> fsr_enabled{false};
+    Setting<bool> frame_generation_enabled{false};
+    Setting<bool> anti_aliasing{false};
+    Setting<u32> resolution_scale{100};
+    // Windows: the GPU command thread gets a physical core of its own.
+    Setting<bool> gpu_thread_core_reserve{true};
     Setting<bool> rcas_enabled{true};
     Setting<int> rcas_attenuation{250};
     Setting<bool> userfaultfd{false};
     Setting<bool> inline_fetch_shader{false};
+    // 0 = as the game sets it; 2, 4, 8 or 16 forces that anisotropy on filtered, mipmapped
+    // textures.
+    Setting<u32> anisotropic_filtering{0};
+    // Added to every texture's LOD bias, in hundredths of a mip level (-50 = sharper by half a
+    // level). Useful with a raised internal resolution.
+    Setting<int> texture_lod_bias{0};
+    Setting<bool> fast_shader_math{false};
+    // Percent applied to the presented image: 100 shows it as the game draws it, higher lifts
+    // dark tones and lower darkens them, without clipping black or white.
+    Setting<int> brightness{100};
+    // Percent applied around mid-grey: higher separates dark and bright tones further.
+    Setting<int> contrast{100};
 
     std::vector<OverrideItem> GetOverrideableFields() const {
         return std::vector<OverrideItem>{
@@ -442,6 +470,12 @@ struct GPUSettings {
             make_override<GPUSettings>("window_width", &GPUSettings::window_width),
             make_override<GPUSettings>("hdr_allowed", &GPUSettings::hdr_allowed),
             make_override<GPUSettings>("fsr_enabled", &GPUSettings::fsr_enabled),
+            make_override<GPUSettings>("frame_generation_enabled",
+                                       &GPUSettings::frame_generation_enabled),
+            make_override<GPUSettings>("anti_aliasing", &GPUSettings::anti_aliasing),
+            make_override<GPUSettings>("resolution_scale", &GPUSettings::resolution_scale),
+            make_override<GPUSettings>("gpu_thread_core_reserve",
+                                       &GPUSettings::gpu_thread_core_reserve),
             make_override<GPUSettings>("rcas_enabled", &GPUSettings::rcas_enabled),
             make_override<GPUSettings>("rcas_attenuation", &GPUSettings::rcas_attenuation),
             make_override<GPUSettings>("dump_shaders", &GPUSettings::dump_shaders),
@@ -451,9 +485,15 @@ struct GPUSettings {
                                        &GPUSettings::readback_linear_images_enabled),
             make_override<GPUSettings>("direct_memory_access_enabled",
                                        &GPUSettings::direct_memory_access_enabled),
-            make_override<GPUSettings>("vblank_frequency", &GPUSettings::vblank_frequency),
+            make_override<GPUSettings>("vblank_limit", &GPUSettings::vblank_limit),
             make_override<GPUSettings>("userfaultfd", &GPUSettings::userfaultfd),
             make_override<GPUSettings>("inline_fetch_shader", &GPUSettings::inline_fetch_shader),
+            make_override<GPUSettings>("anisotropic_filtering",
+                                       &GPUSettings::anisotropic_filtering),
+            make_override<GPUSettings>("texture_lod_bias", &GPUSettings::texture_lod_bias),
+            make_override<GPUSettings>("fast_shader_math", &GPUSettings::fast_shader_math),
+            make_override<GPUSettings>("brightness", &GPUSettings::brightness),
+            make_override<GPUSettings>("contrast", &GPUSettings::contrast),
         };
     }
 };
@@ -461,9 +501,12 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GPUSettings, window_width, window_height, int
                                    internal_screen_height, null_gpu, copy_gpu_buffers,
                                    readbacks_mode, readback_linear_images_enabled,
                                    direct_memory_access_enabled, dump_shaders, patch_shaders,
-                                   vblank_frequency, full_screen, full_screen_mode, present_mode,
+                                   vblank_limit, full_screen, full_screen_mode, present_mode,
                                    hdr_allowed, fsr_enabled, rcas_enabled, rcas_attenuation,
-                                   userfaultfd, inline_fetch_shader)
+                                   userfaultfd, inline_fetch_shader, anisotropic_filtering,
+                                   texture_lod_bias, frame_generation_enabled,
+                                   gpu_thread_core_reserve, anti_aliasing, resolution_scale,
+                                   fast_shader_math, brightness, contrast)
 
 // -------------------------------
 // Vulkan settings
@@ -478,8 +521,9 @@ struct VulkanSettings {
     Setting<bool> vkcrash_diagnostic_enabled{false};
     Setting<bool> vkhost_markers{false};
     Setting<bool> vkguest_markers{false};
-    Setting<bool> pipeline_cache_enabled{false};
+    Setting<bool> pipeline_cache_enabled{true};
     Setting<bool> pipeline_cache_archived{false};
+    Setting<bool> async_pipeline_compilation{false};
 
     std::vector<OverrideItem> GetOverrideableFields() const {
         return std::vector<OverrideItem>{
@@ -501,6 +545,8 @@ struct VulkanSettings {
                                           &VulkanSettings::pipeline_cache_enabled),
             make_override<VulkanSettings>("pipeline_cache_archived",
                                           &VulkanSettings::pipeline_cache_archived),
+            make_override<VulkanSettings>("async_pipeline_compilation",
+                                          &VulkanSettings::async_pipeline_compilation),
         };
     }
 };
@@ -508,7 +554,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(VulkanSettings, gpu_id, renderdoc_enabled, vk
                                    vkvalidation_core_enabled, vkvalidation_sync_enabled,
                                    vkvalidation_gpu_enabled, vkcrash_diagnostic_enabled,
                                    vkhost_markers, vkguest_markers, pipeline_cache_enabled,
-                                   pipeline_cache_archived)
+                                   pipeline_cache_archived, async_pipeline_compilation)
 
 // -------------------------------
 // Main manager
@@ -698,6 +744,7 @@ public:
     SETTING_FORWARD(m_general, BigPictureScale, big_picture_scale)
     SETTING_FORWARD(m_general, BigPictureFolderDepth, big_picture_folder_depth)
     SETTING_FORWARD_BOOL(m_general, RedZonePatchingEnabled, redzone_patches)
+    SETTING_FORWARD_BOOL(m_general, GuestFaultRecoveryEnabled, guest_fault_recovery)
 
     // Network settings
     SETTING_FORWARD_BOOL(m_network, ConnectedToNetwork, connected_to_network)
@@ -730,6 +777,8 @@ public:
     SETTING_FORWARD(m_audio, OpenALMainOutputDevice, openal_main_output_device)
     SETTING_FORWARD(m_audio, OpenALPadSpkOutputDevice, openal_padSpk_output_device)
     SETTING_FORWARD(m_audio, OpenALHrtf, openal_hrtf)
+    SETTING_FORWARD_BOOL(m_audio, DualSenseSpeaker, dualsense_speaker)
+    SETTING_FORWARD(m_audio, DualSenseSpeakerVolume, dualsense_speaker_volume)
     SETTING_FORWARD(m_audio, OpenALOutputMode, openal_output_mode)
 
     // Debug settings
@@ -750,27 +799,33 @@ public:
     SETTING_FORWARD(m_gpu, InternalScreenWidth, internal_screen_width)
     SETTING_FORWARD_BOOL(m_gpu, HdrAllowed, hdr_allowed)
     SETTING_FORWARD_BOOL(m_gpu, FsrEnabled, fsr_enabled)
+    SETTING_FORWARD_BOOL(m_gpu, FrameGenerationEnabled, frame_generation_enabled)
+    SETTING_FORWARD_BOOL(m_gpu, AntiAliasing, anti_aliasing)
+    SETTING_FORWARD(m_gpu, ResolutionScale, resolution_scale)
+    SETTING_FORWARD_BOOL(m_gpu, GpuThreadCoreReserve, gpu_thread_core_reserve)
     SETTING_FORWARD_BOOL(m_gpu, RcasEnabled, rcas_enabled)
     SETTING_FORWARD(m_gpu, RcasAttenuation, rcas_attenuation)
+    SETTING_FORWARD(m_gpu, Brightness, brightness)
+    SETTING_FORWARD(m_gpu, Contrast, contrast)
     SETTING_FORWARD(m_gpu, ReadbacksMode, readbacks_mode)
     SETTING_FORWARD_BOOL(m_gpu, ReadbackLinearImagesEnabled, readback_linear_images_enabled)
     SETTING_FORWARD_BOOL(m_gpu, DirectMemoryAccessEnabled, direct_memory_access_enabled)
     SETTING_FORWARD_BOOL_READONLY(m_gpu, PatchShaders, patch_shaders)
     SETTING_FORWARD_BOOL(m_gpu, UserfaultfdTracking, userfaultfd)
     SETTING_FORWARD_BOOL_READONLY(m_gpu, InlineFetchShader, inline_fetch_shader)
+    SETTING_FORWARD(m_gpu, AnisotropicFiltering, anisotropic_filtering)
+    SETTING_FORWARD(m_gpu, TextureLodBias, texture_lod_bias)
+    SETTING_FORWARD_BOOL_READONLY(m_gpu, FastShaderMath, fast_shader_math)
 
+    /// Vblank frequency in Hz, 0 means unlimited.
     u32 GetVblankFrequency() {
-        if (m_gpu.vblank_frequency.value < 30) {
-            return 30;
-        }
-        return m_gpu.vblank_frequency.get();
+        return m_gpu.vblank_limit.get();
     }
     void SetVblankFrequency(const u32& v, bool is_specific = false) {
-        u32 val = v < 30 ? 30 : v;
         if (is_specific) {
-            m_gpu.vblank_frequency.game_specific_value = val;
+            m_gpu.vblank_limit.game_specific_value = v;
         } else {
-            m_gpu.vblank_frequency.value = val;
+            m_gpu.vblank_limit.value = v;
         }
     }
 
@@ -803,6 +858,10 @@ public:
     SETTING_FORWARD_BOOL(m_vulkan, VkGuestMarkersEnabled, vkguest_markers)
     SETTING_FORWARD_BOOL(m_vulkan, PipelineCacheEnabled, pipeline_cache_enabled)
     SETTING_FORWARD_BOOL(m_vulkan, PipelineCacheArchived, pipeline_cache_archived)
+    SETTING_FORWARD_BOOL(m_vulkan, AsyncPipelineCompilation, async_pipeline_compilation)
+    bool IsAsyncPipelineCompilationGameSpecific() const {
+        return m_vulkan.async_pipeline_compilation.game_specific_value.has_value();
+    }
 
 #undef SETTING_FORWARD
 #undef SETTING_FORWARD_BOOL

@@ -114,6 +114,16 @@ public:
         return vk12_features.shaderInt8;
     }
 
+    /// Returns true if occlusion queries can count the exact number of samples
+    bool IsOcclusionQueryPreciseSupported() const {
+        return features.occlusionQueryPrecise;
+    }
+
+    /// Returns true if queries can be reset from the host
+    bool IsHostQueryResetSupported() const {
+        return vk12_features.hostQueryReset;
+    }
+
     bool IsMaintenance5Supported() const {
         return maintenance_5;
     }
@@ -384,6 +394,11 @@ public:
         return features.shaderClipDistance;
     }
 
+    /// Returns the physical device limits.
+    const vk::PhysicalDeviceLimits& GetLimits() const {
+        return properties.limits;
+    }
+
     /// Returns the maximim viewport width.
     u32 GetMaxViewportWidth() const {
         return properties.limits.maxViewportDimensions[0];
@@ -460,6 +475,9 @@ public:
 
     /// Returns the amount of memory used.
     [[nodiscard]] u64 GetDeviceMemoryUsage() const;
+
+    /// Logs the cause of a lost device as reported by the driver.
+    void LogDeviceFault() const;
 
     /// Returns the total memory budget available to the device.
     [[nodiscard]] u64 GetTotalMemoryBudget() const {
@@ -543,6 +561,8 @@ private:
     bool image_view_min_lod{};
     bool shader_clock{};
     bool supports_memory_budget{};
+    bool pageable_device_local_memory{};
+    bool device_fault{};
     bool supports_block_texel_view{};
     u64 total_memory_budget{};
     std::vector<size_t> valid_heaps;

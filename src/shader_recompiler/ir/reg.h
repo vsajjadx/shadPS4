@@ -49,6 +49,9 @@ union TextureInstInfo {
     BitField<16, 16, u32> pc;
 };
 
+/// ReadConst flags of a read through a device address computed per invocation.
+constexpr u32 DeviceAddressReadConst = 0xFFFFFFFFu;
+
 union BufferInstInfo {
     u64 raw;
     BitField<0, 1, u64> index_enable;

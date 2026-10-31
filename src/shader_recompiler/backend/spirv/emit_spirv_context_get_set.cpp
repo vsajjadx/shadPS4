@@ -54,6 +54,9 @@ Id EmitGetUserData(EmitContext& ctx, IR::ScalarReg reg) {
 
 Id EmitReadConst(EmitContext& ctx, IR::Inst* inst, Id addr, Id offset) {
     const u32 flatbuf_off_dw = inst->Flags<u32>();
+    if (flatbuf_off_dw == IR::DeviceAddressReadConst) {
+        return ctx.OpFunctionCall(ctx.U32[1], ctx.read_const_dynamic, addr, offset);
+    }
     if (!EmulatorSettings.IsDirectMemoryAccessEnabled()) {
         return ctx.EmitFlatbufferLoad(ctx.ConstU32(flatbuf_off_dw));
     }
@@ -62,6 +65,16 @@ Id EmitReadConst(EmitContext& ctx, IR::Inst* inst, Id addr, Id offset) {
     } else {
         return ctx.EmitFlatbufferLoad(ctx.ConstU32(flatbuf_off_dw));
     }
+}
+
+void EmitWriteConst(EmitContext& ctx, Id addr, Id offset, Id value) {
+    const Id base_lo{ctx.OpUConvert(ctx.U64, ctx.OpCompositeExtract(ctx.U32[1], addr, 0))};
+    const Id base_hi{ctx.OpUConvert(ctx.U64, ctx.OpCompositeExtract(ctx.U32[1], addr, 1))};
+    const Id base{ctx.OpBitwiseOr(ctx.U64, base_lo,
+                                  ctx.OpShiftLeftLogical(ctx.U64, base_hi, ctx.ConstU32(32U)))};
+    const Id offset_bytes{ctx.OpShiftLeftLogical(ctx.U32[1], offset, ctx.ConstU32(2U))};
+    const Id address{ctx.OpIAdd(ctx.U64, base, ctx.OpUConvert(ctx.U64, offset_bytes))};
+    ctx.EmitDwordMemoryWrite(address, value);
 }
 
 Id EmitReadConstBuffer(EmitContext& ctx, u32 handle, Id index) {
@@ -228,6 +241,9 @@ Id EmitGetAttributeU32(EmitContext& ctx, IR::Attribute attr, u32 comp) {
                ctx.info.sw_stage == SwStage::TessellationControl);
         return ctx.OpLoad(ctx.U32[1], ctx.invocation_id);
     case IR::Attribute::SubgroupLtMask:
+        if (ctx.info.sw_stage == SwStage::Vertex) {
+            return ctx.u32_zero_value;
+        }
         return ctx.OpLoad(
             ctx.U32[1], ctx.OpAccessChain(ctx.input_u32, ctx.subgroup_lt_mask, ctx.ConstU32(comp)));
     case IR::Attribute::PatchVertices:

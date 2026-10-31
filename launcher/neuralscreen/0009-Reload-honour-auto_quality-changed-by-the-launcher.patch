@@ -1,0 +1,42 @@
+From 56d380a4fa32c66b1e02ff3ebee6bb8dea4eb8eb Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 28 Oct 2026 10:05:37 +0000
+Subject: [PATCH] Reload: honour auto_quality changed by the launcher
+
+The reload command re-read the keys the shadPS4 launcher writes but not
+auto_quality, so switching Auto Quality while a game was running did
+nothing until the next start. It now goes through the same toggle action
+as the menu switch.
+---
+ app/commands.py | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/app/commands.py b/app/commands.py
+index 3497e8c..0156586 100644
+--- a/app/commands.py
++++ b/app/commands.py
+@@ -2065,7 +2065,7 @@ def drain_commands(st) -> bool:
+                 keys = ("nr_on", "frame_generation", "nr_small", "work_scale",
+                         "nr_passes", "profile", "intensity", "local_tone",
+                         "local_structure", "skin_structure", "style",
+-                        "external_tuning")
++                        "external_tuning", "auto_quality")
+                 old = {k: st.cfg.get(k) for k in keys}
+                 for k in keys:
+                     if k in fresh:
+@@ -2077,6 +2077,12 @@ def drain_commands(st) -> bool:
+                     apply_menu_action(st, ("toggle", "frame_generation"))
+                 if bool(st.cfg.get("nr_small", True)) != bool(old["nr_small"]):
+                     apply_menu_action(st, ("toggle", "boost"))
++                if (st.cfg.get("auto_quality") is True) != (
++                        old["auto_quality"] is True):
++                    # Back to the value before the toggle flips it, so it goes
++                    # through the same action as the menu switch.
++                    st.cfg["auto_quality"] = old["auto_quality"]
++                    apply_menu_action(st, ("toggle", "auto_quality"))
+                 if int(st.cfg.get("nr_passes", 1) or 1) != int(
+                         old["nr_passes"] or 1):
+                     apply_menu_action(
+-- 
+2.43.0
+

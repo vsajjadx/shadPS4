@@ -24,6 +24,11 @@
 #include "video_core/amdgpu/pm4_cmds.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
 
+#include <atomic>
+#include <chrono>
+#include <fmt/format.h>
+#include <thread>
+
 extern Frontend::WindowSDL* g_window;
 std::unique_ptr<Vulkan::Presenter> presenter;
 std::unique_ptr<AmdGpu::Liverpool> liverpool;
@@ -87,7 +92,36 @@ static void ResetSubmissionLock(Platform::InterruptId irq) {
 static void WaitGpuIdle() {
     HLE_TRACE;
     std::unique_lock lock{m_wait_idle};
-    cv_lock.wait(lock, [] { return submission_lock == 0; });
+    // The idle interrupt is the normal wake-up. Re-check the real GPU state periodically so a
+    // missed wake-up can never leave every submitting thread blocked forever (frozen game).
+    while (!cv_lock.wait_for(lock, std::chrono::milliseconds(100),
+                             [] { return submission_lock == 0; })) {
+        if (liverpool && liverpool->IsGpuIdle()) {
+            static u32 recovered = 0;
+            if (recovered++ < 5) {
+                LOG_WARNING(Lib_GnmDriver,
+                            "GPU is idle but the submission lock was never released; releasing it");
+            }
+            submission_lock = 0;
+            break;
+        }
+    }
+}
+
+// Marks submissions as blocked until the GPU goes idle. The idle check and the flag update happen
+// under the same lock the idle interrupt takes, so the interrupt cannot slip in between them.
+static void LockSubmissionsUntilIdle() {
+    std::scoped_lock lock{m_wait_idle};
+    if (!liverpool->IsGpuIdle()) {
+        submission_lock = true;
+    }
+}
+
+std::string GetGpuDebugState() {
+    if (!liverpool) {
+        return "liverpool not created";
+    }
+    return fmt::format("submission_lock={} {}", submission_lock, liverpool->DescribeState());
 }
 
 // Write a special NOP packet with N DWs data block
@@ -125,12 +159,12 @@ static inline bool IsValidEventType(Platform::InterruptId id) {
 }
 
 s32 PS4_SYSV_ABI sceGnmAddEqEvent(OrbisKernelEqueue eq, u64 id, void* udata) {
-    LOG_TRACE(Lib_GnmDriver, "called");
-
     auto equeue = GetEqueue(eq);
     if (!equeue) {
         return ORBIS_KERNEL_ERROR_EBADF;
     }
+    LOG_INFO(Lib_GnmDriver, "sceGnmAddEqEvent: equeue = {} id = {:#x} udata = {}",
+             equeue->GetName(), id, udata);
 
     EqueueEvent kernel_event{};
     kernel_event.event.ident = id;
@@ -1264,6 +1298,7 @@ int PS4_SYSV_ABI sceGnmMapComputeQueue(u32 pipe_id, u32 queue_id, VAddr ring_bas
 
     const auto& queue = liverpool->asc_queues[vqid];
     *queue.read_addr = 0u;
+    asc_next_offs_dw[vqid.index] = 0;
 
     return gnm_vqid;
 }
@@ -1332,6 +1367,39 @@ s32 PS4_SYSV_ABI sceGnmRegisterResource(void* res_handle, void* owner_handle, co
     return ORBIS_GNM_ERROR_FAILURE;
 }
 
+// Emulate the flip latency of real hardware. The emulated GPU thread and the presenter can run
+// several frames behind the CPU, while games count the flips they submitted and only continue
+// while a few of them are outstanding (NHL 24 waits forever with 4 or more). Hold the submitting
+// thread until the presenter is within kMaxFlipsInFlight flips of it.
+static std::atomic<u64> cpu_flip_submits{0};
+
+// Waits until the presenter is close enough to the flips that were submitted. The flip is counted
+// by the caller once it is queued, so a submit that fails never leaves the count ahead of the
+// presenter, which would make every later submit wait out the whole timeout.
+static void ThrottleFlipSubmit(u32 vo_handle) {
+    constexpr u64 kMaxFlipsInFlight = 2;
+    constexpr auto kMaxWait = std::chrono::milliseconds(200);
+    const auto t0 = std::chrono::steady_clock::now();
+    VideoOut::FlipStatus status{};
+    u32 polls = 0;
+    while (VideoOut::sceVideoOutGetFlipStatus(static_cast<s32>(vo_handle), &status) == ORBIS_OK &&
+           cpu_flip_submits.load() > status.count + kMaxFlipsInFlight) {
+        if (std::chrono::steady_clock::now() - t0 > kMaxWait) {
+            LOG_WARNING(Lib_GnmDriver, "flip throttle timed out: cpu_submits={} presented={}",
+                        cpu_flip_submits.load(), status.count);
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(250));
+        ++polls;
+    }
+    static std::atomic<u32> reports{0};
+    if (polls != 0 && reports.load() < 5) {
+        ++reports;
+        LOG_INFO(Lib_GnmDriver, "flip throttle: waited {} polls (cpu_submits={} presented={})",
+                 polls, cpu_flip_submits.load(), status.count);
+    }
+}
+
 static inline s32 PatchFlipRequest(u32* cmdbuf, u32 size, u32 vo_handle, u32 buf_idx, u32 flip_mode,
                                    s64 flip_arg, void* unk) {
     // check for `prepareFlip` packet
@@ -1373,11 +1441,11 @@ static inline s32 PatchFlipRequest(u32* cmdbuf, u32 size, u32 vo_handle, u32 buf
 
     if (backup[1] == PM4CmdNop::PayloadType::PrepareFlip) {
         nop->header = PM4Type3Header{PM4ItOpcode::Nop, 0x39};
-        nop->data_block[0] = PM4CmdNop::PayloadType::PatchedFlip;
+        nop->data_block[0] = PM4CmdNop::PayloadType::PatchedFlipEop;
     } else {
         if (backup[1] == PM4CmdNop::PayloadType::PrepareFlipLabel) {
             nop->header = PM4Type3Header{PM4ItOpcode::Nop, 0x34};
-            nop->data_block[0] = PM4CmdNop::PayloadType::PatchedFlip;
+            nop->data_block[0] = PM4CmdNop::PayloadType::PatchedFlipEop;
 
             // Write event to update label
             auto* write_label = reinterpret_cast<PM4CmdWriteData*>(cmdbuf + 0x3b);
@@ -1470,9 +1538,7 @@ s32 PS4_SYSV_ABI sceGnmRequestFlipAndSubmitDoneForWorkload(u64 workload, u32* gp
     }
     liverpool->SubmitGfx(dcb_span, {});
 
-    if (!liverpool->IsGpuIdle()) {
-        submission_lock = true;
-    }
+    LockSubmissionsUntilIdle();
     liverpool->SubmitDone();
     send_init_packet = true;
 
@@ -1609,6 +1675,61 @@ s32 PS4_SYSV_ABI sceGnmSetCsShaderWithModifier(u32* cmdbuf, u32 size, const u32*
     return ORBIS_OK;
 }
 
+// clang-format off
+constexpr static std::array embedded_ps0_code alignas(256) = {
+    0xbeeb03ffu, 0x00000003u, // s_mov_b32     vcc_hi, $0x00000003
+    0x7e000280u,              // v_mov_b32     v0, 0
+    0x5e000100u,              // v_cvt_pkrtz_f16_f32 v0, v0, v0
+    0xbf800000u,              // s_nop
+    0xf8001c0fu, 0x00000000u, // exp           mrt0, v0, v0 compr vm done
+    0xbf810000u,              // s_endpgm
+
+    // Binary header
+    0x5362724fu, 0x07726468u, 0x00002043u, 0u, 0xb0a45b2bu, 0x1d39766du, 0x72044b7bu, 0x0000000fu,
+    // PS regs
+    0x0fe000f0u, 0u, 0xc0000u, 4u, 0u, 4u, 2u, 2u, 0u, 0u, 0x10u, 0xfu, 0xcu, 0u, 0u, 0u,
+};
+
+constexpr static std::array embedded_ps1_code alignas(256) = {
+    0xbeeb03ffu, 0x00000003u, // s_mov_b32     vcc_hi, $0x00000003
+    0x7e040280u,              // v_mov_b32     v2, 0
+    0xf8001803u, 0x02020202u, // exp           mrt0, v2, v2, off, off vm done
+    0xbf810000u,              // s_endpgm
+
+    // Binary header
+    0x5362724fu, 0x07726468u, 0x00001841u, 0x04080002u, 0x98b9cb94u, 0u, 0x6f130734u, 0x0000000fu,
+    // PS regs
+    0x0fe000f2u, 0u, 0x2000u, 0u, 0u, 2u, 2u, 2u, 0u, 0u, 0x10u, 3u, 0xcu,
+};
+
+// A fullscreen triangle with one uv set
+constexpr static std::array embedded_vs0_code alignas(256) = {
+    0xbeeb03ffu, 0x00000007u, // s_mov_b32     vcc_hi, $0x00000007
+    0x36020081u,              // v_and_b32     v1, 1, v0
+    0x34020281u,              // v_lshlrev_b32 v1, 1, v1
+    0x360000c2u,              // v_and_b32     v0, -2, v0
+    0x4a0202c1u,              // v_add_i32     v1, vcc, -1, v1
+    0x4a0000c1u,              // v_add_i32     v0, vcc, -1, v0
+    0x7e020b01u,              // v_cvt_f32_i32 v1, v1
+    0x7e000b00U,              // v_cvt_f32_i32 v0, v0
+    0x7e040280u,              // v_mov_b32     v2, 0
+    0x7e0602f2u,              // v_mov_b32     v3, 1.0
+    0xf80008cfu, 0x03020001u, // exp           pos0, v1, v0, v2, v3 done
+    0xf800020fu, 0x03030303u, // exp           param0, v3, v3, v3, v3
+    0xbf810000u,              // s_endpgm
+
+    // Binary header
+    0x5362724fu, 0x07726468u, 0x00004047u, 0u, 0x47f8c29fu, 0x9b2da5cfu, 0xff7c5b7du, 0x00000017u,
+    // VS regs
+    0x0fe000f1u, 0u, 0x000c0000u, 4u, 0u, 4u, 0u, 7u,
+};
+// clang-format on
+
+bool IsEmbeddedShaderAddress(VAddr address) {
+    return address == VAddr(embedded_ps0_code.data()) ||
+           address == VAddr(embedded_ps1_code.data()) || address == VAddr(embedded_vs0_code.data());
+}
+
 s32 PS4_SYSV_ABI sceGnmSetEmbeddedPsShader(u32* cmdbuf, u32 size, u32 shader_id,
                                            u32 shader_modifier) {
     LOG_TRACE(Lib_GnmDriver, "called");
@@ -1619,37 +1740,11 @@ s32 PS4_SYSV_ABI sceGnmSetEmbeddedPsShader(u32* cmdbuf, u32 size, u32 shader_id,
     }
 
     // clang-format off
-    constexpr static std::array ps0_code alignas(256) = {
-        0xbeeb03ffu, 0x00000003u, // s_mov_b32     vcc_hi, $0x00000003
-        0x7e000280u,              // v_mov_b32     v0, 0
-        0x5e000100u,              // v_cvt_pkrtz_f16_f32 v0, v0, v0
-        0xbf800000u,              // s_nop
-        0xf8001c0fu, 0x00000000u, // exp           mrt0, v0, v0 compr vm done
-        0xbf810000u,              // s_endpgm
-
-        // Binary header
-        0x5362724fu, 0x07726468u, 0x00002043u, 0u, 0xb0a45b2bu, 0x1d39766du, 0x72044b7bu, 0x0000000fu,
-        // PS regs
-        0x0fe000f0u, 0u, 0xc0000u, 4u, 0u, 4u, 2u, 2u, 0u, 0u, 0x10u, 0xfu, 0xcu, 0u, 0u, 0u,
-    };
-
-    const auto shader0_addr = uintptr_t(ps0_code.data()); // Original address is 0xfe000f00
+    const auto shader0_addr = uintptr_t(embedded_ps0_code.data()); // Original address is 0xfe000f00
     const static u32 ps0_regs[] = {
         u32(shader0_addr >> 8), u32(shader0_addr >> 40), 0xc0000u, 4u, 0u, 4u, 2u, 2u, 0u, 0u, 0x10u, 0xfu, 0xcu};
 
-    constexpr static std::array ps1_code alignas(256) = {
-        0xbeeb03ffu, 0x00000003u, // s_mov_b32     vcc_hi, $0x00000003
-        0x7e040280u,              // v_mov_b32     v2, 0
-        0xf8001803u, 0x02020202u, // exp           mrt0, v2, v2, off, off vm done
-        0xbf810000u,              // s_endpgm
-
-        // Binary header
-        0x5362724fu, 0x07726468u, 0x00001841u, 0x04080002u, 0x98b9cb94u, 0u, 0x6f130734u, 0x0000000fu,
-        // PS regs
-        0x0fe000f2u, 0u, 0x2000u, 0u, 0u, 2u, 2u, 2u, 0u, 0u, 0x10u, 3u, 0xcu,
-    };
-
-    const auto shader1_addr = uintptr_t(ps1_code.data()); // Original address is 0xfe000f20
+    const auto shader1_addr = uintptr_t(embedded_ps1_code.data()); // Original address is 0xfe000f20
     const static u32 ps1_regs[] = {
         u32(shader1_addr >> 8), u32(shader1_addr >> 40), 0x2000u, 0u, 0u, 2u, 2u, 2u, 0u, 0u, 0x10u, 3u, 0xcu};
     // clang-format on
@@ -1687,31 +1782,7 @@ s32 PS4_SYSV_ABI sceGnmSetEmbeddedVsShader(u32* cmdbuf, u32 size, u32 shader_id,
         return ORBIS_GNM_ERROR_FAILURE;
     }
 
-    // A fullscreen triangle with one uv set
-    // clang-format off
-    constexpr static std::array shader_code alignas(256) = {
-        0xbeeb03ffu, 0x00000007u, // s_mov_b32     vcc_hi, $0x00000007
-        0x36020081u,              // v_and_b32     v1, 1, v0
-        0x34020281u,              // v_lshlrev_b32 v1, 1, v1
-        0x360000c2u,              // v_and_b32     v0, -2, v0
-        0x4a0202c1u,              // v_add_i32     v1, vcc, -1, v1
-        0x4a0000c1u,              // v_add_i32     v0, vcc, -1, v0
-        0x7e020b01u,              // v_cvt_f32_i32 v1, v1
-        0x7e000b00U,              // v_cvt_f32_i32 v0, v0
-        0x7e040280u,              // v_mov_b32     v2, 0
-        0x7e0602f2u,              // v_mov_b32     v3, 1.0
-        0xf80008cfu, 0x03020001u, // exp           pos0, v1, v0, v2, v3 done
-        0xf800020fu, 0x03030303u, // exp           param0, v3, v3, v3, v3
-        0xbf810000u,              // s_endpgm
-
-        // Binary header
-        0x5362724fu, 0x07726468u, 0x00004047u, 0u, 0x47f8c29fu, 0x9b2da5cfu, 0xff7c5b7du, 0x00000017u,
-        // VS regs
-        0x0fe000f1u, 0u, 0x000c0000u, 4u, 0u, 4u, 0u, 7u,
-    };
-    // clang-format on
-
-    const auto shader_addr = uintptr_t(shader_code.data()); // Original address is 0xfe000f10
+    const auto shader_addr = uintptr_t(embedded_vs0_code.data()); // Original address is 0xfe000f10
     const static u32 vs_regs[] = {
         u32(shader_addr >> 8), u32(shader_addr >> 40), 0xc0000u, 4, 0, 4, 0, 7};
 
@@ -2411,6 +2482,8 @@ s32 PS4_SYSV_ABI sceGnmSubmitAndFlipCommandBuffersForWorkload(
     auto* cmdbuf = dcb_gpu_addrs[count - 1];
     const auto size_dw = dcb_sizes_in_bytes[count - 1] / 4;
 
+    ThrottleFlipSubmit(vo_handle);
+
     std::scoped_lock lk{m_submit_lock};
     WaitGpuIdle();
 
@@ -2419,6 +2492,8 @@ s32 PS4_SYSV_ABI sceGnmSubmitAndFlipCommandBuffersForWorkload(
     if (patch_result != ORBIS_OK) {
         return patch_result;
     }
+    // The flip is queued now and the presenter will count it.
+    ++cpu_flip_submits;
 
     return PerformSubmit(count, const_cast<const u32**>(dcb_gpu_addrs), dcb_sizes_in_bytes,
                          const_cast<const u32**>(ccb_gpu_addrs), ccb_sizes_in_bytes);
@@ -2473,9 +2548,7 @@ s32 PS4_SYSV_ABI sceGnmSubmitDone() {
     LOG_DEBUG(Lib_GnmDriver, "called");
     std::scoped_lock lk{m_submit_lock};
     WaitGpuIdle();
-    if (!liverpool->IsGpuIdle()) {
-        submission_lock = true;
-    }
+    LockSubmissionsUntilIdle();
     liverpool->SubmitDone();
     send_init_packet = true;
     ++frames_submitted;

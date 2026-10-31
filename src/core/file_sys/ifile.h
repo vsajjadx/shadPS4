@@ -30,8 +30,21 @@ struct DirEntry {
     u64 size{0};
 };
 
+struct FileIdentity {
+    enum class Kind : u8 {
+        HostFile,
+        ArchiveEntry,
+    };
+    Kind kind{Kind::HostFile};
+    Common::FS::FileIdentity host{};
+    u32 node{0};
+
+    bool operator==(const FileIdentity&) const = default;
+};
+
 struct FileStat {
     u64 size{0};
+    u32 inode{0};
     s64 mtime_sec{0};
     s64 mtime_nsec{0};
     s64 atime_sec{0};
@@ -60,6 +73,14 @@ public:
     virtual ~IFile() = default;
 
     virtual s64 Read(void* dst, u64 size) = 0;
+    // Reads at an absolute offset without touching the file position. Backends that support it
+    // can serve several threads at once, so callers need not serialize such reads.
+    virtual bool SupportsReadAt() const {
+        return false;
+    }
+    virtual s64 ReadAt(void* dst, u64 size, u64 offset) {
+        return -1;
+    }
     virtual s64 Write(const void* src, u64 size) = 0;
     virtual bool Seek(s64 offset, Common::FS::SeekOrigin origin) = 0;
     virtual u64 Tell() const = 0;
@@ -95,6 +116,12 @@ public:
 
     virtual bool IsReadOnly() const {
         return true;
+    }
+
+    // Files of read-only mounts can be kept open after the guest closes them and handed out
+    // again on the next open of the same path.
+    virtual bool IsRecyclable() const {
+        return false;
     }
 
     virtual bool IsWriteOnly() const {
@@ -196,6 +223,8 @@ public:
                                         Common::FS::FileAccessMode mode) = 0;
     virtual std::unique_ptr<IDirectory> OpenDir(std::string_view rel_path) = 0;
 
+    virtual bool Stat(std::string_view rel_path, FileStat& out) = 0;
+
     virtual bool IsReadOnly() const = 0;
     virtual std::optional<std::filesystem::path> RootHostPath() const {
         return std::nullopt;
@@ -204,6 +233,9 @@ public:
     virtual std::filesystem::path RootPath() const = 0;
     virtual std::optional<std::vector<u8>> ReadFile(std::string_view rel_path) const = 0;
 };
+
+// Equal identities get the same guest inode for the lifetime of the process.
+[[nodiscard]] std::optional<u32> GetGuestInode(const FileIdentity& identity);
 
 // True if path is a regular file with a ".zar" extension
 [[nodiscard]] bool IsZArchiveFile(const std::filesystem::path& path);

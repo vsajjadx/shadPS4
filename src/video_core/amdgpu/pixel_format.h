@@ -173,7 +173,7 @@ private:
         case CompSwizzle::Alpha:
             return data[3];
         default:
-            UNREACHABLE();
+            return T(0);
         }
     }
 
@@ -293,12 +293,24 @@ constexpr CompMapping RemapSwizzle(const DataFormat format, const CompMapping sw
         result.a = swizzle.a;
         return result;
     }
+    default:
+        return swizzle;
+    }
+}
+
+/// PS4 single-channel formats expose the texel as either R or A depending on the T# dst_sel, while
+/// Vulkan single-channel formats expose it only via R. Redirect any T# selector pointing at Alpha
+/// to Red so that sampled and storage images read the texel correctly.
+///
+/// This must only be applied to image sharps. Render target swizzles and buffer swizzles already
+/// encode which shader component is exported/stored (e.g. the Alpha source of an alpha-only target),
+/// so rewriting them would break writes to single-channel resources.
+constexpr CompMapping RemapSingleChannelImageSwizzle(const DataFormat format,
+                                                     const CompMapping swizzle) {
+    switch (format) {
     case DataFormat::Format8:
     case DataFormat::Format16:
     case DataFormat::Format32: {
-        // PS4 single-channel formats expose the texel as either R or A depending on dst_sel,
-        // but Vulkan single-channel formats expose it only via R. Redirect any selector
-        // that points at Alpha to Red so the texel is read correctly.
         CompMapping result = swizzle;
         const auto remap_alpha_to_red = [](CompSwizzle& c) {
             if (c == CompSwizzle::Alpha) {
@@ -358,7 +370,8 @@ constexpr NumberConversion MapNumberConversion(const NumberFormat num_fmt,
         case DataFormat::Format16_16_16_16:
             return NumberConversion::Sint16ToSnormNz;
         default:
-            UNREACHABLE_MSG("data_fmt = {}", u32(data_fmt));
+            // Seen in garbage descriptors bound by games; there is nothing to convert.
+            return NumberConversion::None;
         }
     }
     default:

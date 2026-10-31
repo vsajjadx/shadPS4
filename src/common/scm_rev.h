@@ -9,6 +9,7 @@ namespace Common {
 
 extern const char g_version[];
 extern const bool g_is_release;
+extern const char g_build_name[];
 
 extern const char g_scm_rev[];
 extern const char g_scm_branch[];
@@ -16,6 +17,8 @@ extern const char g_scm_desc[];
 extern const char g_scm_remote_name[];
 extern const char g_scm_remote_url[];
 extern const char g_scm_date[];
+/// Hash of the sources that decide pipeline cache contents.
+extern const char g_shader_cache_hash[];
 
 const std::string GetRemoteNameFromLink();
 
