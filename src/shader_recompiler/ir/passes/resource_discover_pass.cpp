@@ -3,7 +3,6 @@
 
 #include <unordered_set>
 #include "common/assert.h"
-#include "core/emulator_settings.h"
 #include "shader_recompiler/ir/ir_emitter.h"
 #include "shader_recompiler/ir/operand_helper.h"
 #include "shader_recompiler/ir/passes/ir_passes.h"
@@ -510,6 +509,7 @@ static void LowerDynamicBufferAccess(IR::Block& block, IR::Inst& inst) {
     std::array<IR::Value, 4> components;
     for (u32 i = 0; i < num_components; ++i) {
         const IR::U32 dword = ir.ReadConst(base, ir.IAdd(dword_offset, ir.Imm32(i)));
+        dword.Inst()->SetFlags(IR::DeviceAddressReadConst);
         components[i] =
             is_float ? IR::Value{ir.BitCast<IR::F32, IR::U32>(dword)} : IR::Value{dword};
     }
@@ -521,12 +521,10 @@ static void LowerDynamicBufferAccess(IR::Block& block, IR::Inst& inst) {
 ResourceDiscoveryList ResourceDiscoverPass(IR::Program& program, const Profile& profile) {
     ResourceDiscoveryList sharp_usages;
 
-    if (EmulatorSettings.IsDirectMemoryAccessEnabled()) {
-        for (IR::Block* const block : program.blocks) {
-            for (IR::Inst& inst : block->Instructions()) {
-                if (IsBufferInstruction(inst)) {
-                    LowerDynamicBufferAccess(*block, inst);
-                }
+    for (IR::Block* const block : program.blocks) {
+        for (IR::Inst& inst : block->Instructions()) {
+            if (IsBufferInstruction(inst)) {
+                LowerDynamicBufferAccess(*block, inst);
             }
         }
     }
