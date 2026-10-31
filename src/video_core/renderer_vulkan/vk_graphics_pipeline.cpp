@@ -50,17 +50,8 @@ GraphicsPipeline::GraphicsPipeline(
         .size = sizeof(Shader::PushData),
     };
 
-    const vk::DescriptorSetLayout set_layout = *desc_layout;
-    const vk::PipelineLayoutCreateInfo layout_info = {
-        .setLayoutCount = 1U,
-        .pSetLayouts = &set_layout,
-        .pushConstantRangeCount = 1,
-        .pPushConstantRanges = &push_constants,
-    };
-    auto [layout_result, layout] = instance.GetDevice().createPipelineLayoutUnique(layout_info);
-    ASSERT_MSG(layout_result == vk::Result::eSuccess,
-               "Failed to create graphics pipeline layout: {}", vk::to_string(layout_result));
-    pipeline_layout = std::move(layout);
+    BuildHeapSetLayouts();
+    pipeline_layout = CreatePipelineLayout(push_constants);
     SetObjectName(device, *pipeline_layout, "Graphics PipelineLayout {}", debug_str);
 
     if (!preloading) {
@@ -534,6 +525,9 @@ void GraphicsPipeline::BuildDescSetLayout(bool preloading) {
         }
         for (const auto& image : stage->images) {
             const u32 num_bindings = image.NumBindings(*stage);
+            if (num_bindings == 0) {
+                continue;
+            }
             bindings.push_back({
                 .binding = binding,
                 .descriptorType = image.is_written ? vk::DescriptorType::eStorageImage
@@ -544,6 +538,9 @@ void GraphicsPipeline::BuildDescSetLayout(bool preloading) {
             binding += num_bindings;
         }
         for (const auto& sampler : stage->samplers) {
+            if (sampler.is_heap) {
+                continue;
+            }
             bindings.push_back({
                 .binding = binding++,
                 .descriptorType = vk::DescriptorType::eSampler,

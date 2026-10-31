@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <unordered_set>
+#include <xxhash.h>
 
 #include "common/debug.h"
 #include "common/hack_features.h"
@@ -52,6 +53,13 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     }
     memory->SetRasterizer(this);
 
+    texture_cache.on_unregister = [this](VideoCore::ImageId image_id) {
+        for (auto& heap_texture : heap_textures) {
+            if (heap_texture.image_id == image_id) {
+                heap_texture.view = VK_NULL_HANDLE;
+            }
+        }
+    };
     scheduler.SetSubmitCallback([this](Vulkan::SubmitInfo& info) {
         runtime.FlushBarriers();
         buffer_cache.SubmitPendingArenaBinds(info);
@@ -222,6 +230,9 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     }
 
     pipeline->BindResources(set_writes, push_data);
+    if (!heap_bind_sets.empty()) {
+        pipeline->BindHeapSets(heap_bind_sets);
+    }
     UpdateDynamicState(pipeline, is_indexed);
     scheduler.BeginRendering(state);
 
@@ -295,6 +306,9 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     }
 
     pipeline->BindResources(set_writes, push_data);
+    if (!heap_bind_sets.empty()) {
+        pipeline->BindHeapSets(heap_bind_sets);
+    }
     UpdateDynamicState(pipeline, is_indexed);
     scheduler.BeginRendering(state);
 
@@ -345,23 +359,34 @@ void Rasterizer::DispatchDirect() {
         return;
     }
 
-    if (!BindResources(pipeline)) {
-        return;
+    // A dispatch that reads or writes through device addresses misses the pages that were not
+    // resident yet, so it runs again once they are; only the first touch of a page faults.
+    constexpr u32 MaxFaultRetries = 4;
+    for (u32 attempt = 0;; ++attempt) {
+        if (!BindResources(pipeline)) {
+            return;
+        }
+
+        if (needs_barrier) {
+            runtime.FlushBarriers();
+        }
+
+        scheduler.EndRendering();
+        pipeline->BindResources(set_writes, push_data);
+        if (!heap_bind_sets.empty()) {
+            pipeline->BindHeapSets(heap_bind_sets);
+        }
+
+        const auto cmdbuf = scheduler.CommandBuffer();
+        cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline->Handle());
+        cmdbuf.dispatch(cs_program.dim_x, cs_program.dim_y, cs_program.dim_z);
+        DebugState.IncDispatch();
+
+        ResetBindings(true);
+        if (!cs.uses_dma || attempt == MaxFaultRetries || buffer_cache.ResolveDmaFaults() == 0) {
+            break;
+        }
     }
-
-    if (needs_barrier) {
-        runtime.FlushBarriers();
-    }
-
-    scheduler.EndRendering();
-    pipeline->BindResources(set_writes, push_data);
-
-    const auto cmdbuf = scheduler.CommandBuffer();
-    cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline->Handle());
-    cmdbuf.dispatch(cs_program.dim_x, cs_program.dim_y, cs_program.dim_z);
-    DebugState.IncDispatch();
-
-    ResetBindings(true);
 }
 
 void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
@@ -389,6 +414,9 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
 
     scheduler.EndRendering();
     pipeline->BindResources(set_writes, push_data);
+    if (!heap_bind_sets.empty()) {
+        pipeline->BindHeapSets(heap_bind_sets);
+    }
 
     const auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline->Handle());
@@ -455,6 +483,7 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
     set_writes.clear();
     buffer_infos.clear();
     image_infos.clear();
+    heap_bind_sets.clear();
 
     bool uses_dma = false;
 
@@ -470,6 +499,27 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
         BindBuffers(*stage, binding, push_data);
         BindTextures(*stage, binding);
         uses_dma |= stage->uses_dma;
+    }
+    set_writes.resize(set_write_index);
+    if (!pipeline->GetHeapKinds().empty()) {
+        UpdateHeapTextures();
+    }
+    for (const auto* stage : pipeline->GetStages()) {
+        if (!stage) {
+            continue;
+        }
+        for (const auto& image : stage->images) {
+            if (image.is_heap) {
+                heap_bind_sets.push_back(MirrorHeap(
+                    false, stage->buffers[image.heap_buffer].GetSharp(*stage), image.is_depth));
+            }
+        }
+        for (const auto& sampler : stage->samplers) {
+            if (sampler.is_heap) {
+                heap_bind_sets.push_back(MirrorHeap(
+                    true, stage->buffers[sampler.heap_buffer].GetSharp(*stage), sampler.is_depth));
+            }
+        }
     }
 
     if (uses_dma) {
@@ -879,10 +929,12 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
                                 vsharp.num_records);
                 }
             }
-            if (vsharp.base_address == 0 || vsharp.GetSize() == 0 || impossible) {
+            const u64 size = vsharp.base_address == 0 || impossible
+                                 ? 0
+                                 : memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize());
+            if (size == 0) {
                 buffer_infos.emplace_back(VK_NULL_HANDLE, 0, VK_WHOLE_SIZE);
             } else {
-                const u64 size = memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize());
                 if (size != vsharp.GetSize()) {
                     LOG_ERROR(Render, "Clamped size from {} to {} for stage {:#x}",
                               vsharp.GetSize(), size, stage.pgm_hash);
@@ -1063,6 +1115,9 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
         // Images the reused shader permutation wasn't compiled for (see GetProgram) are bound as
         // null too, a view of a different type would be invalid.
         const u32 desc_idx = static_cast<u32>(&image_desc - stage.images.data());
+        if (image_desc.is_heap) {
+            continue;
+        }
         if ((stage.null_image_mask >> desc_idx) & 1 ||
             (Common::HackFeatures::isTheOrder1886 &&
              (stage.pgm_hash == 0xa7b66f58 || stage.pgm_hash == 0xefaaab2b ||
@@ -1233,6 +1288,9 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
     }
 
     for (const auto& sampler : stage.samplers) {
+        if (sampler.is_heap) {
+            continue;
+        }
         auto ssharp = sampler.GetSharp(stage);
         if (!ssharp.Valid() || (ssharp.border_color_type.Value() == AmdGpu::BorderColor::Custom &&
                                 liverpool->regs.ta_bc_base.Address() == 0)) {
@@ -1257,6 +1315,236 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
         set_write.descriptorType = vk::DescriptorType::eSampler;
         set_write.pImageInfo = &image_infos.back();
     }
+}
+
+vk::DescriptorSet Rasterizer::MirrorHeap(bool is_sampler, const AmdGpu::Buffer& heap,
+                                         bool is_depth) {
+    const u32 stride = is_sampler ? sizeof(AmdGpu::Sampler) : sizeof(AmdGpu::Image);
+    const u32 max_slots = is_sampler ? Shader::MaxHeapSamplers : Shader::MaxHeapImages;
+    const u32 num_slots = is_sampler
+                              ? max_slots
+                              : static_cast<u32>(std::min<u64>(heap.GetSize() / stride, max_slots));
+    auto it = std::ranges::find_if(heap_mirrors, [&](const HeapMirror& mirror) {
+        return mirror.is_sampler == is_sampler && mirror.base == heap.base_address &&
+               mirror.size == heap.GetSize();
+    });
+    if (it == heap_mirrors.end()) {
+        if (!heap_pool) {
+            const std::array pool_sizes = {
+                vk::DescriptorPoolSize{vk::DescriptorType::eSampledImage,
+                                       Shader::MaxHeapImages * 8},
+                vk::DescriptorPoolSize{vk::DescriptorType::eSampler, Shader::MaxHeapSamplers * 8},
+            };
+            auto [pool_result, pool] = instance.GetDevice().createDescriptorPoolUnique({
+                .flags = vk::DescriptorPoolCreateFlagBits::eUpdateAfterBind,
+                .maxSets = 16,
+                .poolSizeCount = static_cast<u32>(pool_sizes.size()),
+                .pPoolSizes = pool_sizes.data(),
+            });
+            ASSERT_MSG(pool_result == vk::Result::eSuccess,
+                       "Failed to create heap descriptor pool");
+            heap_pool = std::move(pool);
+        }
+        const auto layout = Pipeline::GetHeapSetLayout(instance, is_sampler);
+        const vk::DescriptorSetAllocateInfo alloc_info = {
+            .descriptorPool = *heap_pool,
+            .descriptorSetCount = 1,
+            .pSetLayouts = &layout,
+        };
+        vk::DescriptorSet set{};
+        const auto result = instance.GetDevice().allocateDescriptorSets(&alloc_info, &set);
+        ASSERT_MSG(result == vk::Result::eSuccess, "Failed to allocate heap descriptor set");
+        it = heap_mirrors.insert(heap_mirrors.end(), {
+                                                         .is_sampler = is_sampler,
+                                                         .base = heap.base_address,
+                                                         .size = heap.GetSize(),
+                                                         .set = set,
+                                                         .shadow = {},
+                                                         .textures = {},
+                                                         .generations = {},
+                                                         .tick = ~0ULL,
+                                                     });
+        it->shadow.assign(static_cast<size_t>(max_slots) * stride, 0);
+        it->textures.assign(max_slots, -1);
+        it->generations.assign(max_slots, 0);
+    }
+    HeapMirror& mirror = *it;
+    const u64 tick = scheduler.CurrentTick();
+    if (mirror.tick == tick) {
+        return mirror.set;
+    }
+    const bool first = mirror.tick == ~0ULL;
+    mirror.tick = tick;
+
+    // Only slots whose sharp changed, or whose image left the cache, are written again.
+    heap_scratch.assign(static_cast<size_t>(num_slots) * stride, 0);
+    if (heap.base_address != 0 && num_slots != 0) {
+        memory->CopySparseMemory(heap.base_address, heap_scratch.data(), heap_scratch.size());
+    }
+    boost::container::small_vector<vk::WriteDescriptorSet, 64> writes;
+    std::vector<vk::DescriptorImageInfo> infos;
+    infos.reserve(num_slots);
+    const auto flush = [&] {
+        if (!writes.empty()) {
+            instance.GetDevice().updateDescriptorSets(writes, {});
+            writes.clear();
+        }
+        infos.clear();
+    };
+    for (u32 slot = 0; slot < num_slots; ++slot) {
+        const u8* sharp = &heap_scratch[static_cast<size_t>(slot) * stride];
+        u8* shadow = &mirror.shadow[static_cast<size_t>(slot) * stride];
+        s32& texture = mirror.textures[slot];
+        const bool lost =
+            texture >= 0 && (!heap_textures[texture].view ||
+                             heap_textures[texture].generation != mirror.generations[slot]);
+        if (!first && !lost && std::memcmp(sharp, shadow, stride) == 0) {
+            continue;
+        }
+        std::memcpy(shadow, sharp, stride);
+        if (infos.size() == infos.capacity() || writes.size() == writes.capacity()) {
+            flush();
+        }
+        if (is_sampler) {
+            AmdGpu::Sampler ssharp{};
+            std::memcpy(&ssharp, sharp, sizeof(ssharp));
+            if (!ssharp.Valid()) {
+                ssharp = AmdGpu::Sampler{};
+            }
+            infos.push_back(
+                {texture_cache.GetSampler(ssharp, liverpool->regs.ta_bc_base, is_depth, true),
+                 VK_NULL_HANDLE, vk::ImageLayout::eGeneral});
+        } else {
+            if (texture >= 0 && --heap_textures[texture].refs == 0) {
+                heap_texture_bytes -= heap_textures[texture].size;
+                heap_texture_lookup.erase(
+                    XXH3_64bits(&heap_textures[texture].tsharp, sizeof(AmdGpu::Image)));
+                free_heap_textures.push_back(texture);
+            }
+            AmdGpu::Image tsharp{};
+            std::memcpy(&tsharp, sharp, sizeof(tsharp));
+            texture = AcquireHeapTexture(tsharp);
+            if (texture >= 0) {
+                const auto& heap_texture = heap_textures[texture];
+                mirror.generations[slot] = heap_texture.generation;
+                infos.push_back({VK_NULL_HANDLE, heap_texture.view,
+                                 texture_cache.GetImage(heap_texture.image_id).info.props.is_depth
+                                     ? vk::ImageLayout::eDepthStencilReadOnlyOptimal
+                                     : vk::ImageLayout::eShaderReadOnlyOptimal});
+            } else {
+                infos.push_back({VK_NULL_HANDLE, VK_NULL_HANDLE, vk::ImageLayout::eGeneral});
+            }
+        }
+        writes.push_back({
+            .dstSet = mirror.set,
+            .dstBinding = 0,
+            .dstArrayElement = slot,
+            .descriptorCount = 1,
+            .descriptorType =
+                is_sampler ? vk::DescriptorType::eSampler : vk::DescriptorType::eSampledImage,
+            .pImageInfo = &infos.back(),
+        });
+    }
+    flush();
+    return mirror.set;
+}
+
+s32 Rasterizer::AcquireHeapTexture(const AmdGpu::Image& tsharp) {
+    const auto data_fmt = tsharp.GetDataFmt();
+    if (!tsharp.Valid() || tsharp.Address() == 0 || data_fmt == AmdGpu::DataFormat::FormatInvalid ||
+        AmdGpu::IsFmask(data_fmt) || !Shader::IsPlausibleImageSharp(tsharp)) {
+        return -1;
+    }
+    const u64 hash = XXH3_64bits(&tsharp, sizeof(tsharp));
+    s32 index = -1;
+    if (const auto it = heap_texture_lookup.find(hash); it != heap_texture_lookup.end()) {
+        index = it->second;
+        ++heap_textures[index].refs;
+        if (heap_textures[index].view) {
+            return index;
+        }
+        // The cache replaced the image, look the texture up again.
+        heap_texture_bytes -= heap_textures[index].size;
+    }
+    // A heap may name more textures than the host can hold; past the budget slots stay null.
+    constexpr u64 HeapTextureBudget = 3_GB;
+    if (index < 0 && heap_texture_bytes > HeapTextureBudget) {
+        return -1;
+    }
+    Shader::ImageResource resource{};
+    const auto type = tsharp.GetType();
+    resource.is_array =
+        type == AmdGpu::ImageType::Color2DArray || type == AmdGpu::ImageType::Color1DArray;
+    VideoCore::TextureCache::ImageDesc desc{tsharp, resource};
+    ClampImageLevels(desc);
+    if (!IsImageInfoUsable(desc.info)) {
+        if (index >= 0) {
+            --heap_textures[index].refs;
+        }
+        return -1;
+    }
+    const auto image_id = texture_cache.FindImage(desc);
+    auto& image = texture_cache.GetImage(image_id);
+    if (image.info.props.is_depth) {
+        resource.is_depth = true;
+        desc = VideoCore::TextureCache::ImageDesc{tsharp, resource};
+        ClampImageLevels(desc);
+    }
+    auto& image_view = texture_cache.FindTexture(image_id, desc);
+    image.usage.texture = 1u;
+    u32 refs = 1;
+    if (index >= 0) {
+        refs = heap_textures[index].refs;
+    } else if (!free_heap_textures.empty()) {
+        index = free_heap_textures.back();
+        free_heap_textures.pop_back();
+    } else {
+        index = static_cast<s32>(heap_textures.size());
+        heap_textures.emplace_back();
+    }
+    heap_textures[index] = {
+        .tsharp = tsharp,
+        .image_id = image_id,
+        .desc = desc,
+        .view = *image_view.image_view,
+        .generation = ++heap_texture_generation,
+        .size = image.info.guest_size,
+        .refs = refs,
+    };
+    heap_texture_bytes += image.info.guest_size;
+    heap_texture_lookup[hash] = index;
+    return index;
+}
+
+void Rasterizer::UpdateHeapTextures() {
+    // Once per submission: keep the images current, cached and readable, and drop the ones the
+    // cache replaced so that their slots are written again.
+    const u64 tick = scheduler.CurrentTick();
+    if (heap_textures_tick == tick) {
+        return;
+    }
+    heap_textures_tick = tick;
+    for (auto& heap_texture : heap_textures) {
+        if (heap_texture.refs == 0 || !heap_texture.view) {
+            continue;
+        }
+        auto& image = texture_cache.GetImage(heap_texture.image_id);
+        if (False(image.flags & VideoCore::ImageFlagBits::Registered) ||
+            image.binding.needs_rebind) {
+            heap_texture.view = VK_NULL_HANDLE;
+            continue;
+        }
+        if (True(image.flags & VideoCore::ImageFlagBits::Dirty)) {
+            texture_cache.UpdateImage(heap_texture.image_id);
+        } else {
+            texture_cache.TouchImage(heap_texture.image_id);
+        }
+        runtime.Transit(&image,
+                        image.info.props.is_depth ? vk::ImageLayout::eDepthStencilReadOnlyOptimal
+                                                  : vk::ImageLayout::eShaderReadOnlyOptimal,
+                        vk::PipelineStageFlagBits2::eAllCommands, vk::AccessFlagBits2::eShaderRead);
+    }
+    runtime.FlushBarriers();
 }
 
 RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {

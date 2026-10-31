@@ -1143,6 +1143,15 @@ void FlattenExtendedUserdataPass(IR::Program& program) {
                 continue;
             }
 
+            if (inst.GetOpcode() == IR::Opcode::ReadConst) {
+                // Reads through an address computed per invocation stay device address reads.
+                const IR::Inst* base = inst.Arg(0).TryInst();
+                if (base && base->GetOpcode() == IR::Opcode::CompositeConstructU32x2 &&
+                    (!IsReadConstSource(base->Arg(0)) || !IsReadConstSource(base->Arg(1)))) {
+                    continue;
+                }
+            }
+
             if (inst.GetOpcode() == IR::Opcode::ReadConstBuffer) {
                 // Only flatten ReadConstBuffer if it was marked as a sharp source in the
                 // resource discovery pass

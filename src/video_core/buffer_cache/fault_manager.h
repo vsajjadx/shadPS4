@@ -23,6 +23,9 @@ public:
 
     void ProcessFaultBuffer();
 
+    /// Makes the pages faulted so far resident right away and returns how many there were.
+    u32 ResolveFaultsNow();
+
 private:
     Vulkan::Scheduler& scheduler;
     BufferCache& buffer_cache;
@@ -34,6 +37,7 @@ private:
     Buffer download_buffer;
     std::array<u64, MaxPendingFaults> fault_areas{};
     u32 current_area{};
+    u32 last_fault_count{};
     vk::UniqueDescriptorSetLayout fault_process_desc_layout;
     vk::UniquePipeline fault_process_pipeline;
     vk::UniquePipelineLayout fault_process_pipeline_layout;

@@ -172,6 +172,20 @@ public:
         return final_result;
     }
 
+    void EmitDwordMemoryWrite(Id address, Id value) {
+        const Id available_label = OpLabel();
+        const Id merge_label = OpLabel();
+        const Id addr = OpFunctionCall(U64, get_bda_pointer, address);
+        const Id is_available = OpINotEqual(U1[1], addr, u64_zero_value);
+        OpSelectionMerge(merge_label, spv::SelectionControlMask::MaskNone);
+        OpBranchConditional(is_available, available_label, merge_label);
+        AddLabel(available_label);
+        const Id addr_ptr = OpConvertUToPtr(physical_pointer_type_u32, addr);
+        OpStore(addr_ptr, value, spv::MemoryAccessMask::Aligned, 4u);
+        OpBranch(merge_label);
+        AddLabel(merge_label);
+    }
+
     Id EmitSharedMemoryAccess(const Id result_type, const Id shared_mem, const Id index) {
         if (std::popcount(static_cast<u32>(info.shared_types)) > 1) {
             return OpAccessChain(result_type, shared_mem, u32_zero_value, index);
@@ -307,7 +321,17 @@ public:
         AmdGpu::ImageType view_type;
         bool is_integer = false;
         bool is_storage = false;
+        bool is_heap = false;
         MipStorageFallbackMode mip_fallback_mode{};
+        /// Slot of the heap the next access to this image reads.
+        Id heap_index{};
+    };
+
+    struct SamplerDefinition {
+        Id id;
+        bool is_heap = false;
+        /// Slot of the heap the next access to this sampler reads.
+        Id heap_index{};
     };
 
     enum class PointerType : u32 {
@@ -354,7 +378,7 @@ public:
     boost::container::small_vector<Id, 16> buf_type_ids;
     boost::container::small_vector<BufferDefinition, 16> buffers;
     boost::container::small_vector<TextureDefinition, 8> images;
-    boost::container::small_vector<Id, 4> samplers;
+    boost::container::small_vector<SamplerDefinition, 4> samplers;
     std::unordered_map<u32, Id> first_to_last_label_map;
 
     size_t flatbuf_index{};

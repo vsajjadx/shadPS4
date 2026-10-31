@@ -1,7 +1,11 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <unordered_set>
 #include "common/assert.h"
+#include "core/emulator_settings.h"
+#include "shader_recompiler/ir/ir_emitter.h"
+#include "shader_recompiler/ir/operand_helper.h"
 #include "shader_recompiler/ir/passes/ir_passes.h"
 #include "shader_recompiler/ir/passes/resource_pass.h"
 #include "shader_recompiler/ir/program.h"
@@ -304,8 +308,11 @@ void MarkReadConstBufferSharpSources(const SharpReference& sharp) {
         if (!source) {
             continue;
         }
-        ASSERT_MSG(IsSharpSource(source), "sharp dword {} produced by {}", i,
-                   IR::NameOf(source->GetOpcode()));
+        if (!IsSharpSource(source)) {
+            LOG_WARNING(Render_Recompiler, "Sharp dword {} produced by unhandled {}", i,
+                        IR::NameOf(source->GetOpcode()));
+            continue;
+        }
         if (source->GetOpcode() == IR::Opcode::ReadConstBuffer) {
             auto flags = source->Flags<IR::BufferInstInfo>();
             flags.sharp_source.Assign(1u);
@@ -411,8 +418,118 @@ void DiscoverImageSharp(IR::Block& block, IR::Inst& inst, ResourceDiscoveryList&
     MarkReadConstBufferSharpSources(ssharp);
 }
 
+static bool DependsOnInvocation(const IR::Value& value, std::unordered_set<const IR::Inst*>& seen) {
+    const IR::Inst* inst = value.TryInst();
+    if (!inst || !seen.insert(inst).second) {
+        return false;
+    }
+    if (inst->GetOpcode() == IR::Opcode::GetAttribute ||
+        inst->GetOpcode() == IR::Opcode::GetAttributeU32) {
+        return true;
+    }
+    for (size_t i = 0; i < inst->NumArgs(); ++i) {
+        if (DependsOnInvocation(inst->Arg(i), seen)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static u32 RawBufferAccessComponents(IR::Opcode opcode) {
+    switch (opcode) {
+    case IR::Opcode::LoadBufferU32:
+    case IR::Opcode::LoadBufferF32:
+    case IR::Opcode::StoreBufferU32:
+    case IR::Opcode::StoreBufferF32:
+        return 1;
+    case IR::Opcode::LoadBufferU32x2:
+    case IR::Opcode::LoadBufferF32x2:
+    case IR::Opcode::StoreBufferU32x2:
+    case IR::Opcode::StoreBufferF32x2:
+        return 2;
+    case IR::Opcode::LoadBufferU32x3:
+    case IR::Opcode::LoadBufferF32x3:
+    case IR::Opcode::StoreBufferU32x3:
+    case IR::Opcode::StoreBufferF32x3:
+        return 3;
+    case IR::Opcode::LoadBufferU32x4:
+    case IR::Opcode::LoadBufferF32x4:
+    case IR::Opcode::StoreBufferU32x4:
+    case IR::Opcode::StoreBufferF32x4:
+        return 4;
+    default:
+        return 0;
+    }
+}
+
+/// A V# loaded per workgroup or lane (a GPU memcpy reading its source and destination from a job
+/// list) cannot be bound ahead of the dispatch, so its dword accesses go through device addresses.
+static void LowerDynamicBufferAccess(IR::Block& block, IR::Inst& inst) {
+    const u32 num_components = RawBufferAccessComponents(inst.GetOpcode());
+    const auto info = inst.Flags<IR::BufferInstInfo>();
+    IR::Inst* handle = inst.Arg(0).TryInst();
+    if (num_components == 0 || info.inst_data_fmt != AmdGpu::DataFormat::FormatInvalid || !handle ||
+        handle->GetOpcode() != IR::Opcode::CompositeConstructU32x4) {
+        return;
+    }
+    std::unordered_set<const IR::Inst*> seen;
+    if (!DependsOnInvocation(inst.Arg(0), seen)) {
+        return;
+    }
+    IR::IREmitter ir{block, IR::Block::InstructionList::s_iterator_to(inst)};
+    const IR::U32 dword0{handle->Arg(0)};
+    const IR::U32 dword1{handle->Arg(1)};
+    const IR::Value base = ir.CompositeConstruct(dword0, ir.BitwiseAnd(dword1, ir.Imm32(0xFFu)));
+    const IR::U32 stride = ir.BitFieldExtract(dword1, ir.Imm32(16u), ir.Imm32(14u));
+    IR::U32 offset = ir.IAdd(ir.Imm32(static_cast<u32>(info.inst_offset.Value())),
+                             IR::GetBufferSOffsetArg(&inst));
+    if (info.voffset_enable) {
+        offset = ir.IAdd(offset, IR::GetBufferVOffsetArg(&inst));
+    }
+    if (info.index_enable) {
+        offset = ir.IAdd(offset, ir.IMul(IR::GetBufferIndexArg(&inst), stride));
+    }
+    const IR::U32 dword_offset = ir.ShiftRightLogical(offset, ir.Imm32(2u));
+    const auto opcode = inst.GetOpcode();
+    const bool is_float =
+        opcode == IR::Opcode::LoadBufferF32 || opcode == IR::Opcode::LoadBufferF32x2 ||
+        opcode == IR::Opcode::LoadBufferF32x3 || opcode == IR::Opcode::LoadBufferF32x4 ||
+        opcode == IR::Opcode::StoreBufferF32 || opcode == IR::Opcode::StoreBufferF32x2 ||
+        opcode == IR::Opcode::StoreBufferF32x3 || opcode == IR::Opcode::StoreBufferF32x4;
+    if (IsBufferStore(inst)) {
+        const IR::Value value = inst.Arg(2);
+        for (u32 i = 0; i < num_components; ++i) {
+            const IR::Value component = num_components == 1 ? value : ir.CompositeExtract(value, i);
+            const IR::U32 dword =
+                is_float ? ir.BitCast<IR::U32, IR::F32>(IR::F32{component}) : IR::U32{component};
+            ir.WriteConst(base, ir.IAdd(dword_offset, ir.Imm32(i)), dword);
+        }
+        inst.Invalidate();
+        return;
+    }
+    std::array<IR::Value, 4> components;
+    for (u32 i = 0; i < num_components; ++i) {
+        const IR::U32 dword = ir.ReadConst(base, ir.IAdd(dword_offset, ir.Imm32(i)));
+        components[i] =
+            is_float ? IR::Value{ir.BitCast<IR::F32, IR::U32>(dword)} : IR::Value{dword};
+    }
+    inst.ReplaceUsesWithAndRemove(
+        num_components == 1 ? components[0]
+                            : ir.CompositeConstruct(std::span{components.data(), num_components}));
+}
+
 ResourceDiscoveryList ResourceDiscoverPass(IR::Program& program, const Profile& profile) {
     ResourceDiscoveryList sharp_usages;
+
+    if (EmulatorSettings.IsDirectMemoryAccessEnabled()) {
+        for (IR::Block* const block : program.blocks) {
+            for (IR::Inst& inst : block->Instructions()) {
+                if (IsBufferInstruction(inst)) {
+                    LowerDynamicBufferAccess(*block, inst);
+                }
+            }
+        }
+    }
 
     for (IR::Block* const block : program.blocks) {
         for (IR::Inst& inst : block->Instructions()) {

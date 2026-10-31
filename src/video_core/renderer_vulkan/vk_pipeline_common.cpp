@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <map>
+#include <mutex>
 #include <boost/container/static_vector.hpp>
 
 #include "shader_recompiler/resource.h"
@@ -44,6 +46,84 @@ void Pipeline::BindResources(DescriptorWrites& set_writes,
     }
     instance.GetDevice().updateDescriptorSets(set_writes, {});
     cmdbuf.bindDescriptorSets(bind_point, *pipeline_layout, 0, desc_set, {});
+}
+
+void Pipeline::BindHeapSets(std::span<const vk::DescriptorSet> heap_sets) const {
+    const auto bind_point =
+        IsCompute() ? vk::PipelineBindPoint::eCompute : vk::PipelineBindPoint::eGraphics;
+    scheduler.CommandBuffer().bindDescriptorSets(bind_point, *pipeline_layout, 1, heap_sets, {});
+}
+
+void Pipeline::BuildHeapSetLayouts() {
+    for (const auto* stage : GetStages()) {
+        if (!stage) {
+            continue;
+        }
+        for (const auto& image : stage->images) {
+            if (image.is_heap) {
+                heap_is_sampler.push_back(false);
+            }
+        }
+        for (const auto& sampler : stage->samplers) {
+            if (sampler.is_heap) {
+                heap_is_sampler.push_back(true);
+            }
+        }
+    }
+}
+
+vk::DescriptorSetLayout Pipeline::GetHeapSetLayout(const Instance& instance, bool is_sampler) {
+    static std::mutex layouts_mutex;
+    static std::array<vk::UniqueDescriptorSetLayout, 2> layouts;
+    std::scoped_lock lk{layouts_mutex};
+    auto& layout = layouts[is_sampler];
+    if (!layout) {
+        // Slots change while the GPU may still run earlier work that reads other slots.
+        const vk::DescriptorBindingFlags binding_flags =
+            vk::DescriptorBindingFlagBits::ePartiallyBound |
+            vk::DescriptorBindingFlagBits::eUpdateAfterBind |
+            vk::DescriptorBindingFlagBits::eUpdateUnusedWhilePending;
+        const vk::DescriptorSetLayoutBindingFlagsCreateInfo flags_ci = {
+            .bindingCount = 1,
+            .pBindingFlags = &binding_flags,
+        };
+        const vk::DescriptorSetLayoutBinding binding = {
+            .binding = 0,
+            .descriptorType =
+                is_sampler ? vk::DescriptorType::eSampler : vk::DescriptorType::eSampledImage,
+            .descriptorCount = is_sampler ? Shader::MaxHeapSamplers : Shader::MaxHeapImages,
+            .stageFlags = vk::ShaderStageFlagBits::eAll,
+        };
+        const vk::DescriptorSetLayoutCreateInfo layout_ci = {
+            .pNext = &flags_ci,
+            .flags = vk::DescriptorSetLayoutCreateFlagBits::eUpdateAfterBindPool,
+            .bindingCount = 1,
+            .pBindings = &binding,
+        };
+        auto [result, new_layout] = instance.GetDevice().createDescriptorSetLayoutUnique(layout_ci);
+        ASSERT_MSG(result == vk::Result::eSuccess,
+                   "Failed to create heap descriptor set layout: {}", vk::to_string(result));
+        layout = std::move(new_layout);
+    }
+    return *layout;
+}
+
+vk::UniquePipelineLayout Pipeline::CreatePipelineLayout(
+    const vk::PushConstantRange& push_constants) {
+    boost::container::small_vector<vk::DescriptorSetLayout, 8> set_layouts{*desc_layout};
+    for (const bool is_sampler : heap_is_sampler) {
+        set_layouts.push_back(GetHeapSetLayout(instance, is_sampler));
+    }
+    const vk::PipelineLayoutCreateInfo layout_info = {
+        .setLayoutCount = static_cast<u32>(set_layouts.size()),
+        .pSetLayouts = set_layouts.data(),
+        .pushConstantRangeCount = 1U,
+        .pPushConstantRanges = &push_constants,
+    };
+    auto [result, layout] = instance.GetDevice().createPipelineLayoutUnique(layout_info);
+    ASSERT_MSG(result == vk::Result::eSuccess, "Failed to create pipeline layout: {}",
+               vk::to_string(result));
+    return std::move(layout);
 }
 
 std::string Pipeline::GetDebugString() const {

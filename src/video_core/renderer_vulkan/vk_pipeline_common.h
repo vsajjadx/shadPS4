@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <span>
+
 #include "shader_recompiler/profile.h"
 #include "shader_recompiler/runtime_info.h"
 #include "video_core/renderer_vulkan/vk_common.h"
@@ -60,8 +62,24 @@ public:
     using DescriptorWrites = std::vector<vk::WriteDescriptorSet>;
     void BindResources(DescriptorWrites& set_writes, const Shader::PushData& push_data) const;
 
+    /// Whether each descriptor heap the stages sample, bound as sets 1 onwards, holds samplers.
+    std::span<const bool> GetHeapKinds() const {
+        return heap_is_sampler;
+    }
+
+    void BindHeapSets(std::span<const vk::DescriptorSet> heap_sets) const;
+
+    /// Layout shared by all sets that mirror a descriptor heap of T#s or of S#s.
+    static vk::DescriptorSetLayout GetHeapSetLayout(const Instance& instance, bool is_sampler);
+
 protected:
     [[nodiscard]] std::string GetDebugString() const;
+
+    /// Lists the descriptor heaps the stages sample.
+    void BuildHeapSetLayouts();
+
+    /// Creates the pipeline layout with the set layouts this pipeline uses.
+    vk::UniquePipelineLayout CreatePipelineLayout(const vk::PushConstantRange& push_constants);
 
     const Instance& instance;
     Scheduler& scheduler;
@@ -70,6 +88,7 @@ protected:
     vk::UniquePipeline pipeline;
     vk::UniquePipelineLayout pipeline_layout;
     vk::UniqueDescriptorSetLayout desc_layout;
+    boost::container::small_vector<bool, 8> heap_is_sampler;
     std::array<const Shader::Info*, Shader::MaxStageTypes> stages{};
     bool uses_push_descriptors{};
     bool is_compute;
