@@ -776,6 +776,7 @@ bool Rasterizer::IsComputeImageCopy(const Pipeline* pipeline) {
     VideoCore::Image& src_image = desc0.is_written ? image1 : image0;
     VideoCore::Image& dst_image = desc0.is_written ? image0 : image1;
     runtime.CopyColorAndDepth(&src_image, &dst_image);
+    texture_cache.MarkAsGpuWritten(dst_image);
     return true;
 }
 
@@ -838,6 +839,7 @@ bool Rasterizer::IsComputeImageClear(const Pipeline* pipeline) {
         .extent = image1.info.resources,
     };
     runtime.ClearImage(&image1, range, clear);
+    texture_cache.MarkAsGpuWritten(image1);
     return true;
 }
 
@@ -1569,11 +1571,14 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
         }
         texture_cache.UpdateImage(image_id);
         runtime.SetBackingSamples(image, key.color_samples[cb]);
-        const auto& image_view = texture_cache.FindRenderTarget(image_id, desc);
+        const auto& col_buf = regs.color_buffers[cb];
+        // A target that is about to be cleared does not need what aliasing images wrote.
+        const auto& image_view = texture_cache.FindRenderTarget(
+            image_id, desc,
+            !texture_cache.IsMetaCleared(col_buf.CmaskAddress(), desc.view_info.range.base.layer));
         const auto slice = image_view.info.range.base.layer;
         const auto mip = image_view.info.range.base.level;
 
-        const auto& col_buf = regs.color_buffers[cb];
         const bool is_clear = texture_cache.IsMetaCleared(col_buf.CmaskAddress(), slice);
         texture_cache.TouchMeta(col_buf.CmaskAddress(), slice, false);
 
@@ -1619,14 +1624,14 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
     if (auto image_id = db_desc.image_id; image_id) {
         auto& desc = db_desc.desc;
         const auto htile_address = regs.depth_htile_data_base.GetAddress();
-        const auto& image_view = texture_cache.FindDepthTarget(image_id, desc);
-        auto& image = texture_cache.GetImage(image_id);
-
-        const auto slice = image_view.info.range.base.layer;
         const bool is_depth_clear =
             (regs.depth_render_control.depth_clear_enable && regs.depth_control.depth_enable &&
              regs.depth_control.depth_write_enable) ||
-            texture_cache.IsMetaCleared(htile_address, slice);
+            texture_cache.IsMetaCleared(htile_address, desc.view_info.range.base.layer);
+        const auto& image_view = texture_cache.FindDepthTarget(image_id, desc, !is_depth_clear);
+        auto& image = texture_cache.GetImage(image_id);
+
+        const auto slice = image_view.info.range.base.layer;
         const bool is_stencil_clear = regs.depth_render_control.stencil_clear_enable;
         texture_cache.TouchMeta(htile_address, slice, false);
         ASSERT(desc.view_info.range.extent.levels == 1 && !image.binding.needs_rebind);
@@ -1695,6 +1700,7 @@ void Rasterizer::Resolve() {
                                  liverpool->regs.color_buffers[1].Address()));
     runtime.ResolveImage(&mrt0_image, &mrt1_image, mrt0_desc.view_info.range,
                          mrt1_desc.view_info.range);
+    texture_cache.MarkAsGpuWritten(mrt1_image);
     ScopeMarkerEnd();
 }
 
@@ -1724,6 +1730,7 @@ void Rasterizer::DepthStencilCopy(bool is_depth, bool is_stencil) {
         regs.depth_buffer.StencilWriteAddress()));
 
     runtime.CopyDepthStencil(&read_image, &write_image, sub_range);
+    texture_cache.MarkAsGpuWritten(write_image);
 
     ScopeMarkerEnd();
 }

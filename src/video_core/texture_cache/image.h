@@ -183,6 +183,8 @@ public:
     u64 image_uid{};
     u64 lru_id{};
     u64 tick_accessed_last{};
+    u64 alias_write_seq{};
+    u64 alias_sync_seq{};
     u64 cpu_hash{};
     u64 gpu_hash{};
 

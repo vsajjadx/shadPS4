@@ -143,10 +143,12 @@ public:
     [[nodiscard]] ImageView& FindTexture(ImageId image_id, const ImageDesc& desc);
 
     /// Retrieves the render target with specified properties
-    [[nodiscard]] ImageView& FindRenderTarget(ImageId image_id, const ImageDesc& desc);
+    [[nodiscard]] ImageView& FindRenderTarget(ImageId image_id, const ImageDesc& desc,
+                                              bool sync_aliases = true);
 
     /// Retrieves the depth target with specified properties
-    [[nodiscard]] ImageView& FindDepthTarget(ImageId image_id, const ImageDesc& desc);
+    [[nodiscard]] ImageView& FindDepthTarget(ImageId image_id, const ImageDesc& desc,
+                                             bool sync_aliases = true);
 
     /// Links the stencil plane of a depth surface to its depth image.
     void AssociateStencil(ImageId depth_id, const ImageInfo& depth_info);
@@ -165,6 +167,11 @@ public:
         TouchImage(image);
         TrackImage(image_id);
         RefreshImage(image);
+    }
+
+    /// Records a GPU write to the image made outside of a target or storage binding.
+    void MarkAsGpuWritten(Image& image) {
+        image.alias_write_seq = ++alias_seq;
     }
 
     /// Resolves overlap between existing cache image and pending merged image
@@ -366,6 +373,17 @@ private:
     void DownloadImageMemory(ImageId image_id,
                              DownloadMemoryFlags flags = DownloadMemoryFlags::None);
 
+    /// Builds the copies of every mip and layer of an image to or from its guest layout.
+    boost::container::small_vector<vk::BufferImageCopy, 8> GuestCopies(const Image& image) const;
+
+    /// Reloads an image from the buffer cache when an image aliasing its memory was written
+    /// after it and still holds what it wrote, writing those images back in the order they
+    /// were written.
+    void SyncAliasedImages(ImageId image_id, const ImageViewInfo& view);
+
+    /// Writes the part of an image within [begin, end) back to the buffer cache.
+    void WriteAliasToBuffer(ImageId image_id, VAddr begin, VAddr end);
+
     /// Register image in the page table
     void RegisterImage(ImageId image);
 
@@ -447,6 +465,7 @@ private:
     u64 pressure_gc_samplers = 0;
     u64 critical_gc_samplers = 0;
     u64 gc_tick = 0;
+    u64 alias_seq = 0;
     Common::LRUCache<Image> image_lru_cache;
     Common::LRUCache<Sampler> sampler_lru_cache;
     const bool readback_linear_images;
