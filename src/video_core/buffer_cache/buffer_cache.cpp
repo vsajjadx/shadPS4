@@ -80,7 +80,7 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
         .flags =
             vk::BufferCreateFlagBits::eSparseBinding | vk::BufferCreateFlagBits::eSparseResidency,
         .size = ARENA_PAGE_SIZE,
-        .usage = ARENA_USAGE,
+        .usage = SupportedUsage(instance, ARENA_USAGE),
         .sharingMode = vk::SharingMode::eExclusive,
     };
     const vk::DeviceBufferMemoryRequirements req_info = {
@@ -547,6 +547,7 @@ void BufferCache::AllocateBackingSlab() {
 }
 
 void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_block) {
+    const bool has_bda = instance.IsBufferDeviceAddressSupported();
     u32 resident_blocks{};
     IntervalList bind_ranges;
     resident_ranges.ForEachGap(first_block, last_block + 1, [&](u64 start, u64 end) {
@@ -605,18 +606,22 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
                 .memoryOffset = backing.offset << block_shift,
             });
 
-            for (u64 block = 0; block < bind.size; block += block_size) {
-                *(bda_addrs++) = arena->BufferDeviceAddress() + bind.resourceOffset + block;
+            if (has_bda) {
+                for (u64 block = 0; block < bind.size; block += block_size) {
+                    *(bda_addrs++) = arena->BufferDeviceAddress() + bind.resourceOffset + block;
+                }
+                const u64 copy_size = num_blocks * sizeof(vk::DeviceAddress);
+                copies.emplace_back(offset, backing.start * sizeof(vk::DeviceAddress), copy_size);
+                offset += copy_size;
             }
-            const u64 copy_size = num_blocks * sizeof(vk::DeviceAddress);
-            copies.emplace_back(offset, backing.start * sizeof(vk::DeviceAddress), copy_size);
-            offset += copy_size;
             start = backing.end;
         }
     }
 
-    staging.Flush();
-    runtime.CopyBuffer(staging.buffer, bda_pagetable_buffer.get(), copies);
+    if (has_bda) {
+        staging.Flush();
+        runtime.CopyBuffer(staging.buffer, bda_pagetable_buffer.get(), copies);
+    }
 }
 
 void BufferCache::ReleaseResidency(VAddr device_addr, u64 size) {

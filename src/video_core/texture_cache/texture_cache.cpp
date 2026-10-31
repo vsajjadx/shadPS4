@@ -30,6 +30,28 @@ static constexpr u32 MAX_IMAGES = std::numeric_limits<u16>::max();
 static constexpr u32 MAX_IMAGE_VIEWS = (1u << 20u);
 static constexpr u32 MAX_SAMPLERS = std::numeric_limits<u16>::max();
 
+static u64 HashBackingMemory(VAddr virtual_addr, u64 size) {
+    static constexpr std::array<u8, Core::GUEST_PAGE_SIZE> zeros{};
+    auto* state = XXH3_createState();
+    const auto& backing_pages = Core::Memory::Instance()->GetAddressSpace().BackingPages();
+    XXH3_64bits_reset(state);
+    while (size) {
+        const u64 page = virtual_addr >> Core::GUEST_PAGE_BITS;
+        const u64 offset_in_page = virtual_addr & (Core::GUEST_PAGE_SIZE - 1);
+        const u64 hash_size = std::min<u64>(Core::GUEST_PAGE_SIZE - offset_in_page, size);
+        if (auto* entry = backing_pages.find(page); entry && *entry) {
+            XXH3_64bits_update(state, *entry + offset_in_page, hash_size);
+        } else {
+            XXH3_64bits_update(state, zeros.data(), hash_size);
+        }
+        size -= hash_size;
+        virtual_addr += hash_size;
+    }
+    const u64 hash = XXH3_64bits_digest(state);
+    XXH3_freeState(state);
+    return hash;
+}
+
 TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
                            Vulkan::Runtime& runtime_, AmdGpu::Liverpool* liverpool_,
                            BufferCache& buffer_cache_, PageManager& page_manager_)
@@ -407,9 +429,9 @@ static u64 HashGuestMemory(VAddr addr, u64 size) {
 void TextureCache::MarkAsMaybeGpuDirty(VAddr addr, size_t size) {
     ForEachImageInRegion(addr, size, [&](ImageId image_id, Image& image) {
         if (image.gpu_hash == 0) {
-            image.gpu_hash = HashGuestMemory(image.info.guest_address, image.info.guest_size);
+            // Read backing pages directly, without faulting through the guest readback path.
+            image.gpu_hash = HashBackingMemory(image.info.guest_address, image.info.guest_size);
         }
-        image.flags |= ImageFlagBits::MaybeGpuDirty;
     });
 }
 
@@ -443,7 +465,7 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
     const bool bpp_match = requested_info.num_bits == cache_image.info.num_bits;
 
     // If an image in the cache has less slices we need to expand it
-    bool recreate = cache_image.info.resources < requested_info.resources;
+    bool recreate = !cache_image.info.resources.Contains(requested_info.resources);
 
     switch (binding) {
     case BindingType::Texture:
@@ -606,7 +628,7 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
 
         // Size and resources are greater, expand the image.
         if (image_info.type == cache_image.info.type &&
-            image_info.resources > cache_image.info.resources) {
+            !cache_image.info.resources.Contains(image_info.resources)) {
             return {ExpandImage(image_info, cache_image_id), -1, -1};
         }
 
@@ -721,7 +743,7 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
     TrackImage(new_image_id);
     new_image.flags &= ~ImageFlagBits::Dirty;
     if (src_has_gpu_data) {
-        new_image.flags |= ImageFlagBits::GpuModified;
+        runtime.CopyImage(&src_image, &new_image);
     }
     FreeImage(image_id);
 
@@ -802,7 +824,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         if (exact_fmt && info.pixel_format != image_resolved.info.pixel_format) {
             // Cannot reuse this image as we need the exact requested format.
             image_id = {};
-        } else if (image_resolved.info.resources < info.resources) {
+        } else if (!image_resolved.info.resources.Contains(info.resources)) {
             // The image was clearly picked up wrong.
             FreeImage(image_id);
             image_id = {};
@@ -1044,10 +1066,10 @@ void TextureCache::RefreshImage(Image& image) {
         image.cpu_hash = hash;
     }
 
+    image.gpu_hash = 0;
+
     const u32 num_layers = image.info.resources.layers;
     const u32 num_mips = image.info.resources.levels;
-    const bool is_gpu_modified = True(image.flags & ImageFlagBits::GpuModified);
-    const bool is_gpu_dirty = True(image.flags & ImageFlagBits::GpuDirty);
 
     SmallVector<vk::BufferImageCopy, 14> image_copies;
     for (u32 m = 0; m < num_mips; m++) {
@@ -1236,6 +1258,9 @@ void TextureCache::TrackImage(ImageId image_id) {
     }
     image.track_addr = image_begin;
     image.track_addr_end = image_end;
+    MarkDirtyIfEdgesModified(image);
+    image.head_hash = 0;
+    image.tail_hash = 0;
 }
 
 void TextureCache::UntrackImage(ImageId image_id) {
@@ -1260,6 +1285,7 @@ void TextureCache::UntrackImageHead(ImageId image_id) {
     }
     const auto addr = page_manager.GetNextPageAddr(image_begin);
     const auto size = addr - image_begin;
+    image.head_hash = HashBackingMemory(image_begin, size);
     page_manager.UpdatePageWatchers(image_begin, size, PageOp::Untrack);
 
     image.track_addr = addr;
@@ -1280,6 +1306,7 @@ void TextureCache::UntrackImageTail(ImageId image_id) {
     ASSERT(image.track_addr_end != 0);
     const auto addr = page_manager.GetPageAddr(image_end);
     const auto size = image_end - addr;
+    image.tail_hash = HashBackingMemory(addr, size);
     image.track_addr_end = addr;
     if (image.track_addr == image.track_addr_end) {
         // This image spans only 2 pages and both are modified,
@@ -1288,6 +1315,23 @@ void TextureCache::UntrackImageTail(ImageId image_id) {
         MarkAsMaybeDirty(image_id, image);
     }
     page_manager.UpdatePageWatchers(addr, size, PageOp::Untrack);
+}
+
+void TextureCache::MarkDirtyIfEdgesModified(Image& image) {
+    const auto image_begin = image.info.guest_address;
+    const auto image_end = image.info.guest_address + image.info.guest_size;
+    if (image.head_hash != 0) {
+        const auto head_end = page_manager.GetNextPageAddr(image_begin);
+        if (HashBackingMemory(image_begin, head_end - image_begin) != image.head_hash) {
+            image.flags |= ImageFlagBits::CpuDirty;
+        }
+    }
+    if (image.tail_hash != 0) {
+        const auto tail_begin = page_manager.GetPageAddr(image_end);
+        if (HashBackingMemory(tail_begin, image_end - tail_begin) != image.tail_hash) {
+            image.flags |= ImageFlagBits::CpuDirty;
+        }
+    }
 }
 
 void TextureCache::GarbageCollectImages() {
@@ -1315,6 +1359,8 @@ void TextureCache::GarbageCollectImages() {
         if (num_deletions == 0) {
             return true;
         }
+        // An edge write means the guest reused the memory, so the image is freed without download.
+        MarkDirtyIfEdgesModified(image);
         const bool download = image.HasGpuValidData();
         if (download && (!pressured || !image.CanBeDownloaded())) {
             return false;
@@ -1324,7 +1370,7 @@ void TextureCache::GarbageCollectImages() {
         if (download) {
             UntrackImage(image_id);
             UnregisterImage(image_id);
-            if (True(image.flags & ImageFlagBits::MaybeGpuDirty)) {
+            if (image.gpu_hash != 0) {
                 buffer_cache.ReadMemory(image.info.guest_address, image.info.guest_size, false,
                                         true, true);
                 maybe_download.push_back(image_id);
@@ -1365,7 +1411,7 @@ void TextureCache::GarbageCollectImages() {
 
         for (const auto& image_id : maybe_download) {
             const auto& image = slot_images[image_id];
-            const u64 hash = HashGuestMemory(image.info.guest_address, image.info.guest_size);
+            const u64 hash = HashBackingMemory(image.info.guest_address, image.info.guest_size);
             if (image.gpu_hash == hash) {
                 download_queue.push_back(image_id);
             } else {
@@ -1442,10 +1488,6 @@ void TextureCache::RunGarbageCollector() {
 
 void TextureCache::TouchImage(Image& image) {
     image_lru_cache.Touch(image, gc_tick);
-
-    // Image is still valid
-    image.flags &= ~ImageFlagBits::MaybeGpuDirty;
-    image.gpu_hash = 0;
 }
 
 void TextureCache::DeleteImage(ImageId image_id) {
