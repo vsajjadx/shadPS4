@@ -428,6 +428,10 @@ U32 IREmitter::ReadConst(const Value& base, const U32& offset) {
     return Inst<U32>(Opcode::ReadConst, base, offset);
 }
 
+void IREmitter::WriteConst(const Value& base, const U32& offset, const U32& value) {
+    Inst(Opcode::WriteConst, base, offset, value);
+}
+
 U32 IREmitter::ReadConstBuffer(const Value& handle, const U32& index, BufferInstInfo info) {
     return Inst<U32>(Opcode::ReadConstBuffer, Flags{info}, handle, index);
 }
@@ -2102,6 +2106,14 @@ Value IREmitter::ImageAtomicCmpSwap(const Value& handle, const Value& coords, co
 
 Value IREmitter::ImageHandle(const Value& tsharp_low, const Value& tsharp_high) {
     return Inst(Opcode::ImageHandle, tsharp_low, tsharp_high);
+}
+
+void IREmitter::ImageHeapIndex(const U32& handle, const U32& index) {
+    Inst(Opcode::ImageHeapIndex, handle, index);
+}
+
+void IREmitter::SamplerHeapIndex(const U32& handle, const U32& index) {
+    Inst(Opcode::SamplerHeapIndex, handle, index);
 }
 
 Value IREmitter::ImageSampleRaw(const Value& image_handle, const Value& sampler_handle,

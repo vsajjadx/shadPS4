@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -153,6 +154,14 @@ public:
     void AssociateStencil(ImageId depth_id, const ImageInfo& depth_info);
 
     /// Updates image contents if it was modified by CPU.
+    /// Keeps an image that is in use outside of a binding from being collected.
+    void TouchImage(ImageId image_id) {
+        TouchImage(slot_images[image_id]);
+    }
+
+    /// Called when an image leaves the cache, before its slot can be reused.
+    std::function<void(ImageId)> on_unregister;
+
     void UpdateImage(ImageId image_id) {
         Image& image = slot_images[image_id];
         TouchImage(image);

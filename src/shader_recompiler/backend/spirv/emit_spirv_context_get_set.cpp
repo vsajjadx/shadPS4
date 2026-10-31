@@ -64,6 +64,16 @@ Id EmitReadConst(EmitContext& ctx, IR::Inst* inst, Id addr, Id offset) {
     }
 }
 
+void EmitWriteConst(EmitContext& ctx, Id addr, Id offset, Id value) {
+    const Id base_lo{ctx.OpUConvert(ctx.U64, ctx.OpCompositeExtract(ctx.U32[1], addr, 0))};
+    const Id base_hi{ctx.OpUConvert(ctx.U64, ctx.OpCompositeExtract(ctx.U32[1], addr, 1))};
+    const Id base{ctx.OpBitwiseOr(ctx.U64, base_lo,
+                                  ctx.OpShiftLeftLogical(ctx.U64, base_hi, ctx.ConstU32(32U)))};
+    const Id offset_bytes{ctx.OpShiftLeftLogical(ctx.U32[1], offset, ctx.ConstU32(2U))};
+    const Id address{ctx.OpIAdd(ctx.U64, base, ctx.OpUConvert(ctx.U64, offset_bytes))};
+    ctx.EmitDwordMemoryWrite(address, value);
+}
+
 Id EmitReadConstBuffer(EmitContext& ctx, u32 handle, Id index) {
     const auto& buffer = ctx.buffers[handle];
     if (const Id offset = buffer.Offset(PointerSize::B32); Sirit::ValidId(offset)) {

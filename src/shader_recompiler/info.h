@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <span>
 #include <vector>
 #include <boost/container/static_vector.hpp>
@@ -166,8 +167,14 @@ struct Info : InfoPersistent {
     }
 
     void AddBindings(Backend::Bindings& bnd) const {
+        const auto num_heap_images = static_cast<u32>(std::ranges::count_if(
+            images, [](const ImageResource& image) { return image.is_heap; }));
+        const auto num_heap_samplers = static_cast<u32>(std::ranges::count_if(
+            samplers, [](const SamplerResource& sampler) { return sampler.is_heap; }));
         bnd.buffer += buffers.size();
-        bnd.unified += buffers.size() + images.size() + samplers.size();
+        bnd.unified +=
+            buffers.size() + images.size() - num_heap_images + samplers.size() - num_heap_samplers;
+        bnd.heap += num_heap_images + num_heap_samplers;
     }
 
     void RefreshFlatBuf() {

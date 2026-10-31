@@ -188,6 +188,11 @@ void TextureCache::SyncAliasedImages(ImageId image_id, const ImageViewInfo& view
             other.info.guest_address + other.info.guest_size <= begin) {
             return;
         }
+        // An alias of another texel size holds unrelated data, such as a transient surface
+        // that shares the memory.
+        if (other.info.num_bits != image.info.num_bits) {
+            return;
+        }
         writers.push_back(id);
         writers_exact &= HoldsGuestTexels(other);
     });
@@ -1183,6 +1188,9 @@ void TextureCache::UnregisterImage(ImageId image_id) {
                "Trying to unregister an already unregistered image");
     image.flags &= ~ImageFlagBits::Registered;
     image.memory_usage_counter = nullptr;
+    if (on_unregister) {
+        on_unregister(image_id);
+    }
     image_lru_cache.Free(image);
     total_used_memory -= Common::AlignUp(image.SizeBytes(), 1024);
     ForEachPage(image.info.guest_address, image.info.guest_size, [this, image_id](u64 page) {

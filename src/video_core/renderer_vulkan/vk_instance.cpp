@@ -428,6 +428,7 @@ bool Instance::CreateDevice() {
                 .dualSrcBlend = features.dualSrcBlend,
                 .logicOp = features.logicOp,
                 .multiDrawIndirect = features.multiDrawIndirect,
+                .drawIndirectFirstInstance = features.drawIndirectFirstInstance,
                 .depthClamp = features.depthClamp,
                 .depthBiasClamp = features.depthBiasClamp,
                 .fillModeNonSolid = features.fillModeNonSolid,
@@ -461,6 +462,13 @@ bool Instance::CreateDevice() {
             .shaderSharedInt64Atomics = vk12_features.shaderSharedInt64Atomics,
             .shaderFloat16 = vk12_features.shaderFloat16,
             .shaderInt8 = vk12_features.shaderInt8,
+            .shaderSampledImageArrayNonUniformIndexing =
+                vk12_features.shaderSampledImageArrayNonUniformIndexing,
+            .descriptorBindingSampledImageUpdateAfterBind =
+                vk12_features.descriptorBindingSampledImageUpdateAfterBind,
+            .descriptorBindingUpdateUnusedWhilePending =
+                vk12_features.descriptorBindingUpdateUnusedWhilePending,
+            .descriptorBindingPartiallyBound = vk12_features.descriptorBindingPartiallyBound,
             .scalarBlockLayout = vk12_features.scalarBlockLayout,
             .uniformBufferStandardLayout = vk12_features.uniformBufferStandardLayout,
             .separateDepthStencilLayouts = vk12_features.separateDepthStencilLayouts,

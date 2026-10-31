@@ -165,6 +165,7 @@ void FaultManager::ProcessFaultBuffer() {
         fault_ranges.Clear();
         const u64* fault_buf = std::bit_cast<const u64*>(mapped);
         const u32 fault_count = fault_buf[0];
+        last_fault_count = fault_count;
         for (u32 i = 1; i <= fault_count; ++i) {
             fault_ranges.Add(fault_buf[i], sparse_pagesize);
             LOG_INFO(Render_Vulkan, "Accessed non-GPU cached memory at {:#x}", fault_buf[i]);
@@ -179,6 +180,14 @@ void FaultManager::ProcessFaultBuffer() {
 
     fault_areas[current_area++] = scheduler.CurrentTick();
     current_area %= MaxPendingFaults;
+}
+
+u32 FaultManager::ResolveFaultsNow() {
+    last_fault_count = 0;
+    ProcessFaultBuffer();
+    scheduler.Finish();
+    scheduler.PopPendingOperations();
+    return last_fault_count;
 }
 
 } // namespace VideoCore

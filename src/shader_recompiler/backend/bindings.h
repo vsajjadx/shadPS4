@@ -10,6 +10,7 @@ namespace Shader::Backend {
 struct Bindings {
     u32 unified{};
     u32 buffer{};
+    u32 heap{};
 
     auto operator<=>(const Bindings&) const = default;
 };

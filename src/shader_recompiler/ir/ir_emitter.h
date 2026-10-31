@@ -114,6 +114,7 @@ public:
     [[nodiscard]] T SharedAtomicDec(const U32& address, bool is_gds);
 
     [[nodiscard]] U32 ReadConst(const Value& base, const U32& offset);
+    void WriteConst(const Value& base, const U32& offset, const U32& value);
     [[nodiscard]] U32 ReadConstBuffer(const Value& handle, const U32& index, BufferInstInfo info);
 
     [[nodiscard]] U8 LoadBufferU8(const Value& handle, const Value& address, BufferInstInfo info);
@@ -370,6 +371,8 @@ public:
                                            TextureInstInfo info);
 
     [[nodiscard]] Value ImageHandle(const Value& tsharp_low, const Value& tsharp_high);
+    void ImageHeapIndex(const U32& handle, const U32& index);
+    void SamplerHeapIndex(const U32& handle, const U32& index);
 
     [[nodiscard]] Value ImageSampleRaw(const Value& handle, const Value& sampler_handle,
                                        const Value& address1, const Value& address2,

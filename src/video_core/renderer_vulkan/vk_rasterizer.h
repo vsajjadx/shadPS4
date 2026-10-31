@@ -128,6 +128,9 @@ private:
     void BindBuffers(const Shader::Info& stage, Shader::Backend::Bindings& binding,
                      Shader::PushData& push_data);
     void BindTextures(const Shader::Info& stage, Shader::Backend::Bindings& binding);
+    vk::DescriptorSet MirrorHeap(bool is_sampler, const AmdGpu::Buffer& heap, bool is_depth);
+    s32 AcquireHeapTexture(const AmdGpu::Image& tsharp);
+    void UpdateHeapTextures();
     void ClampImageLevels(VideoCore::TextureCache::ImageDesc& desc);
     bool ClampImageLayers(VideoCore::TextureCache::ImageDesc& desc, const AmdGpu::Image& tsharp,
                           const Shader::ImageResource& image_desc);
@@ -191,6 +194,38 @@ private:
     std::vector<VideoCore::ImageId> bound_images;
 
     u32 set_write_index{};
+    /// A descriptor set that mirrors a guest heap of T#s or S#s slot for slot.
+    struct HeapMirror {
+        bool is_sampler;
+        VAddr base;
+        u64 size;
+        vk::DescriptorSet set;
+        std::vector<u8> shadow;
+        /// Heap texture of each slot, -1 for a null slot.
+        std::vector<s32> textures;
+        /// Generation of the heap texture view each slot was written with.
+        std::vector<u64> generations;
+        u64 tick;
+    };
+    struct HeapTexture {
+        AmdGpu::Image tsharp;
+        VideoCore::ImageId image_id;
+        VideoCore::TextureCache::ImageDesc desc;
+        vk::ImageView view;
+        u64 generation;
+        u64 size;
+        u32 refs;
+    };
+    std::vector<HeapMirror> heap_mirrors;
+    std::vector<HeapTexture> heap_textures;
+    std::vector<s32> free_heap_textures;
+    tsl::robin_map<u64, s32> heap_texture_lookup;
+    u64 heap_texture_bytes{};
+    u64 heap_texture_generation{};
+    u64 heap_textures_tick{~0ULL};
+    std::vector<u8> heap_scratch;
+    vk::UniqueDescriptorPool heap_pool;
+    boost::container::small_vector<vk::DescriptorSet, 8> heap_bind_sets;
     Pipeline::DescriptorWrites set_writes;
     Shader::PushData push_data;
 

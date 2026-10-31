@@ -134,6 +134,9 @@ public:
     /// Synchronizes all buffers needed for DMA.
     void SynchronizeDmaBuffers();
 
+    /// Makes the pages that device address accesses faulted on resident and returns their count.
+    u32 ResolveDmaFaults();
+
     /// Commits pending sparse buffer memory binds. Must be called before every scheduler submit.
     void SubmitPendingArenaBinds(Vulkan::SubmitInfo& info);
 

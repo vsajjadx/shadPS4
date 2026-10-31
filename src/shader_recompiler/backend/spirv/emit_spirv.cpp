@@ -287,6 +287,13 @@ void SetupCapabilities(const Info& info, const Profile& profile, const RuntimeIn
     if (info.has_image_gather) {
         ctx.AddCapability(spv::Capability::ImageGatherExtended);
     }
+    if (std::ranges::any_of(info.images,
+                            [](const ImageResource& image) { return image.is_heap; }) ||
+        std::ranges::any_of(info.samplers,
+                            [](const SamplerResource& sampler) { return sampler.is_heap; })) {
+        ctx.AddCapability(spv::Capability::ShaderNonUniform);
+        ctx.AddCapability(spv::Capability::SampledImageArrayNonUniformIndexing);
+    }
     if (info.has_image_query) {
         ctx.AddCapability(spv::Capability::ImageQuery);
     }

@@ -195,10 +195,16 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
                 }
                 break;
             }
+            case IR::Opcode::ReadFirstLane:
+                if (is_uniform) {
+                    worklist.push_back(&inst);
+                }
+                break;
             case IR::Opcode::MaskedBitCount32:
             case IR::Opcode::BallotFindLsb:
             case IR::Opcode::InverseBallot:
             case IR::Opcode::LaneId:
+            case IR::Opcode::Shuffle:
                 half_wave.push_back(&inst);
                 break;
             default:
@@ -224,6 +230,10 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
         }
         case IR::Opcode::ReadLane:
             inst->ReplaceUsesWithAndRemove(ir.ReadLane(
+                IR::U32{inst->Arg(0)}, ir.BitwiseAnd(IR::U32{inst->Arg(1)}, ir.Imm32(31))));
+            break;
+        case IR::Opcode::Shuffle:
+            inst->ReplaceUsesWithAndRemove(ir.Shuffle(
                 IR::U32{inst->Arg(0)}, ir.BitwiseAnd(IR::U32{inst->Arg(1)}, ir.Imm32(31))));
             break;
         case IR::Opcode::MaskedBitCount32: {
@@ -278,6 +288,16 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
             const IR::U64 mask = IR::U64{ir.LoadShared(64, false, offset)};
             ir.Barrier();
             inst->ReplaceUsesWithAndRemove(mask);
+        } else if (inst->GetOpcode() == IR::Opcode::ReadFirstLane) {
+            // Every lane of the wave is active here, so its first lane is in the lower half.
+            const IR::U32 offset =
+                ir.IAdd(ir.Imm32(scratch_base), ir.ShiftLeftLogical(subgroup_id, ir.Imm32(2u)));
+            ir.WriteShared(32, ir.ReadFirstLane(IR::U32{inst->Arg(0)}), offset);
+            ir.Barrier();
+            const IR::U32 value =
+                IR::U32{ir.LoadShared(32, false, ir.BitwiseAnd(offset, ir.Imm32(~7u)))};
+            ir.Barrier();
+            inst->ReplaceUsesWithAndRemove(value);
         } else if (inst->GetOpcode() == IR::Opcode::ReadLane) {
             const IR::U32 lane32 = ir.BitwiseAnd(IR::U32{inst->Arg(1)}, ir.Imm32(31));
             const IR::U32 half = ir.ShiftRightLogical(IR::U32{inst->Arg(1)}, ir.Imm32(5u));
