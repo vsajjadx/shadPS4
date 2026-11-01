@@ -221,6 +221,23 @@ void TextureCache::SyncAliasedImages(ImageId image_id, const ImageViewInfo& view
             other.info.tile_mode != image.info.tile_mode) {
             return;
         }
+        // Tiled memory is laid out by the row pitch, so an alias holds texels of this image only
+        // when it uses the same pitch and mips, and starts where this image starts or a whole
+        // layer into it. A transient surface of another size that shares the memory would
+        // otherwise be carried in with the wrong layout (scrambled blocks and black bands).
+        if (other.info.pitch != image.info.pitch ||
+            other.info.resources.levels != image.info.resources.levels) {
+            return;
+        }
+        if (other.info.guest_address != image_begin) {
+            const u64 layer_size = layers > 1 && image.info.resources.levels == 1
+                                       ? image.info.mips_layout[0].size / layers
+                                       : 0;
+            if (layer_size == 0 || other.info.guest_address < image_begin ||
+                (other.info.guest_address - image_begin) % layer_size != 0) {
+                return;
+            }
+        }
         writers.push_back(id);
         writers_exact &= HoldsGuestTexels(other);
     });
