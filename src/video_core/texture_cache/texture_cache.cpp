@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <atomic>
 #include <limits>
 #include <xxhash.h>
 
@@ -368,6 +369,17 @@ void TextureCache::InvalidateMemory(VAddr addr, size_t size) {
 
         const auto image_begin = image.info.guest_address;
         const auto image_end = image.info.guest_address + image.info.guest_size;
+        if (image.info.guest_size >= 0x10000) {
+            static std::atomic<u32> dbg_inv{0};
+            if (dbg_inv.fetch_add(1) < 4000) {
+                LOG_INFO(Render_Vulkan,
+                         "DBG invalidate: write {:#x}+{:#x} vs image {:#x}+{:#x} {}x{} overlaps={} "
+                         "flags={:#x}",
+                         addr, size, image_begin, image.info.guest_size, image.info.size.width,
+                         image.info.size.height, image.Overlaps(addr, size),
+                         static_cast<u32>(image.flags));
+            }
+        }
         if (image.Overlaps(addr, size)) {
             // Modified region overlaps image, so the image was definitely accessed by this fault.
             // Untrack the image, so that the range is unprotected and the guest can write freely.
@@ -1102,6 +1114,42 @@ void TextureCache::RefreshImage(Image& image) {
 
     scheduler.EndRendering();
 
+    if (image.info.guest_size >= 0x10000) {
+        // DBG: trace uploads of large images and how much of the source memory is still zero
+        // (a partially streamed texture shows up as a high zero fraction).
+        static std::atomic<u32> dbg_idx{0};
+        const u32 idx = dbg_idx.fetch_add(1);
+        if (idx < 4000) {
+            const auto* bytes = reinterpret_cast<const u8*>(image.info.guest_address);
+            const u32 sz = image.info.guest_size;
+            u32 zero_blocks = 0, total_blocks = 0;
+            for (u32 off = 0; off + 64 <= sz && total_blocks < 8192; off += std::max<u32>(64, sz / 8192 / 64 * 64)) {
+                bool all_zero = true;
+                for (u32 k = 0; k < 64; ++k) {
+                    if (bytes[off + k] != 0) {
+                        all_zero = false;
+                        break;
+                    }
+                }
+                zero_blocks += all_zero ? 1 : 0;
+                ++total_blocks;
+            }
+            LOG_INFO(Render_Vulkan,
+                     "DBG upload#{}: addr={:#x} {}x{} pitch={} bits={} fmt={} tile={} block={} "
+                     "mips={} layers={} guest_size={} zero_blocks={}/{} flags={:#x} "
+                     "maybe_cpu_dirty={} cpu_dirty={} gpu_dirty={}",
+                     idx, image.info.guest_address, image.info.size.width, image.info.size.height,
+                     image.info.pitch, image.info.num_bits, vk::to_string(image.info.pixel_format),
+                     static_cast<u32>(image.info.tile_mode),
+                     static_cast<bool>(image.info.props.is_block), image.info.resources.levels,
+                     image.info.resources.layers, sz, zero_blocks, total_blocks,
+                     static_cast<u32>(image.flags),
+                     True(image.flags & ImageFlagBits::MaybeCpuDirty),
+                     True(image.flags & ImageFlagBits::CpuDirty),
+                     True(image.flags & ImageFlagBits::GpuDirty));
+        }
+    }
+
     const bool was_fully_tracked =
         image.track_addr == image.info.guest_address &&
         image.track_addr_end == image.info.guest_address + image.info.guest_size;
@@ -1492,6 +1540,15 @@ void TextureCache::TouchImage(Image& image) {
 
 void TextureCache::DeleteImage(ImageId image_id) {
     Image& image = slot_images[image_id];
+    if (image.info.guest_size >= 0x10000) {
+        static std::atomic<u32> dbg_del{0};
+        if (dbg_del.fetch_add(1) < 2000) {
+            LOG_INFO(Render_Vulkan, "DBG delete image {:#x}+{:#x} {}x{} fmt={} flags={:#x}",
+                     image.info.guest_address, image.info.guest_size, image.info.size.width,
+                     image.info.size.height, vk::to_string(image.info.pixel_format),
+                     static_cast<u32>(image.flags));
+        }
+    }
     ASSERT_MSG(image.IsUntracked(), "Image was not untracked");
     ASSERT_MSG(False(image.flags & ImageFlagBits::Registered), "Image was not unregistered");
 
