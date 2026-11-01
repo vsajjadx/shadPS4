@@ -31,7 +31,7 @@ per-game settings. The default settings work.
 
 ## What's new
 
-Latest release: [**DLSS5 arrives: frame generation, Boost and Auto Quality**](https://github.com/vsajjadx/shadPS4/releases/tag/dlss5-2026-11-01)
+Latest release: [**DLSS5 arrives: frame generation, Boost and Auto Quality**](https://github.com/vsajjadx/shadPS4/releases/tag/dlss5-2026-11-01b)
 
 - **DLSS5, one key away.** Press `2` in game for sharper, cleaner images.
 - **Frame Generation** on `1` and **Boost** on `3`: smoother motion and extra performance when
@@ -42,6 +42,7 @@ Latest release: [**DLSS5 arrives: frame generation, Boost and Auto Quality**](ht
   Quality** together for a smooth, steady experience.
 - **The Order: 1886:** fixes the black bands and scrambled blocks that could cover the title
   screen.
+- **Auto Quality** now switches Boost on with it, so it is never greyed out.
 - **Alt+Enter** gives a borderless fullscreen window when a game runs in a window.
 
 ## The launcher
