@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <fstream>
+#include <filesystem>
 #include <limits>
 #include <xxhash.h>
 
@@ -10,6 +12,7 @@
 #include "common/debug.h"
 #include "common/div_ceil.h"
 #include "common/hash.h"
+#include "common/path_util.h"
 #include "core/emulator_settings.h"
 #include "core/memory.h"
 #include "video_core/buffer_cache/buffer_cache.h"
@@ -1114,12 +1117,12 @@ void TextureCache::RefreshImage(Image& image) {
 
     scheduler.EndRendering();
 
-    if (image.info.guest_size >= 0x10000) {
+    if (image.info.guest_size >= 0x10000 && False(image.flags & ImageFlagBits::GpuModified)) {
         // DBG: trace uploads of large images and how much of the source memory is still zero
         // (a partially streamed texture shows up as a high zero fraction).
         static std::atomic<u32> dbg_idx{0};
         const u32 idx = dbg_idx.fetch_add(1);
-        if (idx < 4000) {
+        if (idx < 20000) {
             const auto* bytes = reinterpret_cast<const u8*>(image.info.guest_address);
             const u32 sz = image.info.guest_size;
             u32 zero_blocks = 0, total_blocks = 0;
@@ -1147,6 +1150,27 @@ void TextureCache::RefreshImage(Image& image) {
                      True(image.flags & ImageFlagBits::MaybeCpuDirty),
                      True(image.flags & ImageFlagBits::CpuDirty),
                      True(image.flags & ImageFlagBits::GpuDirty));
+            // Dump the raw guest bytes of textures that are partly zero (partially streamed or
+            // partially written), so they can be decoded offline and compared with the screen.
+            static std::atomic<u32> dbg_dumps{0};
+            const double zf = total_blocks ? double(zero_blocks) / total_blocks : 0.0;
+            if (sz <= (6u << 20) && zf > 0.02 && zf < 0.98 && dbg_dumps.load() < 40) {
+                const u32 d = dbg_dumps.fetch_add(1);
+                const auto dir =
+                    Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "dbg_images";
+                std::error_code ec;
+                std::filesystem::create_directories(dir, ec);
+                const auto name = fmt::format("up{}_{:x}_{}x{}_{}_t{}_m{}_z{}of{}.raw", idx,
+                                              image.info.guest_address, image.info.size.width,
+                                              image.info.size.height,
+                                              vk::to_string(image.info.pixel_format),
+                                              static_cast<u32>(image.info.tile_mode),
+                                              image.info.resources.levels, zero_blocks,
+                                              total_blocks);
+                std::ofstream f(dir / name, std::ios::binary);
+                f.write(reinterpret_cast<const char*>(bytes), sz);
+                (void)d;
+            }
         }
     }
 
