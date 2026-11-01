@@ -31,18 +31,18 @@ per-game settings. The default settings work.
 
 ## What's new
 
-Latest release: [**The Order: 1886 glitch fixed, NFS Hot Pursuit renders**](https://github.com/vsajjadx/shadPS4/releases/tag/order-glitch-fix-2026-10-23)
+Latest release: [**DLSS5 arrives: frame generation, Boost and Auto Quality**](https://github.com/vsajjadx/shadPS4/releases/tag/dlss5-2026-11-01)
 
-- **The Order: 1886:** the black triangles and gray rectangles that flashed over the scene for
-  a single frame are gone. Vertex shaders now run the way the PS4 allows on every GPU, so this
-  helps other games too. Black enemy faces and two crashes are fixed as well.
-- **Need for Speed Hot Pursuit Remastered:** the world is drawn again; before, only the HUD and
-  the mirror showed.
-- **No per-game readback settings:** every game reads GPU results back on the CPU when it needs
-  to, so The Order: 1886 and NHL 24 run with the default settings.
-- **Smoother play:** fewer stutters while shaders compile, especially in inFAMOUS Second Son.
-- **Brightness and contrast:** sliders in the launcher (**Graphics** tab) and in game
-  (right-click the title bar), for all games or per game.
+- **DLSS5, one key away.** Press `2` in game for sharper, cleaner images.
+- **Frame Generation** on `1` and **Boost** on `3`: smoother motion and extra performance when
+  you need them.
+- **Everything in Settings → Graphics.** DLSS5, Boost, Frame Generation and Auto Quality all have
+  their switches there, and they start off.
+- **On an RTX 20 or 30 series card?** Turn on **Boost**, **Frame Generation** and **Auto
+  Quality** together for a smooth, steady experience.
+- **The Order: 1886:** fixes the black bands and scrambled blocks that could cover the title
+  screen.
+- **Alt+Enter** gives a borderless fullscreen window when a game runs in a window.
 
 ## The launcher
 
@@ -53,7 +53,7 @@ The zip includes the latest official shadPS4 Qt launcher, with a few additions:
   It only makes new ones if none exist, and updates never touch them.
 - **Easy window size.** Pick the size from a list (720p, 1080p, 1440p, 4K and more) instead of
   typing numbers.
-- **Frame generation switch.** Turn on FSR 3.1 frame generation in **Settings → Graphics**.
+- **Graphics switches.** DLSS5, Boost, Frame Generation and Auto Quality are all in **Settings → Graphics**.
 - **Compatibility list.** Shows the official list, plus the games this build runs that the
   official one doesn't.
 - **Install PKG files.**
@@ -92,8 +92,8 @@ The zip includes the latest official shadPS4 Qt launcher, with a few additions:
 - **Fewer freezes.** Fixes for games that got stuck on loading screens.
 - **Better graphics.** Fixes for dark scenes, lighting and shadows, especially on NVIDIA cards.
 - **Faster.** Better use of your CPU and GPU.
-- **Frame generation (optional).** Press `1` in game to turn on FSR 3.1 frame generation, `2` to
-  turn it off, or use the switch in the launcher settings. It is off by default.
+- **DLSS5, Boost and frame generation (optional).** In game, `1` toggles frame generation, `2`
+  DLSS5 and `3` Boost, or use the switches in the launcher settings. All are off by default.
 - **More games run.** Games like NHL 24, The Order: 1886, The Grand Tour Game and Need for Speed
   Hot Pursuit Remastered, which do not run on the official version, work here.
 - **Launcher included.** One download, with automatic updates.

@@ -5,9 +5,9 @@ on:
     paths: [.github/workflows/fork-release.yml]
 
 env:
-  RUN_ID: "40015020210"
-  TAG: order-glitch-fix-2026-10-23
-  TARGET: 9b668ed6fbca0c4b8dd2f41d9074754b62b2d918
+  RUN_ID: "41329817235"
+  TAG: dlss5-2026-11-01
+  TARGET: a7bd553d62ac69521997d4176f1aeb680a4f2291
 
 permissions:
   contents: write
@@ -30,31 +30,33 @@ jobs:
       - name: Write release notes
         run: |
           cat > notes.md <<'EOF'
-          ## The Order: 1886 glitch fixed, Need for Speed Hot Pursuit renders, launcher included
+          ## DLSS5 arrives
 
-          This release ships the emulator together with the Qt launcher.
+          Three new ways to make your games look sharper and feel smoother, each a single key press away. Everything lives in **Settings → Graphics**, and everything is off until you turn it on.
 
-          ### The Order: 1886
-          - **Fixed: single frames with a black triangle or a fog-gray rectangle over the scene** (around the door in the first chapter, roughly one frame in ten). A vertex shader for instanced props loops over the lanes of its wave and reads another lane's instance id. On NVIDIA that sometimes picked up the wrong vertex, and one vertex flew off across the screen. Vertex shaders now run each vertex as a wave of its own, which the PS4 also allows, so the loop always reads the vertex's own data. This applies to every game, not just The Order.
-          - Fixed: enemy faces drawn black. A shader compiled in the background read the game's texture descriptors after the game had already changed them, and was built for the wrong image type.
-          - Fixed: occasional single frames with black triangles or unlit parts, caused by a recorded GPU command reading arrays that had already been reused.
-          - Fixed: two crashes, one in the shader compile workers and one on a garbage multisampled texture descriptor in a later area.
-          - Its log no longer grows to 100 MB with a warning on every draw and flip.
+          ### Hotkeys in game
+          | Key | What it does |
+          | :---: | :--- |
+          | `1` | **Frame Generation**: more frames, smoother motion |
+          | `2` | **DLSS5**: sharper, cleaner image |
+          | `3` | **Boost**: extra performance when you need it |
 
-          ### Need for Speed Hot Pursuit Remastered
-          - **Fixed: the world was black and only the HUD and mirror were drawn.** The game draws with the PS4 driver's built-in shaders, which the emulator keeps inside its own executable; a safety check took them for invalid addresses and skipped those draws.
+          Each key switches its feature on or off, and a small notice tells you the new state.
 
-          ### Readbacks
-          - Every game now runs with at least relaxed GPU readbacks, so games that read small GPU results back on the CPU (culling, exposure, counters) no longer need a per-game setting. The Order: 1886 and NHL 24 no longer need a custom config for it; NHL 24 runs a full match with clean ice on relaxed instead of precise.
+          ### Which settings should I use?
+          - **Any card:** switch on only what you like. DLSS5 is the one for image quality, Frame Generation the one for fluid motion.
+          - **RTX 20 and 30 series:** we recommend turning on **Boost**, **Frame Generation** and **Auto Quality** together. Auto Quality picks the render resolution for you, so you get a smooth, steady experience without tuning anything.
+          - All of these options are in **Settings → Graphics**. The DLSS5 group sits under Graphics Device, and Auto Quality is in the Graphics tab of the launcher.
 
-          ### Smoother play
-          - A draw or compute pass that cannot wait for its pipeline is now built right away on the GPU thread instead of queueing behind every other compile.
-          - Compute passes still compiling during gameplay are skipped until they are ready, which removes the 0.2-1.7 s hitches inFAMOUS Second Son had when new effects appeared. An effect can show a few frames late the first time; loading screens still build every pass at once.
+          ### Also in this release
+          - **The Order: 1886:** the black bands and scrambled blocks that could appear over the title screen come from images sharing memory with a different layout. The emulator now carries a render result between such images only when their layout really matches. This is a fix based on the log and the code, so tell us how it looks on your machine.
+          - **Defaults:** DLSS5 options start off, brightness and contrast start at 100.
+          - **Alt+Enter** switches the window to borderless fullscreen when the game runs in a window.
+          - **Frame counter:** the FPS counter shows the rate you actually see while frame generation runs.
 
           ### Notes
-          - The first run of a game after this update compiles its shaders again, so expect some hitching in that first session.
-          - Tested on an RTX 3080 with The Order: 1886, NHL 24, UFC 4, The Grand Tour Game, inFAMOUS Second Son and Need for Speed Hot Pursuit Remastered.
-          - Requirements: Windows 64-bit and a GPU with Vulkan 1.3 support. Extract the zip and run `shadPS4QtLauncher.exe` (or `shadPS4.exe` directly).
+          - Requirements: Windows 64-bit and a GPU with Vulkan 1.3.
+          - Extract the zip and run `shadPS4QtLauncher.exe` (or `shadPS4.exe` directly). Existing saves and settings stay untouched.
 
           EOF
           sed -i 's/^          //' notes.md
@@ -65,5 +67,7 @@ jobs:
         run: |
           gh release create "${{ env.TAG }}" shadPS4-win64-${{ env.TAG }}.zip \
             --repo ${{ github.repository }} \
-            --title "The Order: 1886 glitch fixed, NFS Hot Pursuit renders, launcher included (${{ env.TAG }})" \
-            --notes-file notes.md
+            --target ${{ env.TARGET }} \
+            --title "DLSS5 arrives: frame generation, Boost and Auto Quality, one key each (${{ env.TAG }})" \
+            --notes-file notes.md \
+            --latest
