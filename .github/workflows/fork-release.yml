@@ -5,9 +5,9 @@ on:
     paths: [.github/workflows/fork-release.yml]
 
 env:
-  RUN_ID: "41329817235"
-  TAG: dlss5-2026-11-01
-  TARGET: a7bd553d62ac69521997d4176f1aeb680a4f2291
+  RUN_ID: "41337194147"
+  TAG: dlss5-2026-11-01b
+  TARGET: a50102d2ab9523cfbac29cdfa3cc1ab0c5cffaf6
 
 permissions:
   contents: write
@@ -50,6 +50,7 @@ jobs:
 
           ### Also in this release
           - **The Order: 1886:** the black bands and scrambled blocks that could appear over the title screen come from images sharing memory with a different layout. The emulator now carries a render result between such images only when their layout really matches. This is a fix based on the log and the code, so tell us how it looks on your machine.
+          - **Auto Quality:** ticking it in the launcher now turns DLSS5 Boost on for you (it only works with Boost), instead of staying greyed out until Boost was ticked.
           - **Defaults:** DLSS5 options start off, brightness and contrast start at 100.
           - **Alt+Enter** switches the window to borderless fullscreen when the game runs in a window.
           - **Frame counter:** the FPS counter shows the rate you actually see while frame generation runs.
