@@ -66,9 +66,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ env.TAG }}" shadPS4-win64-${{ env.TAG }}.zip \
+          if ! gh release create "${{ env.TAG }}" shadPS4-win64-${{ env.TAG }}.zip \
             --repo ${{ github.repository }} \
             --target ${{ env.TARGET }} \
             --title "DLSS5 arrives: frame generation, Boost and Auto Quality, one key each (${{ env.TAG }})" \
             --notes-file notes.md \
-            --latest
+            --latest 2> err.txt; then
+            gh api repos/${{ github.repository }}/commits/${{ github.sha }}/comments -f body="release failed: $(tail -c 1500 err.txt)"
+            exit 1
+          fi
