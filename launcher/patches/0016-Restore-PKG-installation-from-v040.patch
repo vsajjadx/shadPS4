@@ -346,6 +346,7 @@ index 0000000..aa1c967
 +            xtsMult(encryptedTweak);
 +        }
 +    }
++}
 +
 +bool Crypto::HasPkgKeys() {
 +    return true;
@@ -366,7 +367,6 @@ index 0000000..aa1c967
 +    sha256(cid.data(), cid.size(), data.data() + 32);
 +    std::memcpy(data.data() + 64, passcode.data(), std::min<size_t>(passcode.size(), 32));
 +    sha256(data.data(), data.size(), key.data());
-+}
 +}
 diff --git a/src/core/crypto/crypto.h b/src/core/crypto/crypto.h
 new file mode 100644
@@ -2255,7 +2255,7 @@ new file mode 100644
 index 0000000..9680bfc
 --- /dev/null
 +++ b/src/qt_gui/pkg_install.cpp
-@@ -0,0 +1,300 @@
+@@ -0,0 +1,301 @@
 +// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -2496,10 +2496,11 @@ index 0000000..9680bfc
 +        box.setText(QString::fromStdString(failreason));
 +        const auto userKeysPath =
 +            Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "keys.json";
-+        const auto userKeysPathQt = QDir::toNativeSeparators(
-+            Common::FS::PathToQString(userKeysPath));
++        QString userKeysPathQt;
++        Common::FS::PathToQString(userKeysPathQt, userKeysPath);
++        userKeysPathQt = QDir::toNativeSeparators(userKeysPathQt);
 +        box.setInformativeText(
-+            QFileInfo::exists(Common::FS::PathToQString(userKeysPath))
++            QFileInfo::exists(userKeysPathQt)
 +                ? tr("No valid PKG keysets were loaded from:\n%1").arg(userKeysPathQt)
 +                : tr("User keys file not found. Expected location:\n%1").arg(userKeysPathQt));
 +        QPushButton* choose = box.addButton(tr("Choose keys file..."), QMessageBox::AcceptRole);
