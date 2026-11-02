@@ -185,6 +185,11 @@ void TextureCache::WriteAliasToBuffer(ImageId image_id, VAddr begin, VAddr end) 
 }
 
 void TextureCache::SyncAliasedImages(ImageId image_id, const ImageViewInfo& view) {
+    // Test build: aliased image carrying is off to see whether it corrupts guest memory.
+    constexpr bool carry_aliased_writes = false;
+    if (!carry_aliased_writes) {
+        return;
+    }
     Image& image = slot_images[image_id];
     if (image.info.guest_address == 0 || image.info.num_samples > 1) {
         return;
