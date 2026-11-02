@@ -14,8 +14,8 @@ Subject: [PATCH] Restore PKG installation using v0.4 flow
  src/core/file_format/pkg_type.h   |  10 +
  src/qt_gui/main_window.cpp        |   7 +
  src/qt_gui/main_window.h          |   3 +
- src/qt_gui/pkg_install.cpp        | 288 ++++++++++++++
- 11 files changed, 2064 insertions(+)
+ src/qt_gui/pkg_install.cpp        | 292 ++++++++++++++
+ 11 files changed, 2068 insertions(+)
  create mode 100644 src/core/crypto/crypto.cpp
  create mode 100644 src/core/crypto/crypto.h
  create mode 100644 src/core/file_format/pfs.h
@@ -1902,7 +1902,7 @@ new file mode 100644
 index 0000000..9680bfc
 --- /dev/null
 +++ b/src/qt_gui/pkg_install.cpp
-@@ -0,0 +1,288 @@
+@@ -0,0 +1,292 @@
 +// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -1953,6 +1953,10 @@ index 0000000..9680bfc
 +void MainWindow::InstallPkg() {
 +    // Fake PKGs made with the default passcode install without keys. A keys file next to the
 +    // launcher is picked up for the others.
++    // Load standard user/keys.json before searching beside the launcher.
++    if (!Crypto::HasPkgKeys()) {
++        KeyManager::GetInstance()->LoadFromFile();
++    }
 +    if (!Crypto::HasPkgKeys()) {
 +        ImportKeysNextToLauncher();
 +    }
