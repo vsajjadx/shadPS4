@@ -989,6 +989,8 @@ void RegisterMemory(Core::Loader::SymbolsResolver* sym) {
 
     LIB_FUNCTION("usHTMoFoBTM", "libkernel_dmem_aliasing2", 1, "libkernel",
                  sceKernelEnableDmemAliasing);
+    LIB_FUNCTION("usHTMoFoBTM", "libkernel_dmem_aliasing", 1, "libkernel",
+                 sceKernelEnableDmemAliasing);
     LIB_FUNCTION("usHTMoFoBTM", "libkernel", 1, "libkernel", sceKernelEnableDmemAliasing);
     LIB_FUNCTION("rTXw65xmLIA", "libkernel", 1, "libkernel", sceKernelAllocateDirectMemory);
     LIB_FUNCTION("B+vc2AO2Zrc", "libkernel", 1, "libkernel", sceKernelAllocateMainDirectMemory);
