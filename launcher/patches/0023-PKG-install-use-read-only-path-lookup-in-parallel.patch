@@ -1,0 +1,29 @@
+From a90c805119b3fe74402acd9b6da2bab34a229fc5 Mon Sep 17 00:00:00 2001
+From: Replit Agent <replit-agent@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 15:44:21 +0000
+Subject: [PATCH] PKG install: use read-only path lookup during parallel
+ extraction
+
+---
+ src/core/file_format/pkg.cpp | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/src/core/file_format/pkg.cpp b/src/core/file_format/pkg.cpp
+index 9a67a20..022c4cd 100644
+--- a/src/core/file_format/pkg.cpp
++++ b/src/core/file_format/pkg.cpp
+@@ -433,7 +433,13 @@ void PKG::ExtractFiles(const int index) {
+         int bsize = iNodeBuf[inode_number].Size;
+ 
+         Common::FS::IOFile inflated;
+-        inflated.Open(extractPaths[inode_number], Common::FS::FileAccessMode::Write);
++        // QtConcurrent::map calls this on several workers; use a read-only map lookup.
++        const auto& paths = extractPaths;
++        const auto path_it = paths.find(inode_number);
++        if (path_it == paths.end()) {
++            return;
++        }
++        inflated.Open(path_it->second, Common::FS::FileAccessMode::Write);
+ 
+         Common::FS::IOFile pkgFile; // Open the file for each iteration to avoid conflict.
+         pkgFile.Open(pkgpath, Common::FS::FileAccessMode::Read);
