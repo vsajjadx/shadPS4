@@ -1,0 +1,132 @@
+From 3b8760c12d80e07c22b006974434ee62dd36910f Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 3 Nov 2026 14:25:30 +0000
+Subject: [PATCH] PKG install: progress and a flash on the Windows taskbar
+ button
+
+The overall progress of the installation shows on the launcher's taskbar
+button, and the button flashes when the installation is done while another
+window (a game, a browser) is in front. Windows only.
+---
+ CMakeLists.txt             |  1 +
+ src/qt_gui/pkg_install.cpp | 64 ++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 65 insertions(+)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index fe98427..b854afc 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -497,6 +497,7 @@ endif()
+ 
+ if (WIN32)
+     target_link_libraries(shadPS4QtLauncher PRIVATE mincore)
++    target_link_libraries(shadPS4QtLauncher PRIVATE ole32)
+ 
+     if (MSVC)
+         # MSVC likes putting opinions on what people can use, disable:
+diff --git a/src/qt_gui/pkg_install.cpp b/src/qt_gui/pkg_install.cpp
+index e7b1c9b..7007674 100644
+--- a/src/qt_gui/pkg_install.cpp
++++ b/src/qt_gui/pkg_install.cpp
+@@ -6,6 +6,10 @@
+ 
+ #include <algorithm>
+ #include <numeric>
++#ifdef _WIN32
++#include <windows.h>
++#include <shobjidl.h>
++#endif
+ #include <QElapsedTimer>
+ #include <QEventLoop>
+ #include <QFileDialog>
+@@ -30,6 +34,62 @@
+ #include "crypto_key_dialog.h"
+ #include "main_window.h"
+ 
++// Progress on the launcher's taskbar button, and a flash of it when the installation is done, so
++// both show while the window is behind a game or a browser. Windows only.
++namespace {
++#ifdef _WIN32
++ITaskbarList3* Taskbar() {
++    static ITaskbarList3* taskbar = [] {
++        ITaskbarList3* created = nullptr;
++        if (FAILED(CoCreateInstance(__uuidof(TaskbarList), nullptr, CLSCTX_INPROC_SERVER,
++                                    IID_PPV_ARGS(&created))) ||
++            !created) {
++            return static_cast<ITaskbarList3*>(nullptr);
++        }
++        if (FAILED(created->HrInit())) {
++            created->Release();
++            return static_cast<ITaskbarList3*>(nullptr);
++        }
++        return created;
++    }();
++    return taskbar;
++}
++
++HWND WindowHandle(QWidget* window) {
++    return window ? reinterpret_cast<HWND>(window->winId()) : nullptr;
++}
++
++void TaskbarProgress(QWidget* window, double percent) {
++    const HWND hwnd = WindowHandle(window);
++    if (auto* taskbar = Taskbar(); taskbar && hwnd) {
++        taskbar->SetProgressState(hwnd, TBPF_NORMAL);
++        taskbar->SetProgressValue(hwnd, static_cast<ULONGLONG>(std::clamp(percent, 0.0, 100.0) * 100.0),
++                                  10000);
++    }
++}
++
++void TaskbarClear(QWidget* window) {
++    const HWND hwnd = WindowHandle(window);
++    if (auto* taskbar = Taskbar(); taskbar && hwnd) {
++        taskbar->SetProgressState(hwnd, TBPF_NOPROGRESS);
++    }
++}
++
++void TaskbarFlash(QWidget* window) {
++    const HWND hwnd = WindowHandle(window);
++    if (!hwnd || GetAncestor(GetForegroundWindow(), GA_ROOTOWNER) == hwnd) {
++        return; // the launcher is in front, nothing to call attention to
++    }
++    FLASHWINFO info{sizeof(info), hwnd, FLASHW_ALL | FLASHW_TIMERNOFG, 0, 0};
++    FlashWindowEx(&info);
++}
++#else
++void TaskbarProgress(QWidget*, double) {}
++void TaskbarClear(QWidget*) {}
++void TaskbarFlash(QWidget*) {}
++#endif
++} // namespace
++
+ // A keys file next to the launcher (or one picked once) is imported, so later PKG installs need
+ // no setup. The keys are not part of the program.
+ static bool ImportKeysNextToLauncher() {
+@@ -107,6 +167,7 @@ void MainWindow::InstallPkg() {
+         // Packages that were skipped or failed count as done, so the overall bar keeps moving.
+         pkg_batch_done += pkg_current_weight;
+     }
++    TaskbarClear(this);
+     RefreshGameTable();
+ }
+ 
+@@ -368,6 +429,7 @@ void MainWindow::InstallPkgFile(const std::filesystem::path& file,
+                 text += tr("\nSpeed: calculating...  -  Time left: calculating...");
+             }
+             dialog.setLabelText(text);
++            TaskbarProgress(this, overall);
+             dialog.setValue(total_bytes > 0
+                                 ? static_cast<int>(overall * ProgressSteps / 100.0)
+                                 : static_cast<int>(watcher.progressValue()));
+@@ -396,6 +458,8 @@ void MainWindow::InstallPkgFile(const std::filesystem::path& file,
+     }
+ 
+     if (pkg_num == pkg_count) {
++        TaskbarClear(this);
++        TaskbarFlash(this);
+         QMessageBox::information(this, tr("Extraction Finished"),
+                                  tr("Game successfully installed at %1").arg(extract_dir));
+     }
+-- 
+2.43.0
+
