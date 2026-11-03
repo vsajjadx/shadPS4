@@ -1,0 +1,85 @@
+From e4d388abd8ddb5a1169ffed75ec8937dbdccd3f6 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 3 Nov 2026 18:46:30 +0330
+Subject: [PATCH] PKG install: remove the unfinished folder after Cancel
+
+Cancelling an installation used to leave the folder with the files written so
+far, and a game started from it ran broken. Now:
+
+- a new install folder is deleted after Cancel;
+- a folder that was already there (Overwrite) was changed in part, so the user
+  is asked whether to delete it;
+- the install folder itself, or one that contains it, is never deleted;
+- a failed delete is reported with the folder path.
+
+The cancel is also taken from the Cancel button only. Closing the progress
+dialog emits canceled() too, which made a finished installation look like a
+cancelled one.
+---
+ src/qt_gui/pkg_install.cpp | 42 ++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 40 insertions(+), 2 deletions(-)
+
+diff --git a/src/qt_gui/pkg_install.cpp b/src/qt_gui/pkg_install.cpp
+index 7007674..f68d0cd 100644
+--- a/src/qt_gui/pkg_install.cpp
++++ b/src/qt_gui/pkg_install.cpp
+@@ -438,7 +438,14 @@ void MainWindow::InstallPkgFile(const std::filesystem::path& file,
+         QTimer ticker;
+         ticker.setInterval(250);
+         connect(&ticker, &QTimer::timeout, &dialog, refresh);
+-        connect(&dialog, &QProgressDialog::canceled, &watcher, &QFutureWatcher<void>::cancel);
++        // Only a press of Cancel counts. Closing the dialog below emits canceled() as well, which
++        // must not turn a finished installation into a cancelled one.
++        bool cancelled = false;
++        const QMetaObject::Connection cancel_connection =
++            connect(&dialog, &QProgressDialog::canceled, &watcher, [&cancelled, &watcher] {
++                cancelled = true;
++                watcher.cancel();
++            });
+         connect(&watcher, &QFutureWatcher<void>::finished, &loop, &QEventLoop::quit);
+         clock.start();
+         watcher.setFuture(
+@@ -451,8 +458,39 @@ void MainWindow::InstallPkgFile(const std::filesystem::path& file,
+         }
+         ticker.stop();
+         watcher.waitForFinished();
++        disconnect(cancel_connection);
+         dialog.close();
+-        if (watcher.isCanceled()) {
++        if (cancelled) {
++            // Only part of the package was written. A game started from it would run broken, so
++            // the unfinished folder is removed. Never remove the install folder itself or one
++            // that contains it, whatever the game search returned.
++            const auto relative =
++                install_dir.lexically_normal().lexically_relative(extract_path.lexically_normal());
++            const bool removable =
++                !extract_path.empty() && (relative.empty() || *relative.begin() == "..");
++            bool remove = removable && !existed;
++            if (removable && existed) {
++                // The folder was there before and has been overwritten in part, so what is left
++                // is neither the old nor the new version.
++                remove = QMessageBox::question(
++                             this, tr("PKG Extraction"),
++                             tr("The installation was cancelled.\n\nThe files in:\n%1\n\nwere "
++                                "only partly overwritten and the game may not run. Delete them?")
++                                 .arg(extract_dir),
++                             QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) ==
++                         QMessageBox::Yes;
++            }
++            if (remove) {
++                std::error_code ec;
++                std::filesystem::remove_all(extract_path, ec);
++                if (ec) {
++                    QMessageBox::warning(
++                        this, tr("PKG Extraction"),
++                        tr("The unfinished installation could not be deleted:\n%1\n\n%2\n\n"
++                           "Please delete the folder yourself.")
++                            .arg(extract_dir, QString::fromStdString(ec.message())));
++                }
++            }
+             return;
+         }
+     }
+-- 
+2.43.0
+
