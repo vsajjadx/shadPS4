@@ -1,0 +1,124 @@
+From ec7ffaaa513e5d5aab8b8c2bbd220d0dc2ede5dc Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 3 Nov 2026 14:23:38 +0000
+Subject: [PATCH] PKG install: show the file being extracted and the overall
+ progress
+
+The extraction dialog names the package being extracted and shows the
+progress and time left over the whole selection (game, update and DLC)
+next to the figures of the current package, instead of only 1/2.
+---
+ src/qt_gui/main_window.h   |  4 ++++
+ src/qt_gui/pkg_install.cpp | 43 +++++++++++++++++++++++++++++++-------
+ 2 files changed, 39 insertions(+), 8 deletions(-)
+
+diff --git a/src/qt_gui/main_window.h b/src/qt_gui/main_window.h
+index 0c3359e..3f28e3b 100644
+--- a/src/qt_gui/main_window.h
++++ b/src/qt_gui/main_window.h
+@@ -11,6 +11,7 @@
+ 
+ #include "background_music_player.h"
+ #include "common/path_util.h"
++#include "common/types.h"
+ #include "compatibility_info.h"
+ #include "core/file_format/psf.h"
+ #include "elf_viewer.h"
+@@ -85,6 +86,9 @@ private:
+     void InstallPkgFile(const std::filesystem::path& file, const std::filesystem::path& install_dir,
+                         int pkg_num, int pkg_count);
+     bool pkg_dlc_confirmed = false;
++    u64 pkg_batch_total = 0;   // PKG file bytes of the whole selection
++    u64 pkg_batch_done = 0;    // of the packages before the current one
++    u64 pkg_current_weight = 0; // of the current package
+     void AddRecentFiles(QString filePath);
+     void LoadTranslation();
+     void PlayBackgroundMusic();
+diff --git a/src/qt_gui/pkg_install.cpp b/src/qt_gui/pkg_install.cpp
+index 3b52bda..e7b1c9b 100644
+--- a/src/qt_gui/pkg_install.cpp
++++ b/src/qt_gui/pkg_install.cpp
+@@ -95,8 +95,17 @@ void MainWindow::InstallPkg() {
+         install_dir = Common::FS::PathFromQString(chosen);
+     }
+ 
++    // The size of the PKG files weights each package in the overall progress.
++    pkg_batch_total = 0;
++    for (const QString& f : files) {
++        pkg_batch_total += static_cast<u64>(QFileInfo(f).size());
++    }
++    pkg_batch_done = 0;
+     for (int i = 0; i < files.size(); ++i) {
++        pkg_current_weight = static_cast<u64>(QFileInfo(files[i]).size());
+         InstallPkgFile(Common::FS::PathFromQString(files[i]), install_dir, i + 1, files.size());
++        // Packages that were skipped or failed count as done, so the overall bar keeps moving.
++        pkg_batch_done += pkg_current_weight;
+     }
+     RefreshGameTable();
+ }
+@@ -299,12 +308,19 @@ void MainWindow::InstallPkgFile(const std::filesystem::path& file,
+                 .arg(seconds % 60, 2, 10, QChar('0'));
+         };
+ 
++        QString file_path_text;
++        Common::FS::PathToQString(file_path_text, file);
++        const QString file_name = QFileInfo(file_path_text).fileName();
++        const u64 batch_total = std::max<u64>(pkg_batch_total, 1);
++        const u64 weight = pkg_current_weight;
++        const u64 batch_done = pkg_batch_done;
++
+         QProgressDialog dialog(this);
+         dialog.setWindowTitle(tr("PKG Extraction"));
+         dialog.setWindowModality(Qt::WindowModal);
+         dialog.setMinimumDuration(0);
+         dialog.setMinimumWidth(460);
+-        dialog.setLabelText(tr("Extracting PKG %1/%2").arg(pkg_num).arg(pkg_count));
++        dialog.setLabelText(tr("Extracting PKG %1/%2: %3").arg(pkg_num).arg(pkg_count).arg(file_name));
+         dialog.setRange(0, total_bytes > 0 ? ProgressSteps : file_count);
+         dialog.setAutoClose(false);
+         dialog.setAutoReset(false);
+@@ -326,23 +342,34 @@ void MainWindow::InstallPkgFile(const std::filesystem::path& file,
+                 last_bytes = written;
+                 last_ms = now_ms;
+             }
+-            const double percent =
+-                total_bytes > 0 ? 100.0 * static_cast<double>(written) / total_bytes : 0.0;
+-            QString text = tr("Extracting PKG %1/%2").arg(pkg_num).arg(pkg_count);
+-            text += QStringLiteral("\n%1%  -  %2 / %3 written")
++            const double fraction =
++                total_bytes > 0 ? static_cast<double>(written) / total_bytes : 0.0;
++            const double percent = 100.0 * fraction;
++            const double overall = std::min(
++                100.0, 100.0 * (static_cast<double>(batch_done) + fraction * weight) / batch_total);
++            QString text = tr("Extracting PKG %1/%2: %3").arg(pkg_num).arg(pkg_count).arg(file_name);
++            text += tr("\nOverall: %1%").arg(overall, 0, 'f', 2);
++            text += QStringLiteral("\nThis package: %1%  -  %2 / %3 written")
+                         .arg(percent, 0, 'f', 2)
+                         .arg(format_size(written), format_size(total_bytes));
+             if (speed > 1.0 && now_ms > 1000) {
+                 const qint64 left = static_cast<qint64>(
+                     static_cast<double>(total_bytes - written) / speed + 0.5);
+-                text += tr("\nSpeed: %1/s  -  Time left: %2")
+-                            .arg(format_size(static_cast<u64>(speed)), format_time(left));
++                // The packages still to come are sized by the same ratio of extracted data to
++                // PKG file size as this one.
++                const double rest_weight =
++                    std::max(0.0, static_cast<double>(batch_total) - batch_done - fraction * weight);
++                const double ratio = weight > 0 ? static_cast<double>(total_bytes) / weight : 1.0;
++                const qint64 left_all = static_cast<qint64>(rest_weight * ratio / speed + 0.5);
++                text += tr("\nSpeed: %1/s  -  Time left: %2 (all packages: %3)")
++                            .arg(format_size(static_cast<u64>(speed)), format_time(left),
++                                 format_time(left_all));
+             } else {
+                 text += tr("\nSpeed: calculating...  -  Time left: calculating...");
+             }
+             dialog.setLabelText(text);
+             dialog.setValue(total_bytes > 0
+-                                ? static_cast<int>(percent * ProgressSteps / 100.0)
++                                ? static_cast<int>(overall * ProgressSteps / 100.0)
+                                 : static_cast<int>(watcher.progressValue()));
+         };
+ 
+-- 
+2.43.0
+
