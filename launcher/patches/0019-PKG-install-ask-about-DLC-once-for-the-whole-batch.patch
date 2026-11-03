@@ -1,0 +1,61 @@
+From 189bfc432adc60a83d17b66b4bfb2a33f6f0219c Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 3 Nov 2026 14:21:57 +0000
+Subject: [PATCH] PKG install: ask about DLC once for the whole batch
+
+The DLC question now has a Yes to All answer. Once it is given, the other
+DLC packages in the same selection install without asking again.
+---
+ src/qt_gui/main_window.h   |  1 +
+ src/qt_gui/pkg_install.cpp | 16 ++++++++++++----
+ 2 files changed, 13 insertions(+), 4 deletions(-)
+
+diff --git a/src/qt_gui/main_window.h b/src/qt_gui/main_window.h
+index cb837a0..0c3359e 100644
+--- a/src/qt_gui/main_window.h
++++ b/src/qt_gui/main_window.h
+@@ -84,6 +84,7 @@ private:
+     void InstallPkg();
+     void InstallPkgFile(const std::filesystem::path& file, const std::filesystem::path& install_dir,
+                         int pkg_num, int pkg_count);
++    bool pkg_dlc_confirmed = false;
+     void AddRecentFiles(QString filePath);
+     void LoadTranslation();
+     void PlayBackgroundMusic();
+diff --git a/src/qt_gui/pkg_install.cpp b/src/qt_gui/pkg_install.cpp
+index 7b39889..3b52bda 100644
+--- a/src/qt_gui/pkg_install.cpp
++++ b/src/qt_gui/pkg_install.cpp
+@@ -65,6 +65,9 @@ void MainWindow::InstallPkg() {
+         return;
+     }
+ 
++    // A DLC question answered with "Yes to All" holds for the rest of this batch.
++    pkg_dlc_confirmed = false;
++
+     const auto install_dirs = EmulatorSettings.GetGameInstallDirs();
+     std::filesystem::path install_dir;
+     if (install_dirs.empty()) {
+@@ -208,10 +211,15 @@ void MainWindow::InstallPkgFile(const std::filesystem::path& file,
+                                    ? tr("DLC already installed:\n%1\n\nWould you like to overwrite?")
+                                          .arg(addon_path_text)
+                                    : tr("Would you like to install DLC: %1?").arg(entitlement_label);
+-        if (QMessageBox::question(this, tr("DLC Installation"), prompt,
+-                                  QMessageBox::Yes | QMessageBox::No, QMessageBox::No) !=
+-            QMessageBox::Yes) {
+-            return;
++        if (!pkg_dlc_confirmed) {
++            const auto answer = QMessageBox::question(
++                this, tr("DLC Installation"), prompt,
++                QMessageBox::Yes | QMessageBox::YesToAll | QMessageBox::No, QMessageBox::No);
++            if (answer == QMessageBox::YesToAll) {
++                pkg_dlc_confirmed = true;
++            } else if (answer != QMessageBox::Yes) {
++                return;
++            }
+         }
+     } else if (std::filesystem::exists(game_folder)) {
+         if (QMessageBox::question(this, tr("PKG Extraction"),
+-- 
+2.43.0
+
