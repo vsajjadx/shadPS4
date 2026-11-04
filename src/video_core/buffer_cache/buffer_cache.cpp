@@ -788,10 +788,26 @@ bool BufferCache::SynchronizeMemoryFromImage(const Buffer* arena, VAddr device_a
         return false;
     }
     Image& image = texture_cache.GetImage(image_id);
-    ASSERT_MSG(device_addr == image.info.guest_address,
-               "Texel buffer aliases image subresources {:x} : {:x}", device_addr,
-               image.info.guest_address);
-    const u64 arena_offset = arena->Offset(device_addr);
+    // Images are found by the 256 byte block of the address, so a texel buffer can start a little
+    // after the image does (e.g. a view over part of a surface). Tiling always writes the whole
+    // image from its own start, so anchor the copy there instead of at the buffer address.
+    const VAddr image_begin = image.info.guest_address;
+    if (device_addr != image_begin) {
+        LOG_DEBUG(Render_Vulkan,
+                  "Texel buffer {:#x} starts inside image {:#x} (guest size {:#x}), syncing the "
+                  "whole image",
+                  device_addr, image_begin, image.info.guest_size);
+        if (!arena->IsInBounds(image_begin, image.info.guest_size)) {
+            // Tiling writes the whole image from its start; it would land outside this arena.
+            // Keep the guest bytes as they are rather than crash.
+            LOG_WARNING(Render_Vulkan,
+                        "Texel buffer {:#x} aliases image {:#x} (guest size {:#x}) that does not "
+                        "fit its arena, skipping the image sync",
+                        device_addr, image_begin, image.info.guest_size);
+            return false;
+        }
+    }
+    const u64 arena_offset = arena->Offset(image_begin);
     boost::container::small_vector<vk::BufferImageCopy, 8> buffer_copies;
     for (u32 mip = 0; mip < image.info.resources.levels; mip++) {
         const auto& mip_info = image.info.mips_layout[mip];
