@@ -5,7 +5,7 @@ name: Build and Release
 
 on:
   push:
-    branches-ignore: [Pre-release-shadPS4-*]
+    branches: [main]
     paths-ignore:
       - "documents/**"
       - "**/*.md"

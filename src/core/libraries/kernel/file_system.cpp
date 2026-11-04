@@ -675,11 +675,11 @@ s64 PS4_SYSV_ABI sceKernelReadv(s32 fd, const OrbisKernelIovec* iov, s32 iovcnt)
 }
 
 s64 PS4_SYSV_ABI writev(s32 fd, const OrbisKernelIovec* iov, s32 iovcnt) {
-    if (iovcnt <= 0 || iovcnt > 1024) {
+    if (iovcnt < 0 || iovcnt > 1024) {
         *__Error() = POSIX_EINVAL;
         return -1;
     }
-    if (iov == nullptr) {
+    if (iovcnt > 0 && iov == nullptr) {
         *__Error() = POSIX_EFAULT;
         return -1;
     }
@@ -694,6 +694,9 @@ s64 PS4_SYSV_ABI writev(s32 fd, const OrbisKernelIovec* iov, s32 iovcnt) {
     std::scoped_lock lk{file->m_mutex};
 
     if (file->type == Core::FileSys::FileType::Device) {
+        if (iovcnt == 0) {
+            return 0;
+        }
         s64 result = file->device->writev(iov, iovcnt);
         if (result < 0) {
             ErrSceToPosix(result);
@@ -708,6 +711,9 @@ s64 PS4_SYSV_ABI writev(s32 fd, const OrbisKernelIovec* iov, s32 iovcnt) {
     if (file->IsReadOnly()) {
         *__Error() = POSIX_EBADF;
         return -1;
+    }
+    if (iovcnt == 0) {
+        return 0;
     }
 
     s64 total_written = 0;
