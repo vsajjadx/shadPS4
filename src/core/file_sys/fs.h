@@ -58,7 +58,8 @@ public:
     std::shared_ptr<IBackend> CreateBackend(const std::filesystem::path& host_path, bool read_only);
 
     void Mount(const std::filesystem::path& host_folder, const std::string& guest_folder,
-               bool read_only = false);
+               bool read_only = false,
+               const std::vector<std::filesystem::path>& package_overlays = {});
     void Unmount(const std::string& guest_folder);
     void UnmountAll();
 

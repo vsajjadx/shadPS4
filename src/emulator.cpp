@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <charconv>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -39,6 +40,7 @@
 #include "core/file_format/trp.h"
 #include "core/file_sys/fs.h"
 #include "core/guest_fault_recovery.h"
+#include "core/libraries/app_content/app_content.h"
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/net/net_discovery.h"
@@ -70,6 +72,96 @@ extern char const* g_environment[64];
 }
 
 namespace Core {
+
+namespace {
+struct PkgMetadata {
+    std::string title_id;
+    std::string category;
+    std::string version;
+};
+
+template <typename Backend>
+std::optional<PkgMetadata> ReadPkgMetadata(const Backend& backend) {
+    if (!backend) {
+        return std::nullopt;
+    }
+    auto param_sfo_file = backend->Open("sce_sys/param.sfo", Common::FS::FileAccessMode::Read);
+    if (!param_sfo_file) {
+        return std::nullopt;
+    }
+    PSF param_sfo;
+    if (!param_sfo.Open(param_sfo_file)) {
+        return std::nullopt;
+    }
+
+    const auto content_id = param_sfo.GetString("CONTENT_ID");
+    std::string title_id = param_sfo.GetString("TITLE_ID").value_or("");
+    if (content_id.has_value() && content_id->size() >= 16) {
+        const std::string content_title_id{content_id->substr(7, 9)};
+        if (!title_id.empty() && title_id != content_title_id) {
+            return std::nullopt;
+        }
+        if (title_id.empty()) {
+            title_id = content_title_id;
+        }
+    }
+
+    const auto category = param_sfo.GetString("CATEGORY");
+    if (title_id.empty() || !category.has_value() || category->empty()) {
+        return std::nullopt;
+    }
+    return PkgMetadata{std::move(title_id), std::string{*category},
+                       std::string{param_sfo.GetString("APP_VER").value_or("")}};
+}
+
+std::optional<std::vector<u64>> ParsePkgVersion(std::string_view version) {
+    if (version.empty()) {
+        return std::nullopt;
+    }
+    std::vector<u64> components;
+    size_t start = 0;
+    while (start < version.size()) {
+        const size_t end = version.find('.', start);
+        const auto component = version.substr(
+            start, end == std::string_view::npos ? version.size() - start : end - start);
+        if (component.empty()) {
+            return std::nullopt;
+        }
+        u64 value{};
+        const auto [parsed_end, error] =
+            std::from_chars(component.data(), component.data() + component.size(), value);
+        if (error != std::errc{} || parsed_end != component.data() + component.size()) {
+            return std::nullopt;
+        }
+        components.push_back(value);
+        if (end == std::string_view::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+    if (version.back() == '.') {
+        return std::nullopt;
+    }
+    return components;
+}
+
+bool IsPkgVersionNewer(std::string_view candidate, std::string_view current) {
+    const auto candidate_parts = ParsePkgVersion(candidate);
+    const auto current_parts = ParsePkgVersion(current);
+    if (!candidate_parts || !current_parts) {
+        return false;
+    }
+    const size_t count = std::max(candidate_parts->size(), current_parts->size());
+    for (size_t i = 0; i < count; ++i) {
+        const u64 candidate_part = i < candidate_parts->size() ? (*candidate_parts)[i] : 0;
+        const u64 current_part = i < current_parts->size() ? (*current_parts)[i] : 0;
+        if (candidate_part != current_part) {
+            return candidate_part > current_part;
+        }
+    }
+    return false;
+}
+} // namespace
 
 std::mutex exit_mutex{};
 
@@ -304,6 +396,8 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     }
 
     std::filesystem::path game_folder;
+    std::vector<std::filesystem::path> package_update_overlays;
+    std::vector<std::filesystem::path> direct_addcont_packages;
 
     // Archive detection.
     std::filesystem::path archive_path;
@@ -395,6 +489,56 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
                          Common::FS::PathToUTF8String(archive_path), eboot_name.generic_string());
             return;
         }
+
+        if (const auto base_pkg = ReadPkgMetadata(backend); base_pkg && base_pkg->category == "gd") {
+            std::string selected_update_version = base_pkg->version;
+            std::filesystem::path selected_update;
+            const auto package_directory = archive_path.parent_path().empty()
+                                               ? std::filesystem::current_path()
+                                               : archive_path.parent_path();
+            std::error_code scan_error;
+            std::filesystem::directory_iterator entry{package_directory, scan_error};
+            const std::filesystem::directory_iterator end;
+            if (scan_error) {
+                LOG_WARNING(Loader, "Could not scan adjacent PKGs in {}: {}",
+                            Common::FS::PathToUTF8String(package_directory), scan_error.message());
+            }
+            while (!scan_error && entry != end) {
+                const auto candidate_path = entry->path();
+                std::error_code type_error;
+                if (candidate_path.lexically_normal() != archive_path.lexically_normal() &&
+                    entry->is_regular_file(type_error) && !type_error &&
+                    FileSys::HasPkgExtension(candidate_path)) {
+                    const auto candidate_backend = FileSys::OpenGameBackend(candidate_path);
+                    if (const auto candidate = ReadPkgMetadata(candidate_backend); candidate &&
+                        candidate->title_id == base_pkg->title_id) {
+                        if (candidate->category == "gp" &&
+                            IsPkgVersionNewer(candidate->version, selected_update_version)) {
+                            selected_update = candidate_path;
+                            selected_update_version = candidate->version;
+                        } else if (candidate->category == "ac") {
+                            direct_addcont_packages.push_back(candidate_path);
+                        }
+                    }
+                }
+                entry.increment(scan_error);
+            }
+            if (scan_error) {
+                LOG_WARNING(Loader, "Stopped scanning adjacent PKGs in {}: {}",
+                            Common::FS::PathToUTF8String(package_directory), scan_error.message());
+            }
+            if (!selected_update.empty()) {
+                LOG_INFO(Loader, "Using adjacent update PKG {} at version {} for {}",
+                         Common::FS::PathToUTF8String(selected_update), selected_update_version,
+                         base_pkg->title_id);
+                package_update_overlays.push_back(std::move(selected_update));
+            }
+            std::ranges::sort(direct_addcont_packages);
+            for (const auto& dlc_path : direct_addcont_packages) {
+                LOG_INFO(Loader, "Found adjacent DLC PKG {} for {}",
+                         Common::FS::PathToUTF8String(dlc_path), base_pkg->title_id);
+            }
+        }
     }
 
     if (eboot_name.empty()) {
@@ -405,9 +549,10 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
 
     // Applications expect to be run from /app0 so mount the file's parent path as app0.
     auto* mnt = Common::Singleton<Core::FileSys::MntPoints>::Instance();
-    mnt->Mount(game_folder, "/app0", true);
+    Libraries::AppContent::SetDirectAddcontPackages(direct_addcont_packages);
+    mnt->Mount(game_folder, "/app0", true, package_update_overlays);
     // Certain games may use /hostapp as well such as CUSA001100
-    mnt->Mount(game_folder, "/hostapp", true);
+    mnt->Mount(game_folder, "/hostapp", true, package_update_overlays);
 
     // Load param.sfo details if it exists
     std::string id;

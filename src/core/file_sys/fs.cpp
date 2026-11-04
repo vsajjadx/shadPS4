@@ -130,7 +130,8 @@ std::shared_ptr<IBackend> MntPoints::CreateBackend(const std::filesystem::path& 
 }
 
 void MntPoints::Mount(const std::filesystem::path& host_folder, const std::string& guest_folder,
-                      bool read_only) {
+                      bool read_only,
+                      const std::vector<std::filesystem::path>& package_overlays) {
     std::scoped_lock lock{m_mutex};
     const auto guest_folder_sanitized = RemoveTrailingSlashes(guest_folder);
     auto it = std::find_if(m_mnt_pairs.begin(), m_mnt_pairs.end(), [&](const MntPair& pair) {
@@ -156,12 +157,20 @@ void MntPoints::Mount(const std::filesystem::path& host_folder, const std::strin
                                       std::string_view suffix) -> std::shared_ptr<IBackend> {
         return CreateBackend(OverlayPath(base, suffix), /*ro=*/true);
     };
-    // check for mods , updates,patch
+    // Check for mods and update overlays.
     if (eligible_for_overlays) {
         if (auto mods = probe_overlay(host_folder, "-mods")) {
             stack.push_back(std::move(mods));
         }
         if (!ignore_game_patches) {
+            for (const auto& package_overlay : package_overlays) {
+                if (auto overlay = CreateBackend(package_overlay, /*ro=*/true)) {
+                    stack.push_back(std::move(overlay));
+                } else {
+                    LOG_WARNING(Kernel_Fs, "Failed to open PKG update overlay {}",
+                                package_overlay.string());
+                }
+            }
             auto patch = probe_overlay(host_folder, "-UPDATE");
             if (!patch) {
                 patch = probe_overlay(host_folder, "-patch");

@@ -39,15 +39,26 @@ struct AddContInfo {
     OrbisAppContentGetEntitlementKey key{};
 };
 
+struct AddContService {
+    u32 service_label{};
+    std::string service_id{};
+};
+
 static std::array<AddContInfo, ORBIS_APP_CONTENT_INFO_LIST_MAX_SIZE> addcont_info{};
 
 static s32 sdk_ver = 0;
 static s32 addcont_count = 0;
 static std::string title_id;
 static bool is_initialized = false;
-// Folders searched for additional content: the game's own title ID plus the title IDs of any
-// services linked through SERVICE_ID_ADDCONT_ADD_1..7 in the game's param.sfo.
+// Folders and direct PKGs searched for additional content.
 static std::vector<std::filesystem::path> addon_paths;
+static std::vector<std::filesystem::path> direct_addcont_packages;
+static std::array<std::filesystem::path, ORBIS_APP_CONTENT_INFO_LIST_MAX_SIZE>
+    direct_addcont_mount_paths{};
+
+void SetDirectAddcontPackages(std::vector<std::filesystem::path> package_paths) {
+    direct_addcont_packages = std::move(package_paths);
+}
 
 int PS4_SYSV_ABI _Z5dummyv() {
     LOG_ERROR(Lib_AppContent, "(STUBBED) called");
@@ -99,6 +110,11 @@ int PS4_SYSV_ABI sceAppContentAddcontMount(u32 service_label,
     if (i == addcont_count) {
         // None of the loaded additional content match the entitlement label requested.
         return ORBIS_APP_CONTENT_ERROR_NOT_FOUND;
+    }
+
+    if (!direct_addcont_mount_paths[i].empty()) {
+        mnt->Mount(direct_addcont_mount_paths[i], mount_point->data, true);
+        return ORBIS_OK;
     }
 
     // Find which directory corresponds to this entitlement
@@ -466,6 +482,86 @@ static void LoadAddonFolder(const std::filesystem::path& addon_path, u32 service
     }
 }
 
+static void LoadDirectAddonPackage(const std::filesystem::path& package_path,
+                                   const std::vector<AddContService>& services) {
+    auto* mnt = Common::Singleton<Core::FileSys::MntPoints>::Instance();
+    const auto fs = mnt->CreateBackend(package_path, true);
+    if (!fs) {
+        LOG_WARNING(Lib_AppContent, "Could not open adjacent DLC PKG {}", package_path.string());
+        return;
+    }
+
+    auto psf_handle = fs->Open("sce_sys/param.sfo", Common::FS::FileAccessMode::Read);
+    if (!psf_handle) {
+        return;
+    }
+    PSF dlc_params;
+    if (!dlc_params.Open(psf_handle)) {
+        return;
+    }
+
+    const auto category = dlc_params.GetString("CATEGORY");
+    const auto content_id = dlc_params.GetString("CONTENT_ID");
+    if (!category.has_value() || category->substr(0, 2) != "ac" || !content_id.has_value() ||
+        content_id->size() <= ORBIS_APP_CONTENT_ENTITLEMENT_LABEL_OFFSET) {
+        return;
+    }
+
+    const auto package_title_id = dlc_params.GetString("TITLE_ID");
+    const std::string content_title_id = content_id->size() >= 16
+                                             ? std::string{content_id->substr(7, 9)}
+                                             : std::string{};
+    if ((!package_title_id.has_value() && content_title_id.empty()) ||
+        (package_title_id.has_value() && *package_title_id != title_id) ||
+        (!content_title_id.empty() && content_title_id != title_id)) {
+        return;
+    }
+
+    const auto service_separator = content_id->find_last_of('-');
+    if (service_separator == std::string_view::npos) {
+        return;
+    }
+    const auto package_service_id = content_id->substr(0, service_separator);
+    const auto service = std::ranges::find_if(services, [&](const AddContService& candidate) {
+        return candidate.service_id == package_service_id;
+    });
+    if (service == services.end()) {
+        return;
+    }
+    const u32 service_label = service->service_label;
+
+    const auto entitlement_id =
+        content_id->substr(ORBIS_APP_CONTENT_ENTITLEMENT_LABEL_OFFSET);
+    if (entitlement_id.empty() ||
+        entitlement_id.size() >= sizeof(addcont_info[0].entitlement_label) ||
+        !CanAddEntitlement(service_label, entitlement_id)) {
+        return;
+    }
+
+    const s32 info_index = addcont_count++;
+    auto& info = addcont_info[info_index];
+    info.service_label = service_label;
+    entitlement_id.copy(info.entitlement_label, entitlement_id.length());
+    info.entitlement_label[entitlement_id.length()] = '\0';
+    info.status = OrbisAppContentAddcontDownloadStatus::Installed;
+    direct_addcont_mount_paths[info_index] = package_path;
+
+    auto license_handle = fs->Open("sce_sys/license.info", Common::FS::FileAccessMode::Read);
+    auto key_offset = ORBIS_LICENSE_INFO_ENTITLEMENT_KEY_OFFSET;
+    if (!license_handle) {
+        license_handle = fs->Open("sce_sys/license.dat", Common::FS::FileAccessMode::Read);
+        key_offset = ORBIS_LICENSE_DAT_ENTITLEMENT_KEY_OFFSET;
+    }
+    if (!license_handle ||
+        !license_handle->Seek(key_offset, Common::FS::SeekOrigin::SetOrigin) ||
+        !license_handle->Read(info.key.data, sizeof(info.key.data))) {
+        LOG_WARNING(Lib_AppContent, "Could not load entitlement key for {}", entitlement_id);
+    }
+
+    LOG_INFO(Lib_AppContent, "Registered adjacent DLC PKG {} for entitlement {}",
+             package_path.filename().string(), entitlement_id);
+}
+
 static void LoadLicenses(std::string_view service_id, u32 service_label) {
     const std::filesystem::path& licenses_dir =
         Common::FS::GetUserPath(Common::FS::PathType::LicensesDir);
@@ -516,15 +612,11 @@ int PS4_SYSV_ABI sceAppContentInitialize(const OrbisAppContentInitParam* initPar
         UNREACHABLE_MSG("Failed to get TITLE_ID");
     }
 
-    struct ServiceEntry {
-        u32 service_label{};
-        std::string service_id{};
-    };
-    std::vector<ServiceEntry> services;
+    std::vector<AddContService> services;
 
     if (const auto content_id = param_sfo->GetString("CONTENT_ID"); content_id.has_value()) {
         services.push_back(
-            ServiceEntry{0, std::string(content_id->substr(0, content_id->find_last_of('-')))});
+            AddContService{0, std::string(content_id->substr(0, content_id->find_last_of('-')))});
     }
 
     for (u32 i = 1; i <= 7; i++) {
@@ -533,14 +625,18 @@ int PS4_SYSV_ABI sceAppContentInitialize(const OrbisAppContentInitParam* initPar
         if (service_id.has_value() && !service_id->empty()) {
             LOG_INFO(Lib_AppContent, "Linked additional content service {} at slot {}", *service_id,
                      i);
-            services.push_back(ServiceEntry{i, std::string(*service_id)});
+            services.push_back(AddContService{i, std::string(*service_id)});
         }
     }
 
-    // Additional content folders: the game's own title ID first, then the title ID of each
-    // linked service (service IDs look like UPXXXX-CUSAXXXXX_XX).
+    // Additional content folders: the game's own title ID first, then linked services.
     addon_paths.clear();
     addcont_count = 0;
+    addcont_info = {};
+    direct_addcont_mount_paths.fill(std::filesystem::path{});
+    for (const auto& package_path : direct_addcont_packages) {
+        LoadDirectAddonPackage(package_path, services);
+    }
     for (const auto& srv : services) {
         std::filesystem::path path;
         if (srv.service_label == 0) {

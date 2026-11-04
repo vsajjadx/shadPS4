@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <filesystem>
+#include <vector>
 #include "common/types.h"
 
 namespace Core::Loader {
@@ -119,6 +121,8 @@ int PS4_SYSV_ABI sceAppContentAddcontMountByEntitlementId();
 int PS4_SYSV_ABI sceAppContentGetAddcontInfoByEntitlementId();
 int PS4_SYSV_ABI sceAppContentGetAddcontInfoListByIroTag();
 int PS4_SYSV_ABI sceAppContentGetDownloadedStoreCountry();
+
+void SetDirectAddcontPackages(std::vector<std::filesystem::path> package_paths);
 
 void RegisterLib(Core::Loader::SymbolsResolver* sym);
 } // namespace Libraries::AppContent
