@@ -198,7 +198,7 @@ struct GeneralSettings {
     Setting<int> console_language{1};
     Setting<int> big_picture_scale{1000};
     Setting<int> big_picture_folder_depth{2};
-    Setting<bool> redzone_patches{false};
+    Setting<bool> redzone_patches{true};
     Setting<bool> guest_fault_recovery{true};
     // return a vector of override descriptors (runtime, but tiny)
     std::vector<OverrideItem> GetOverrideableFields() const {
