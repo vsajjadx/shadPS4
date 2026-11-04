@@ -211,7 +211,7 @@ std::optional<fs::path> FindGameByID(const fs::path& dir, const std::string& gam
             }
             return std::nullopt;
         }
-        if (Core::FileSys::IsZArchiveFile(root) &&
+        if ((Core::FileSys::IsZArchiveFile(root) || Core::FileSys::IsPkgFile(root)) &&
             Core::FileSys::ReadGameFile(root, "sce_sys/param.sfo").has_value()) {
             return root;
         }

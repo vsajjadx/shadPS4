@@ -32,6 +32,10 @@ The patches add:
 - Existing `user` and `launcher` folders next to the launcher (or in the working directory) are
   used before the standard ones, and the emulator runs in the same place, so saves and settings
   that already exist keep being used. New folders are only made when none exist.
+- PKG files run directly: `shadPS4.exe -g game.pkg`, or File > Boot Game with a `.pkg`. The files are
+  read from inside the package as the game asks for them (decrypted and decompressed block by
+  block), nothing is extracted. A `Game-UPDATE.pkg` next to `Game.pkg` is layered over it like a
+  `-UPDATE` folder. Update and DLC packages have no executable and cannot be started on their own.
 - Image quality options in the Graphics tab: anti-aliasing, resolution scaling, anisotropic
   filtering, and brightness and contrast sliders, saved for all games or for one game like the
   other settings.

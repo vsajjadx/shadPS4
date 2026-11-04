@@ -240,6 +240,12 @@ public:
 // True if path is a regular file with a ".zar" extension
 [[nodiscard]] bool IsZArchiveFile(const std::filesystem::path& path);
 
+// True if path is a regular file with a ".pkg" extension
+[[nodiscard]] bool IsPkgFile(const std::filesystem::path& path);
+
+// True if path has a ".pkg" extension, whatever the letter case
+[[nodiscard]] bool HasPkgExtension(const std::filesystem::path& path);
+
 // Strips a trailing ".zar" extension so overlay suffixes ("-UPDATE", "-patch")
 // can be appended to the game's stem regardless of the container type.
 [[nodiscard]] std::filesystem::path StripZArchiveExtension(const std::filesystem::path& path);

@@ -974,6 +974,11 @@ set(CORE src/core/aerolib/stubs.cpp
          src/core/file_sys/directories/pfs_directory.cpp
          src/core/file_sys/directories/pfs_directory.h
          src/core/file_format/pfs.h
+         src/core/file_format/pkg_keys.h
+         src/core/file_format/pkg_reader.cpp
+         src/core/file_format/pkg_reader.h
+         src/core/file_format/pkg_type.cpp
+         src/core/file_format/pkg_type.h
          src/core/file_format/psf.cpp
          src/core/file_format/psf.h
          src/core/file_format/playgo_chunk.cpp
@@ -992,6 +997,8 @@ set(CORE src/core/aerolib/stubs.cpp
          src/core/file_sys/backends/host_fs.h
          src/core/file_sys/backends/zarchive_fs.cpp
          src/core/file_sys/backends/zarchive_fs.h
+         src/core/file_sys/backends/pkg_fs.cpp
+         src/core/file_sys/backends/pkg_fs.h
          src/core/ipc/ipc.cpp
          src/core/ipc/ipc.h
          src/core/loader/dwarf.cpp

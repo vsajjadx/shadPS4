@@ -229,7 +229,7 @@ int main(int argc, char* argv[]) {
         std::filesystem::path accum;
         for (const auto& comp : p) {
             accum /= comp;
-            if (comp.extension() == ".zar") {
+            if (comp.extension() == ".zar" || Core::FileSys::HasPkgExtension(comp)) {
                 return std::filesystem::is_regular_file(accum);
             }
         }

@@ -314,7 +314,7 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         for (const auto& comp : file) {
             if (!found) {
                 accum /= comp;
-                if (comp.extension() == ".zar") {
+                if (comp.extension() == ".zar" || FileSys::HasPkgExtension(comp)) {
                     found = true;
                     archive_path = accum;
                 }
@@ -379,6 +379,21 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
             game_folder = file.parent_path();
             eboot_name = resolve_relative_path(file, game_folder);
             rebase_to_base_game(game_folder);
+        }
+    }
+
+    if (from_archive && FileSys::IsPkgFile(archive_path)) {
+        const auto backend = FileSys::OpenGameBackend(archive_path);
+        if (!backend) {
+            LOG_CRITICAL(Loader, "Could not read PKG {}", Common::FS::PathToUTF8String(archive_path));
+            return;
+        }
+        if (!backend->Exists(eboot_name.generic_string())) {
+            LOG_CRITICAL(Loader,
+                         "PKG {} has no {} to run. Update and DLC packages cannot be started on "
+                         "their own.",
+                         Common::FS::PathToUTF8String(archive_path), eboot_name.generic_string());
+            return;
         }
     }
 

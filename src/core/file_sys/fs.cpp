@@ -8,6 +8,7 @@
 #include "common/logging/log.h"
 #include "common/string_util.h"
 #include "core/file_sys/backends/host_fs.h"
+#include "core/file_sys/backends/pkg_fs.h"
 #include "core/file_sys/backends/zarchive_fs.h"
 #include "core/file_sys/devices/logger.h"
 #include "core/file_sys/devices/nop_device.h"
@@ -50,7 +51,7 @@ std::string RemoveTrailingSlashes(const std::string& path) {
 
 std::filesystem::path OverlayPath(const std::filesystem::path& base, std::string_view suffix) {
     std::filesystem::path result = base;
-    if (result.extension() == ".zar") {
+    if (result.extension() == ".zar" || HasPkgExtension(result)) {
         result.replace_extension();
     }
     result += std::string{suffix};
@@ -59,7 +60,7 @@ std::filesystem::path OverlayPath(const std::filesystem::path& base, std::string
 
 std::optional<std::filesystem::path> BaseGameFromOverlay(const std::filesystem::path& path) {
     std::filesystem::path stem_path = path;
-    if (stem_path.extension() == ".zar") {
+    if (stem_path.extension() == ".zar" || HasPkgExtension(stem_path)) {
         stem_path.replace_extension();
     }
     const std::string name = stem_path.filename().string();
@@ -76,13 +77,16 @@ std::optional<std::filesystem::path> ResolveGameRoot(const std::filesystem::path
     if (std::filesystem::is_directory(root)) {
         return root;
     }
-    if (root.extension() == ".zar" && std::filesystem::is_regular_file(root)) {
+    if ((root.extension() == ".zar" || HasPkgExtension(root)) &&
+        std::filesystem::is_regular_file(root)) {
         return root;
     }
-    std::filesystem::path with_ext = root;
-    with_ext += ".zar";
-    if (std::filesystem::is_regular_file(with_ext)) {
-        return with_ext;
+    for (const char* extension : {".zar", ".pkg"}) {
+        std::filesystem::path with_ext = root;
+        with_ext += extension;
+        if (std::filesystem::is_regular_file(with_ext)) {
+            return with_ext;
+        }
     }
     return std::nullopt;
 }
@@ -104,9 +108,25 @@ std::shared_ptr<IBackend> MntPoints::CreateBackend(const std::filesystem::path& 
     if (auto b = try_zar(host_path)) {
         return b;
     }
+    const auto try_pkg = [](const std::filesystem::path& pkg) -> std::shared_ptr<IBackend> {
+        if (IsPkgFile(pkg)) {
+            auto backend = std::make_shared<PkgBackend>(pkg);
+            if (backend->IsOpen()) {
+                return backend;
+            }
+        }
+        return nullptr;
+    };
+    if (auto b = try_pkg(host_path)) {
+        return b;
+    }
     std::filesystem::path with_ext = host_path;
     with_ext += ".zar";
-    return try_zar(with_ext);
+    if (auto b = try_zar(with_ext)) {
+        return b;
+    }
+    with_ext.replace_extension(".pkg");
+    return try_pkg(with_ext);
 }
 
 void MntPoints::Mount(const std::filesystem::path& host_folder, const std::string& guest_folder,

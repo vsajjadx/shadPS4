@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <mutex>
 #include <system_error>
@@ -10,6 +12,7 @@
 #include "common/logging/log.h"
 #include "common/path_util.h"
 #include "core/file_sys/backends/host_fs.h"
+#include "core/file_sys/backends/pkg_fs.h"
 #include "core/file_sys/backends/zarchive_fs.h"
 #include "core/file_sys/fs.h"
 #include "core/file_sys/ifile.h"
@@ -54,6 +57,18 @@ bool IsZArchiveFile(const std::filesystem::path& path) {
     return path.extension() == ".zar" && std::filesystem::is_regular_file(path, ec) && !ec;
 }
 
+bool HasPkgExtension(const std::filesystem::path& path) {
+    std::string extension = path.extension().string();
+    std::ranges::transform(extension, extension.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return extension == ".pkg";
+}
+
+bool IsPkgFile(const std::filesystem::path& path) {
+    std::error_code ec;
+    return HasPkgExtension(path) && std::filesystem::is_regular_file(path, ec) && !ec;
+}
+
 std::filesystem::path StripZArchiveExtension(const std::filesystem::path& path) {
     if (path.extension() == ".zar") {
         std::filesystem::path stripped = path;
@@ -71,6 +86,14 @@ std::unique_ptr<IBackend> OpenGameBackend(const std::filesystem::path& root) {
 
     if (IsZArchiveFile(*resolved)) {
         auto backend = std::make_unique<ZArchiveBackend>(*resolved);
+        if (!backend->IsOpen()) {
+            return nullptr;
+        }
+        return backend;
+    }
+
+    if (IsPkgFile(*resolved)) {
+        auto backend = std::make_unique<PkgBackend>(*resolved);
         if (!backend->IsOpen()) {
             return nullptr;
         }
@@ -146,7 +169,7 @@ std::optional<std::filesystem::path> ResolveGameFilePath(const std::filesystem::
 u64 GetGameRootSize(const std::filesystem::path& game_root) {
     std::error_code ec;
 
-    if (IsZArchiveFile(game_root)) {
+    if (IsZArchiveFile(game_root) || IsPkgFile(game_root)) {
         const auto size = std::filesystem::file_size(game_root, ec);
         return ec ? 0ull : static_cast<u64>(size);
     }
