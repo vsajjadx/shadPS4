@@ -95,7 +95,7 @@ std::optional<PkgMetadata> ReadPkgMetadata(const Backend& backend) {
     }
 
     const auto content_id = param_sfo.GetString("CONTENT_ID");
-    std::string title_id = param_sfo.GetString("TITLE_ID").value_or("");
+    std::string title_id{param_sfo.GetString("TITLE_ID").value_or("")};
     if (content_id.has_value() && content_id->size() >= 16) {
         const std::string content_title_id{content_id->substr(7, 9)};
         if (!title_id.empty() && title_id != content_title_id) {
