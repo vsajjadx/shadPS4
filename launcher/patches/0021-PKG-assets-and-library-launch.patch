@@ -1,0 +1,188 @@
+From f7ea74f3ccf616aab42f76c9c45f51ce677a54c0 Mon Sep 17 00:00:00 2001
+From: Replit Agent <agent@replit.com>
+Date: Wed, 4 Nov 2026 16:37:22 +0000
+Subject: [PATCH] Load PKG UI assets and launch listed packages
+
+---
+ src/core/file_format/pkg.cpp | 33 ++++++++++++++++++++++++++-------
+ src/core/file_format/pkg.h   |  3 +++
+ src/qt_gui/game_info.h       | 11 +++++++++++
+ src/qt_gui/game_list_utils.h | 36 ++++++++++++++++++++++++++++++++++++
+ src/qt_gui/main_window.cpp   | 12 ++++++++++--
+ 5 files changed, 86 insertions(+), 9 deletions(-)
+
+diff --git a/src/core/file_format/pkg.cpp b/src/core/file_format/pkg.cpp
+index 9a67a20..d4c2f61 100644
+--- a/src/core/file_format/pkg.cpp
++++ b/src/core/file_format/pkg.cpp
+@@ -40,6 +40,11 @@ PKG::PKG() = default;
+ PKG::~PKG() = default;
+ 
+ bool PKG::Open(const std::filesystem::path& filepath, std::string& failreason) {
++    sfo.clear();
++    icon0_png.clear();
++    pic1_png.clear();
++    snd0_at9.clear();
++    pkgFlags.clear();
+     Common::FS::IOFile file(filepath, Common::FS::FileAccessMode::Read);
+     if (!file.IsOpen()) {
+         return false;
+@@ -82,15 +87,29 @@ bool PKG::Open(const std::filesystem::path& filepath, std::string& failreason) {
+ 
+         // Try to figure out the name
+         const auto name = GetEntryNameByType(entry.id);
++        std::vector<u8>* destination = nullptr;
+         if (name == "param.sfo") {
+-            sfo.clear();
+-            if (!file.Seek(entry.offset)) {
+-                failreason = "Failed to seek to param.sfo offset";
+-                return false;
+-            }
+-            sfo.resize(entry.size);
+-            file.ReadRaw<u8>(sfo.data(), entry.size);
++            destination = &sfo;
++        } else if (name == "icon0.png") {
++            destination = &icon0_png;
++        } else if (name == "pic1.png") {
++            destination = &pic1_png;
++        } else if (name == "snd0.at9") {
++            destination = &snd0_at9;
++        }
++        if (destination == nullptr) {
++            continue;
++        }
++        // These assets are only used for the launcher UI, so skip abnormally large optional files.
++        if (name != "param.sfo" && entry.size > 64u * 1024u * 1024u) {
++            continue;
++        }
++        if (!file.Seek(entry.offset)) {
++            failreason = "Failed to seek to PKG metadata offset";
++            return false;
+         }
++        destination->resize(entry.size);
++        file.ReadRaw<u8>(destination->data(), entry.size);
+     }
+     file.Close();
+ 
+diff --git a/src/core/file_format/pkg.h b/src/core/file_format/pkg.h
+index 7262fa2..ed84a7f 100644
+--- a/src/core/file_format/pkg.h
++++ b/src/core/file_format/pkg.h
+@@ -108,6 +108,9 @@ public:
+                  std::string& failreason);
+ 
+     std::vector<u8> sfo;
++    std::vector<u8> icon0_png;
++    std::vector<u8> pic1_png;
++    std::vector<u8> snd0_at9;
+ 
+     u32 GetNumberOfFiles() {
+         return fsTable.size();
+diff --git a/src/qt_gui/game_info.h b/src/qt_gui/game_info.h
+index 66ce294..a5d19ca 100644
+--- a/src/qt_gui/game_info.h
++++ b/src/qt_gui/game_info.h
+@@ -64,6 +64,17 @@ public:
+                 return game;
+             }
+ 
++            if (!pkg.icon0_png.empty()) {
++                game.icon = QImage::fromData(reinterpret_cast<const uchar*>(pkg.icon0_png.data()),
++                                             static_cast<qsizetype>(pkg.icon0_png.size()));
++                game.icon_path = GameListUtils::CachePackageAsset(
++                    filePath, QStringLiteral("icon0.png"), pkg.icon0_png);
++            }
++            game.pic_path = GameListUtils::CachePackageAsset(
++                filePath, QStringLiteral("pic1.png"), pkg.pic1_png);
++            game.snd0_path = GameListUtils::CachePackageAsset(
++                filePath, QStringLiteral("snd0.at9"), pkg.snd0_at9);
++
+             if (const auto localized_title =
+                     psf.GetString(fmt::format("TITLE_{:02}", EmulatorSettings.GetConsoleLanguage()));
+                 localized_title.has_value()) {
+diff --git a/src/qt_gui/game_list_utils.h b/src/qt_gui/game_list_utils.h
+index acfb5b7..68bdb4b 100644
+--- a/src/qt_gui/game_list_utils.h
++++ b/src/qt_gui/game_list_utils.h
+@@ -9,6 +9,7 @@
+ #include <QCryptographicHash>
+ #include <QDir>
+ #include <QFile>
++#include <QFileInfo>
+ #include <QImage>
+ #include <QSaveFile>
+ #include <QString>
+@@ -46,6 +47,41 @@ struct GameInfo {
+ class GameListUtils : public QObject {
+     Q_OBJECT
+ public:
++    static std::filesystem::path CachePackageAsset(const std::filesystem::path& pkg_path,
++                                                   const QString& file_name,
++                                                   const std::vector<u8>& data) {
++        if (data.empty()) {
++            return {};
++        }
++        QString source_path;
++        Common::FS::PathToQString(source_path, pkg_path);
++        const QFileInfo source_info(source_path);
++        const QString cache_seed = source_path + QLatin1Char('|') +
++                                   QString::number(source_info.size()) + QLatin1Char('|') +
++                                   QString::number(source_info.lastModified().toMSecsSinceEpoch());
++        const QString cache_key = QString::fromLatin1(
++            QCryptographicHash::hash(cache_seed.toUtf8(), QCryptographicHash::Sha256).toHex());
++        const QDir cache_dir(Common::FS::GetUserPath(Common::FS::PathType::LauncherMetaData) /
++                             "pkg_assets" / cache_key.toStdString());
++        if (!cache_dir.exists() && !cache_dir.mkpath(".")) {
++            return {};
++        }
++        const QString asset_path = cache_dir.filePath(file_name);
++        const qint64 expected_size = static_cast<qint64>(data.size());
++        const QFileInfo cached_asset(asset_path);
++        if (cached_asset.exists() && cached_asset.size() == expected_size) {
++            return Common::FS::PathFromQString(asset_path);
++        }
++        QSaveFile asset_file(asset_path);
++        if (!asset_file.open(QIODevice::WriteOnly) ||
++            asset_file.write(reinterpret_cast<const char*>(data.data()), expected_size) !=
++                expected_size ||
++            !asset_file.commit()) {
++            return {};
++        }
++        return Common::FS::PathFromQString(asset_path);
++    }
++
+     static QString FormatSize(u64 size) {
+         static const QStringList suffixes = {tr("B"), tr("KB"), tr("MB"), tr("GB"), tr("TB")};
+         int suffixIndex = 0;
+diff --git a/src/qt_gui/main_window.cpp b/src/qt_gui/main_window.cpp
+index 4d06e63..aacaee1 100644
+--- a/src/qt_gui/main_window.cpp
++++ b/src/qt_gui/main_window.cpp
+@@ -1033,17 +1033,25 @@ void MainWindow::StartGameWithArgs(QStringList args) {
+     int table_mode = m_gui_settings->GetValue(gui::gl_mode).toInt();
+ 
+     int itemID;
++    const auto gameExecutablePath = [this](int gameId) {
++        const auto& path = m_game_info->m_games[gameId].path;
++        QString extension;
++        Common::FS::PathToQString(extension, path.extension());
++        return extension.compare(QStringLiteral(".pkg"), Qt::CaseInsensitive) == 0
++                   ? path
++                   : path / "eboot.bin";
++    };
+     if (table_mode == 0) {
+         if (m_game_list_frame->currentItem()) {
+             itemID = m_game_list_frame->currentItem()->row();
+-            Common::FS::PathToQString(gamePath, m_game_info->m_games[itemID].path / "eboot.bin");
++            Common::FS::PathToQString(gamePath, gameExecutablePath(itemID));
+             runningGameSerial = m_game_info->m_games[itemID].serial;
+         }
+     } else if (table_mode == 1) {
+         if (m_game_grid_frame->cellClicked) {
+             itemID = (m_game_grid_frame->crtRow * m_game_grid_frame->columnCnt) +
+                      m_game_grid_frame->crtColumn;
+-            Common::FS::PathToQString(gamePath, m_game_info->m_games[itemID].path / "eboot.bin");
++            Common::FS::PathToQString(gamePath, gameExecutablePath(itemID));
+             runningGameSerial = m_game_info->m_games[itemID].serial;
+         }
+     } else {
