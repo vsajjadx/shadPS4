@@ -7,6 +7,11 @@ name: Native neural compile check
 
 on:
   workflow_dispatch:
+  push:
+    branches: [fix/remove-dlss-g-fsr-independent]
+    paths:
+      - "src/core/native_neural.*"
+      - ".github/workflows/native-neural-check.yml"
 
 jobs:
   compile:
