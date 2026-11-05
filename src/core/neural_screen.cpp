@@ -117,6 +117,7 @@ void LoadSettings() {
             s.boost = true;
             s.networkResolutionPercent = 30;
             s.passes = 1;
+            file.close();
             SaveSettings();
         }
     } catch (const json::exception& e) {
