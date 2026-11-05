@@ -114,7 +114,7 @@ private:
                                                             "Fullscreen (Borderless)"};
     const std::vector<std::string> audioBackendOptions = {"SDL", "OpenAL"};
     const std::vector<std::string> presentModeOptions = {"Mailbox", "Fifo", "Immediate"};
-    const std::vector<std::string> frameGenerationOptions = {"Off", "FSR"};
+    const std::vector<std::string> frameGenerationOptions = {"Off", "FSR", "Lemon FG"};
     const std::vector<std::string> hideCursorOptions = {"Never", "Idle", "Always"};
     const std::vector<std::string> trophySideOptions = {"left", "right", "top", "bottom"};
     const std::vector<std::string> readbacksModeOptions = {"Disabled", "Relaxed", "Precise"};
@@ -137,6 +137,8 @@ private:
     bool hdrAllowedSetting;
     bool fsrEnabledSetting;
     int frameGenerationSetting;
+    bool lemonFgHighQualitySetting;
+    bool lemonFgHudProtectionSetting;
     bool rcasEnabledSetting;
     float rcasAttenuationSetting;
 

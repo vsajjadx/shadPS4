@@ -360,6 +360,14 @@ public:
         return vk11_props.subgroupSize;
     }
 
+    /// Returns true when compute shaders support basic and arithmetic subgroup operations.
+    bool IsComputeSubgroupArithmeticSupported() const {
+        constexpr auto operations =
+            vk::SubgroupFeatureFlagBits::eBasic | vk::SubgroupFeatureFlagBits::eArithmetic;
+        return (vk11_props.subgroupSupportedOperations & operations) == operations &&
+               (vk11_props.subgroupSupportedStages & vk::ShaderStageFlagBits::eCompute);
+    }
+
     /// Returns the maximum size of compute shared memory.
     u32 MaxComputeSharedMemorySize() const {
         return properties.limits.maxComputeSharedMemorySize;

@@ -1242,6 +1242,7 @@ set(VIDEO_CORE src/video_core/amdgpu/cb_db_extent.h
                src/video_core/renderer_vulkan/vk_presenter.cpp
                src/video_core/renderer_vulkan/vk_presenter.h
                src/video_core/renderer_vulkan/vk_frame_generation.h
+               src/video_core/renderer_vulkan/vk_frame_generation_state.cpp
                src/video_core/renderer_vulkan/vk_occlusion_counter.cpp
                src/video_core/renderer_vulkan/vk_occlusion_counter.h
                src/video_core/renderer_vulkan/vk_rasterizer.cpp
@@ -1264,6 +1265,8 @@ set(VIDEO_CORE src/video_core/amdgpu/cb_db_extent.h
                src/video_core/renderer_vulkan/vk_swapchain.h
                src/video_core/renderer_vulkan/host_passes/fsr_pass.cpp
                src/video_core/renderer_vulkan/host_passes/fsr_pass.h
+               src/video_core/renderer_vulkan/host_passes/lemon_fg_pass.cpp
+               src/video_core/renderer_vulkan/host_passes/lemon_fg_pass.h
                src/video_core/renderer_vulkan/host_passes/pp_pass.cpp
                src/video_core/renderer_vulkan/host_passes/pp_pass.h
                src/video_core/texture_cache/blit_helper.cpp

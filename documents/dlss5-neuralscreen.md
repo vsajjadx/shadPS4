@@ -3,8 +3,8 @@
 The Windows package can ship [NeuralScreen](https://github.com/vsajjadx/NeuralScreen)
 next to the emulator. NeuralScreen is a separate process for neural rendering and
 Boost. The emulator starts it for the game window, sends its configuration and
-forwards its neural-rendering and Boost hotkeys. FSR 3.1 frame generation is owned
-by the emulator's Vulkan presenter, not NeuralScreen. The emulator presents each
+forwards its neural-rendering and Boost hotkeys. Frame generation (FSR 3.1 or Lemon FG)
+is owned by the emulator's Vulkan presenter, not NeuralScreen. The emulator presents each
 real or generated frame to its window before NeuralScreen captures that output.
 
 ## What runs where
@@ -15,7 +15,7 @@ real or generated frame to its window before NeuralScreen captures that output.
 | Emulator UI rows | Graphics tab of the in-game settings dialog (`settings_dialog_imgui.cpp`) |
 | Launcher UI | `launcher/patches/0011-*` (Graphics tab), `0012-*` (Hotkeys dialog) and `0013-*` (Model + Fine Tuning group) on top of shadps4-qtlauncher |
 | Hotkeys | The emulator's regular hotkey system (`input_handler`), keys `1` / `2` / `3` by default |
-| Frame generation | The emulator's built-in Vulkan FSR 3.1.6 presenter (`ENABLE_FSR_FRAMEGEN`, enabled by default on Windows) |
+| Frame generation | The emulator's Vulkan presenter: FSR 3.1.6 (`ENABLE_FSR_FRAMEGEN`, Windows) or Lemon FG (`host_passes/lemon_fg_pass`, every platform), picked by `frame_generation_backend` |
 
 ## Files
 
@@ -34,9 +34,10 @@ real or generated frame to its window before NeuralScreen captures that output.
   menu has no sliders for them. `launcher/neuralscreen/0003-*` makes it keep
   the values the emulator writes and apply a changed model, intensity or fine
   tuning live on `reload`.
-- Frame generation is an emulator setting (`frame_generation_enabled`) and is
-  never enabled in NeuralScreen's generated app config. Its hotkey toggles the
-  emulator's Vulkan FSR 3.1 presenter independently of NeuralScreen.
+- Frame generation is an emulator setting (`frame_generation_enabled`, with
+  `frame_generation_backend` set to `FSR` or `Lemon`) and is never enabled in
+  NeuralScreen's generated app config. Its hotkey toggles the chosen backend in
+  the emulator's Vulkan presenter independently of NeuralScreen.
 
 ## Runtime protocol
 

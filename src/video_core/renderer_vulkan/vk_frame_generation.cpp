@@ -16,38 +16,6 @@
 
 namespace Vulkan {
 
-namespace FrameGeneration {
-
-static std::atomic_bool enabled{false};
-static std::atomic_bool available{true};
-static std::atomic_bool retry_requested{false};
-
-void SetEnabled(bool enable) {
-    enabled = enable;
-    if (enable) {
-        // Turning it on again also resumes a generator that paused after a failed frame.
-        retry_requested = true;
-    }
-}
-
-bool RetryRequested() {
-    return retry_requested;
-}
-
-void ClearRetryRequest() {
-    retry_requested = false;
-}
-
-bool IsEnabled() {
-    return enabled && available;
-}
-
-bool IsAvailable() {
-    return available;
-}
-
-} // namespace FrameGeneration
-
 namespace {
 
 constexpr vk::Format ColorFormat = vk::Format::eR8G8B8A8Unorm;
@@ -143,7 +111,7 @@ FrameGenerator::~FrameGenerator() {
 void FrameGenerator::Fail(const char* what) {
     LOG_ERROR(Render_Vulkan, "FSR frame generation disabled: {}", what);
     failed = true;
-    FrameGeneration::available = false;
+    FrameGeneration::SetAvailable(FrameGeneration::Backend::Fsr, false);
 }
 
 void FrameGenerator::Suspend(const char* what) {

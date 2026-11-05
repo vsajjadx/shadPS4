@@ -8,6 +8,7 @@
 #include <chrono>
 #include <deque>
 #include <mutex>
+#include <string_view>
 #include <vector>
 #include "common/types.h"
 #include "video_core/renderer_vulkan/vk_common.h"
@@ -21,9 +22,22 @@ class Instance;
 class Scheduler;
 
 namespace FrameGeneration {
+enum class Backend : u8 {
+    Fsr,
+    Lemon,
+};
+
+/// The backend named in the settings, or Lemon FG when FSR is not part of this build.
+Backend BackendFromSetting(std::string_view name);
+std::string_view BackendName(Backend backend);
+
+void SetBackend(Backend backend);
+Backend GetBackend();
 void SetEnabled(bool enabled);
 bool IsEnabled();
+/// Whether the selected backend can run.
 bool IsAvailable();
+void SetAvailable(Backend backend, bool available);
 bool RetryRequested();
 void ClearRetryRequest();
 } // namespace FrameGeneration

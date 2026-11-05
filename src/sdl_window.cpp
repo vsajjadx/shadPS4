@@ -37,9 +37,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #endif
-#ifdef ENABLE_FSR_FRAMEGEN
 #include "video_core/renderer_vulkan/vk_frame_generation.h"
-#endif
 
 #ifdef __APPLE__
 #include <SDL3/SDL_metal.h>
@@ -345,13 +343,14 @@ void WindowSDL::WaitEvent() {
         ImGui::Friends::Toggle();
         break;
     case SDL_EVENT_TOGGLE_FRAME_GENERATION: {
-        std::string message = "Frame generation is not available";
-#ifdef ENABLE_FSR_FRAMEGEN
+        const auto backend = std::string(
+            Vulkan::FrameGeneration::BackendName(Vulkan::FrameGeneration::GetBackend()));
+        std::string message = backend + " is not available on this GPU";
         if (Vulkan::FrameGeneration::IsAvailable()) {
             Vulkan::FrameGeneration::SetEnabled(!Vulkan::FrameGeneration::IsEnabled());
-            message = "FG " + std::string(Vulkan::FrameGeneration::IsEnabled() ? "on" : "off");
+            message = "FG " + std::string(Vulkan::FrameGeneration::IsEnabled() ? "on" : "off") +
+                      " (" + backend + ")";
         }
-#endif
         LOG_INFO(Frontend, "{}", message);
         shadNotifications::QueueNotification(message, 2.0f,
                                              shadNotifications::position::BottomRight);

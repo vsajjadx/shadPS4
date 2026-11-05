@@ -12,10 +12,9 @@ The patches add:
   zip is downloaded and replaces the launcher and the emulator, then the launcher restarts.
 - The included `shadPS4.exe` is listed and selected as the emulator version.
 - A list of common window sizes instead of typing the width and height.
-- A frame generation (FSR 3.1) switch in the Graphics tab, and a Toggle Frame Generation key in the
-  Hotkeys dialog (default `1`; a single key, a combination like `Ctrl+1`, or a controller button).
-  With the DLSS5 integration the switch and the key drive NeuralScreen's frame generation
-  instead of the emulator's built-in FSR 3.1 one, which is no longer compiled.
+- A frame generation switch in the Graphics tab with a choice of method (FSR 3.1 or Lemon FG), and
+  a Toggle Frame Generation key in the Hotkeys dialog (default `1`; a single key, a combination like
+  `Ctrl+1`, or a controller button) that turns the chosen method on and off while playing.
 - DLSS5 (NeuralScreen) options in the Graphics tab: enable, boost, the resolution the network
   runs at, passes, profile, intensity and fine tuning. They are kept in the emulator's
   `user/neural_screen.json` and take effect when the next game starts. The Hotkeys dialog also

@@ -474,11 +474,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
       rasterizer{std::make_unique<Rasterizer>(instance, draw_scheduler, runtime, liverpool)},
       texture_cache{rasterizer->GetTextureCache()} {
     const vk::Device device = instance.GetDevice();
-#ifdef ENABLE_FSR_FRAMEGEN
     constexpr u32 frame_generation_extra_frames = 2;
-#else
-    constexpr u32 frame_generation_extra_frames = 0;
-#endif
     const u32 num_images = swapchain.GetImageCount() + frame_generation_extra_frames;
 
     // Create presentation frames.
@@ -499,10 +495,26 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
 
     fsr_pass.Create(device, instance.GetAllocator(), num_images);
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
+    FrameGeneration::SetBackend(
+        FrameGeneration::BackendFromSetting(EmulatorSettings.GetFrameGenerationBackend()));
+    if (HostPasses::LemonFgPass::IsSupported(instance)) {
+        lemon_fg_pass.Create(instance, draw_scheduler,
+                             {
+                                 .high_quality = EmulatorSettings.IsLemonFgHighQuality(),
+                                 .hud_protection = EmulatorSettings.IsLemonFgHudProtection(),
+                             });
+    } else {
+        FrameGeneration::SetAvailable(FrameGeneration::Backend::Lemon, false);
+        LOG_WARNING(Render_Vulkan,
+                    "Lemon frame generation needs subgroup arithmetic in compute shaders");
+    }
 #ifdef ENABLE_FSR_FRAMEGEN
     frame_generator = std::make_unique<FrameGenerator>(instance, draw_scheduler);
-    FrameGeneration::SetEnabled(EmulatorSettings.IsFrameGenerationEnabled());
 #endif
+    FrameGeneration::SetEnabled(EmulatorSettings.IsFrameGenerationEnabled());
+    LOG_INFO(Render_Vulkan, "Frame generation: {} ({})",
+             FrameGeneration::BackendName(FrameGeneration::GetBackend()),
+             FrameGeneration::IsEnabled() ? "on" : "off");
 
     ImGui::Layer::AddLayer(Common::Singleton<Core::Devtools::Layer>::Instance());
     ImGui::Friends::Register();
@@ -554,7 +566,6 @@ void Presenter::DestroyGeneratedImage(Frame* frame) {
 }
 
 void Presenter::CreateGeneratedImage(Frame* frame, vk::Format format) {
-#ifdef ENABLE_FSR_FRAMEGEN
     if (!FrameGeneration::IsAvailable() || frame->is_hdr) {
         return;
     }
@@ -597,10 +608,6 @@ void Presenter::CreateGeneratedImage(Frame* frame, vk::Format format) {
         Check<"create generated frame image view">(instance.GetDevice().createImageView(view_info));
     frame->generated_imgui_texture = ImGui::Vulkan::AddTexture(
         frame->generated_image_view, vk::ImageLayout::eShaderReadOnlyOptimal);
-#else
-    (void)frame;
-    (void)format;
-#endif
 }
 
 bool Presenter::IsVideoOutSurface(const AmdGpu::ColorBuffer& color_buffer) const {
@@ -851,16 +858,30 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     frame->prepared_at = std::chrono::steady_clock::now();
     frame->has_generated = false;
     frame->signature_id = 0;
+    const bool generate = FrameGeneration::IsEnabled() && generation_wanted &&
+                          frame->generated_image && !frame->is_hdr;
+    switch (FrameGeneration::GetBackend()) {
+    case FrameGeneration::Backend::Lemon:
+        if (generate) {
+            frame->has_generated =
+                lemon_fg_pass.Generate(cmdbuf, frame->image, swapchain.GetSurfaceFormat().format,
+                                       frame->generated_image, frame->width, frame->height);
+        } else {
+            lemon_fg_pass.Reset();
+        }
+        break;
+    case FrameGeneration::Backend::Fsr:
 #ifdef ENABLE_FSR_FRAMEGEN
-    if (FrameGeneration::IsEnabled() && generation_wanted && frame->generated_image &&
-        !frame->is_hdr) {
-        frame->has_generated = frame_generator->Generate(
-            cmdbuf, frame->image, frame->generated_image, frame->width, frame->height);
-        frame->signature_id = frame_generator->SignatureId();
-    } else {
-        frame_generator->Reset();
-    }
+        if (generate) {
+            frame->has_generated = frame_generator->Generate(
+                cmdbuf, frame->image, frame->generated_image, frame->width, frame->height);
+            frame->signature_id = frame_generator->SignatureId();
+        } else {
+            frame_generator->Reset();
+        }
 #endif
+        break;
+    }
 
     DebugState.game_resolution = {image_size.width, image_size.height};
     DebugState.output_resolution = {frame->width, frame->height};
@@ -961,13 +982,8 @@ bool Presenter::UpdateGenerationPacing() {
     using namespace std::chrono_literals;
     // Every game frame gets an interpolated one, whatever the display refresh rate is, like
     // frame generation in PC games. Only rates where interpolating makes no sense are left out.
-#ifdef ENABLE_FSR_FRAMEGEN
     const bool wanted =
         FrameGeneration::IsEnabled() && flip_interval >= 2ms && flip_interval <= 80ms;
-#else
-    // NeuralScreen owns frame generation instead.
-    const bool wanted = false;
-#endif
     generation_wanted = wanted;
     return wanted;
 }
