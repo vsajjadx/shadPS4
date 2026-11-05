@@ -27,6 +27,13 @@
 
 namespace NeuralScreen {
 
+namespace {
+bool FsrFrameGenerationEnabled() {
+    return EmulatorSettings.IsFrameGenerationEnabled() &&
+           EmulatorSettings.GetFrameGenerationBackend() != "DLSS-G";
+}
+} // namespace
+
 using json = nlohmann::json;
 
 constexpr int ControlPort = 53194;
@@ -145,7 +152,7 @@ static void WriteAppConfig() {
     j["fullscreen"] = false;
     j["open_menu_on_start"] = false;
     j["nr_on"] = s.enabled;
-    j["frame_generation"] = EmulatorSettings.IsFrameGenerationEnabled();
+    j["frame_generation"] = FsrFrameGenerationEnabled();
     j["nr_small"] = s.boost;
     j["auto_quality"] = s.autoQuality;
     j["work_scale"] = std::clamp(s.networkResolutionPercent, 30, 100) / 100.0;
@@ -159,7 +166,7 @@ static void WriteAppConfig() {
     j["local_tone"] = s.localTone;
     j["local_structure"] = s.localStructure;
     j["skin_structure"] = s.skinStructure;
-    g_frameGenerationOn = EmulatorSettings.IsFrameGenerationEnabled();
+    g_frameGenerationOn = FsrFrameGenerationEnabled();
     g_dlss5On = s.enabled;
     g_boostOn = s.boost;
 
@@ -288,7 +295,7 @@ bool StartForGameWindow(SDL_Window* window) {
     // too: NR then comes up off (nr_on = false in the generated config) and the
     // frame generation setting and hotkey still work. A missing install is only
     // reported when something that needs it is switched on.
-    const bool wanted = GetSettings().enabled || EmulatorSettings.IsFrameGenerationEnabled();
+    const bool wanted = GetSettings().enabled || FsrFrameGenerationEnabled();
     const auto dir = FindDirectory();
     if (dir.empty()) {
         if (wanted) {
@@ -352,7 +359,7 @@ bool StartForGameWindow(SDL_Window* window) {
     g_poller = std::thread(PollOutputFps);
     LOG_INFO(Loader, "NeuralScreen started on the game window (DLSS5 {} | FG {} | Boost {})",
              GetSettings().enabled ? "on" : "off",
-             EmulatorSettings.IsFrameGenerationEnabled() ? "on" : "off",
+             FsrFrameGenerationEnabled() ? "on" : "off",
              GetSettings().boost ? "on" : "off");
     return true;
 }

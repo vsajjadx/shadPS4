@@ -65,6 +65,10 @@ void SettingsWindow::LoadSettings(std::string profile) {
     windowWidthSetting = EmulatorSettings.GetWindowWidth();
     hdrAllowedSetting = EmulatorSettings.IsHdrAllowed();
     fsrEnabledSetting = EmulatorSettings.IsFsrEnabled();
+    frameGenerationSetting =
+        !EmulatorSettings.IsFrameGenerationEnabled()
+            ? 0
+            : (EmulatorSettings.GetFrameGenerationBackend() == "DLSS-G" ? 2 : 1);
     rcasEnabledSetting = EmulatorSettings.IsRcasEnabled();
     rcasAttenuationSetting = static_cast<float>(EmulatorSettings.GetRcasAttenuation() * 0.001f);
     {
@@ -143,6 +147,11 @@ void SettingsWindow::SaveSettings(std::string profile) {
     EmulatorSettings.SetWindowWidth(windowWidthSetting, isSpecific);
     EmulatorSettings.SetHdrAllowed(hdrAllowedSetting, isSpecific);
     EmulatorSettings.SetFsrEnabled(fsrEnabledSetting, isSpecific);
+    EmulatorSettings.SetFrameGenerationEnabled(frameGenerationSetting != 0, isSpecific);
+    if (frameGenerationSetting != 0) {
+        EmulatorSettings.SetFrameGenerationBackend(frameGenerationSetting == 2 ? "DLSS-G" : "FSR",
+                                                   isSpecific);
+    }
     EmulatorSettings.SetRcasEnabled(rcasEnabledSetting, isSpecific);
     EmulatorSettings.SetRcasAttenuation(static_cast<int>(rcasAttenuationSetting * 1000),
                                         isSpecific);
@@ -781,6 +790,8 @@ void SettingsWindow::DrawSettingsTable(SettingsCategory category) {
             if (rcasEnabledSetting && fsrEnabledSetting) {
                 AddSettingSliderFloat("RCAS Attenuation", rcasAttenuationSetting, 0.0f, 3.0f, 3);
             }
+
+            AddSettingCombo("Frame Generation", frameGenerationSetting, frameGenerationOptions);
 
             AddSettingCheckbox("Enable DLSS5 (NeuralScreen)", dlss5EnabledSetting);
             if (dlss5EnabledSetting) {
