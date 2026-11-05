@@ -22,8 +22,7 @@ std::atomic_bool enabled{false};
 std::atomic_bool available{false};
 
 bool Selected() {
-    return EmulatorSettings.IsFrameGenerationEnabled() &&
-           EmulatorSettings.GetFrameGenerationBackend() == "DLSS-G";
+    return EmulatorSettings.GetFrameGenerationBackend() == "DLSS-G";
 }
 } // namespace
 
@@ -77,7 +76,7 @@ PFN_vkGetInstanceProcAddr Initialize() {
     }
 
     const wchar_t* plugin_paths[] = {dir.c_str()};
-    sl::Feature features[] = {sl::kFeatureDLSS_G, sl::kFeaturePCL};
+    sl::Feature features[] = {sl::kFeatureDLSS_G, sl::kFeatureReflex, sl::kFeaturePCL};
     sl::Preferences prefs{};
     prefs.showConsole = false;
     prefs.logLevel = sl::LogLevel::eDefault;
@@ -85,7 +84,7 @@ PFN_vkGetInstanceProcAddr Initialize() {
     prefs.numPathsToPlugins = 1;
     prefs.logMessageCallback = LogCallback;
     prefs.featuresToLoad = features;
-    prefs.numFeaturesToLoad = 2;
+    prefs.numFeaturesToLoad = 3;
     prefs.engine = sl::EngineType::eCustom;
     prefs.engineVersion = "shadPS4";
     prefs.projectId = "6d6f6eb8-3b0a-4f6f-8f35-6a7c1f2f4d11";
@@ -123,7 +122,7 @@ void OnDeviceCreated(vk::Instance instance, vk::PhysicalDevice physical_device, 
     const auto support = sl_is_supported(sl::kFeatureDLSS_G, adapter);
     LOG_INFO(Render_Vulkan, "DLSS-G: slIsFeatureSupported returned {}", static_cast<int>(support));
     available = support == sl::Result::eOk;
-    enabled = available && Selected();
+    enabled = available && EmulatorSettings.IsFrameGenerationEnabled();
 }
 
 void Shutdown() {
