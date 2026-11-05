@@ -3,7 +3,7 @@ From: ci <ci@localhost>
 Date: Tue, 27 Oct 2026 18:45:57 +0000
 Subject: [PATCH 1/2] Add DLSS5 (NeuralScreen) options to the Graphics tab
 
-Frame generation now runs in NeuralScreen, so relabel its switch and add
+Frame generation runs independently in the emulator. Keep its switch and add
 a DLSS5 group: enable, boost, the resolution the network runs at, passes,
 profile, intensity and fine tuning. The options are stored in the
 emulator's user/neural_screen.json and applied when a game starts.
@@ -57,7 +57,7 @@ index 0df6c30..26b72da 100644
  
      // Frame generation; its in-game toggle key is set in the Hotkeys dialog.
 -    frameGenCheckBox = new QCheckBox(tr("Enable Frame Generation (FSR 3.1)"), ui->FSRGroupBox);
-+    frameGenCheckBox = new QCheckBox(tr("Enable Frame Generation (NeuralScreen)"), ui->FSRGroupBox);
++    frameGenCheckBox = new QCheckBox(tr("Enable Frame Generation"), ui->FSRGroupBox);
      frameGenCheckBox->setObjectName("frameGenCheckBox");
      ui->verticalLayout_5->insertWidget(0, frameGenCheckBox);
  

@@ -1,11 +1,11 @@
-# DLSS5 (NeuralScreen) integration
+# NeuralScreen integration
 
 The Windows package can ship [NeuralScreen](https://github.com/vsajjadx/NeuralScreen)
-next to the emulator. NeuralScreen is a separate process that hooks the game window
-and provides neural rendering (DLSS5 in the UI), FSR frame generation and its boost
-mode. The emulator starts it with the game window, feeds it its configuration and
-forwards the three hotkeys to it; it never renders inside the emulator process, so
-emulator updates and NeuralScreen updates stay independent.
+next to the emulator. NeuralScreen is a separate process for neural rendering and
+Boost. The emulator starts it for the game window, sends its configuration and
+forwards its neural-rendering and Boost hotkeys. FSR 3.1 frame generation is owned
+by the emulator's Vulkan presenter, not NeuralScreen. The emulator presents each
+real or generated frame to its window before NeuralScreen captures that output.
 
 ## What runs where
 
@@ -15,7 +15,7 @@ emulator updates and NeuralScreen updates stay independent.
 | Emulator UI rows | Graphics tab of the in-game settings dialog (`settings_dialog_imgui.cpp`) |
 | Launcher UI | `launcher/patches/0011-*` (Graphics tab), `0012-*` (Hotkeys dialog) and `0013-*` (Model + Fine Tuning group) on top of shadps4-qtlauncher |
 | Hotkeys | The emulator's regular hotkey system (`input_handler`), keys `1` / `2` / `3` by default |
-| Frame generation | NeuralScreen's; the emulator's built-in FSR 3.1 frame generation is compiled out (`ENABLE_FSR_FRAMEGEN` defaults to `OFF`) |
+| Frame generation | The emulator's built-in Vulkan FSR 3.1.6 presenter (`ENABLE_FSR_FRAMEGEN`, enabled by default on Windows) |
 
 ## Files
 
@@ -34,9 +34,9 @@ emulator updates and NeuralScreen updates stay independent.
   menu has no sliders for them. `launcher/neuralscreen/0003-*` makes it keep
   the values the emulator writes and apply a changed model, intensity or fine
   tuning live on `reload`.
-- Frame generation itself stays an emulator setting (`frame_generation_enabled`,
-  the launcher's Graphics switch) and is passed to NeuralScreen on start; the
-  frame generation hotkey toggles it inside NeuralScreen.
+- Frame generation is an emulator setting (`frame_generation_enabled`) and is
+  never enabled in NeuralScreen's generated app config. Its hotkey toggles the
+  emulator's Vulkan FSR 3.1 presenter independently of NeuralScreen.
 
 ## Runtime protocol
 
@@ -47,13 +47,10 @@ The emulator starts the bundled `runtime/pythonw.exe` on `main.py` itself (looke
 main.py --config <user>/neural_screen_app.json --window <hwnd> --ctl 53194 --instance shadPS4
 ```
 
-and talks to it on localhost TCP port 53194, one command per line: `nr`, `fg`,
-`boost`, `reload`, `quit`. Replies are `ok`/`err`. The three hotkeys map to
-`hotkey_toggle_frame_generation` (default `1`), `hotkey_toggle_dlss5` (`2`) and
-`hotkey_toggle_boost` (`3`) in the input config, so they can be rebound to
-combinations or controller buttons in the launcher's Hotkeys dialog like every
-other hotkey. All commands are sent on a detached thread; a dead NeuralScreen
-never stalls a frame.
+and talks to it on localhost TCP port 53194, one command per line. NeuralScreen
+receives neural-rendering, Boost, reload and quit controls; the FSR frame-generation
+hotkey stays in the emulator and does not depend on this process. Commands are sent
+on detached threads, so a dead NeuralScreen never stalls a frame.
 
 NeuralScreen is stopped (`quit`, then terminate after 5 s) when the game window
 closes and before a relaunch.
@@ -67,7 +64,7 @@ update, rebase this branch on it (do not merge in place) and keep:
   `CMakeLists.txt` (CORE sources, `ws2_32`)
 - the `NeuralScreen::StartForGameWindow` / `Stop` calls in `emulator.cpp`
 - the three hotkey cases in `input_handler` and `sdl_window.cpp`
-- `ENABLE_FSR_FRAMEGEN` left `OFF` (NeuralScreen owns frame generation)
+- the emulator's Vulkan FSR 3.1 frame generator enabled independently of NeuralScreen
 - `launcher/patches/0011-*` to `0013-*`, `launcher/neuralscreen/0001-*` to `0003-*`; rebase them if the launcher's
   `UPSTREAM_COMMIT` moves
 

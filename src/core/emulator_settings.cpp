@@ -18,11 +18,11 @@
 
 using json = nlohmann::json;
 
-// ── Singleton storage ─────────────────────────────────────────────────
+// ââ Singleton storage âââââââââââââââââââââââââââââââââââââââââââââââââ
 std::shared_ptr<EmulatorSettingsImpl> EmulatorSettingsImpl::s_instance = nullptr;
 std::mutex EmulatorSettingsImpl::s_mutex;
 
-// ── nlohmann helpers for std::filesystem::path ───────────────────────
+// ââ nlohmann helpers for std::filesystem::path âââââââââââââââââââââââ
 namespace nlohmann {
 template <>
 struct adl_serializer<std::filesystem::path> {
@@ -86,7 +86,7 @@ std::optional<T> get_optional(const toml::value& v, const std::string& key) {
 
 } // namespace toml
 
-// ── Helpers ───────────────────────────────────────────────────────────
+// ââ Helpers âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 void EmulatorSettingsImpl::PrintChangedSummary(const std::vector<std::string>& changed) {
     if (changed.empty()) {
@@ -97,7 +97,7 @@ void EmulatorSettingsImpl::PrintChangedSummary(const std::vector<std::string>& c
         LOG_DEBUG(Config, "    * {}", k);
 }
 
-// ── Singleton ────────────────────────────────────────────────────────
+// ââ Singleton ââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 EmulatorSettingsImpl::EmulatorSettingsImpl() = default;
 
 EmulatorSettingsImpl::~EmulatorSettingsImpl() {}
@@ -220,7 +220,7 @@ void EmulatorSettingsImpl::SetAddonInstallDir(const std::filesystem::path& dir) 
     m_general.addon_install_dir.value = dir;
 }
 
-// ── Game-specific override management ────────────────────────────────
+// ââ Game-specific override management ââââââââââââââââââââââââââââââââ
 void EmulatorSettingsImpl::ClearGameSpecificOverrides() {
     ClearGroupOverrides(m_general);
     ClearGroupOverrides(m_network);
@@ -283,7 +283,7 @@ bool EmulatorSettingsImpl::Save(const std::string& serial) {
             return !out.fail();
 
         } else {
-            // ── Global config.json ─────────────────────────────────────
+            // ââ Global config.json âââââââââââââââââââââââââââââââââââââ
             const auto path =
                 Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "config.json";
 
@@ -350,7 +350,7 @@ void EmulatorSettingsImpl::MigrateNetworkKeys(const json& general, const json& n
     }
 }
 
-// ── Load ──────────────────────────────────────────────────────────────
+// ââ Load ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 bool EmulatorSettingsImpl::Load(const std::string& serial) {
     // A newly loaded profile replaces, rather than extends, the previous profile.
@@ -358,7 +358,7 @@ bool EmulatorSettingsImpl::Load(const std::string& serial) {
 
     try {
         if (serial.empty()) {
-            // ── Global config ──────────────────────────────────────────
+            // ââ Global config ââââââââââââââââââââââââââââââââââââââââââ
             const auto userDir = Common::FS::GetUserPath(Common::FS::PathType::UserDir);
             const auto configPath = userDir / "config.json";
 
@@ -425,7 +425,7 @@ bool EmulatorSettingsImpl::Load(const std::string& serial) {
             }
             return true;
         } else {
-            // ── Per-game override file ─────────────────────────────────
+            // ââ Per-game override file âââââââââââââââââââââââââââââââââ
             // Never reloads global settings. Only applies
             // game_specific_value overrides on top of the already-loaded
             // base configuration.
@@ -625,7 +625,6 @@ bool EmulatorSettingsImpl::TransferSettings() {
         setFromToml(s.hdr_allowed, gpu, "allowHDR");
         setFromToml(s.fsr_enabled, gpu, "fsrEnabled");
         setFromToml(s.frame_generation_enabled, gpu, "frameGenerationEnabled");
-        setFromToml(s.frame_generation_backend, gpu, "frameGenerationBackend");
         setFromToml(s.gpu_thread_core_reserve, gpu, "gpuThreadCoreReserve");
         setFromToml(s.rcas_enabled, gpu, "rcasEnabled");
         setFromToml(s.rcas_attenuation, gpu, "rcasAttenuation");
