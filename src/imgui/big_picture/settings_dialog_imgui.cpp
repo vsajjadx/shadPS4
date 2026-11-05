@@ -145,9 +145,6 @@ void SettingsWindow::SaveSettings(std::string profile) {
     EmulatorSettings.SetHdrAllowed(hdrAllowedSetting, isSpecific);
     EmulatorSettings.SetFsrEnabled(fsrEnabledSetting, isSpecific);
     EmulatorSettings.SetFrameGenerationEnabled(frameGenerationSetting != 0, isSpecific);
-    if (frameGenerationSetting != 0) {
-        EmulatorSettings.SetFrameGenerationBackend("FSR", isSpecific);
-    }
     EmulatorSettings.SetRcasEnabled(rcasEnabledSetting, isSpecific);
     EmulatorSettings.SetRcasAttenuation(static_cast<int>(rcasAttenuationSetting * 1000),
                                         isSpecific);
