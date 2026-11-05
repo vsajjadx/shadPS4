@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <string>
+#include <magic_enum/magic_enum.hpp>
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "shader_recompiler/frontend/control_flow_graph.h"
@@ -68,37 +70,84 @@ static bool IgnoresExecMask(const GcnInst& inst) {
     return false;
 }
 
+// How far before an S_SETPC_B64 the S_GETPC_B64 that its address comes from is looked for.
+static constexpr u32 SetPcSearchWindow = 8;
+
+static std::optional<s32> LiteralOperand(const GcnInst& inst, u32 reg) {
+    for (u32 i = 0; i < 2 && i < inst.src_count; ++i) {
+        const auto& other = inst.src[1 - i];
+        if (inst.src[i].field == OperandField::ScalarGPR && inst.src[i].code == reg &&
+            other.field == OperandField::LiteralConst) {
+            return static_cast<s32>(other.code);
+        }
+    }
+    return std::nullopt;
+}
+
+// The target of `S_GETPC_B64 s[n:n+1]; S_ADD_U32/S_SUB_U32 sn, sn, literal; S_ADDC_U32/S_SUBB_U32
+// sn+1, ...; S_SETPC_B64 s[n:n+1]`, with the literal on either side of the add and unrelated
+// instructions allowed in between.
 static std::optional<u32> ResolveSetPcTarget(std::span<const GcnInst> list, u32 setpc_index,
                                              std::span<const u32> pc_map) {
-    if (setpc_index < 3) {
+    const auto& setpc = list[setpc_index];
+    if (setpc.src[0].field != OperandField::ScalarGPR) {
         return std::nullopt;
     }
+    const u32 low = setpc.src[0].code;
+    s64 offset = 0;
+    for (u32 i = setpc_index; i-- > 0 && setpc_index - i <= SetPcSearchWindow;) {
+        const auto& inst = list[i];
+        if (inst.IsUnconditionalBranch() || inst.IsConditionalBranch()) {
+            return std::nullopt;
+        }
+        if (inst.opcode == Opcode::S_GETPC_B64) {
+            if (inst.dst[0].code != low) {
+                continue;
+            }
+            const u32 base_pc = pc_map[i] + inst.length;
+            const u32 result_pc = static_cast<u32>(static_cast<s64>(base_pc) + offset);
+            LOG_DEBUG(Render_Recompiler, "SetPC target: {} + {} = {}", base_pc, offset, result_pc);
+            return result_pc & ~0x3u;
+        }
+        if (inst.dst_count == 0 || inst.dst[0].field != OperandField::ScalarGPR) {
+            continue;
+        }
+        const u32 written = inst.dst[0].code;
+        if (written == low) {
+            const auto literal = LiteralOperand(inst, low);
+            if (!literal) {
+                return std::nullopt;
+            }
+            if (inst.opcode == Opcode::S_ADD_U32 || inst.opcode == Opcode::S_ADD_I32) {
+                offset += *literal;
+            } else if ((inst.opcode == Opcode::S_SUB_U32 || inst.opcode == Opcode::S_SUB_I32) &&
+                       inst.src[0].code == low) {
+                offset -= *literal;
+            } else {
+                return std::nullopt;
+            }
+        } else if (written == low + 1 && inst.opcode != Opcode::S_ADDC_U32 &&
+                   inst.opcode != Opcode::S_SUBB_U32) {
+            return std::nullopt;
+        }
+    }
+    return std::nullopt;
+}
 
-    const auto& getpc = list[setpc_index - 3];
-    const auto& arith = list[setpc_index - 2];
-    const auto& setpc = list[setpc_index];
-
-    if (getpc.opcode != Opcode::S_GETPC_B64 ||
-        !(arith.opcode == Opcode::S_ADD_U32 || arith.opcode == Opcode::S_SUB_U32) ||
-        setpc.opcode != Opcode::S_SETPC_B64)
-        return std::nullopt;
-
-    if (getpc.dst[0].code != setpc.src[0].code || arith.dst[0].code != setpc.src[0].code)
-        return std::nullopt;
-
-    if (arith.src_count < 2 || arith.src[1].field != OperandField::LiteralConst)
-        return std::nullopt;
-
-    const u32 imm = arith.src[1].code;
-
-    const s32 signed_offset =
-        (arith.opcode == Opcode::S_ADD_U32) ? static_cast<s32>(imm) : -static_cast<s32>(imm);
-
-    const u32 base_pc = pc_map[setpc_index - 3] + getpc.length;
-
-    const u32 result_pc = static_cast<u32>(static_cast<s32>(base_pc) + signed_offset);
-    LOG_DEBUG(Render_Recompiler, "SetPC target: {} + {} = {}", base_pc, signed_offset, result_pc);
-    return result_pc & ~0x3u;
+static std::string DescribeSetPcWindow(std::span<const GcnInst> list, u32 setpc_index) {
+    std::string out;
+    const u32 first = setpc_index > SetPcSearchWindow ? setpc_index - SetPcSearchWindow : 0;
+    for (u32 i = first; i <= setpc_index; ++i) {
+        const auto& inst = list[i];
+        out += fmt::format("\n    {}", magic_enum::enum_name(inst.opcode));
+        for (u32 d = 0; d < inst.dst_count; ++d) {
+            out += fmt::format(" d{}:{}", u32(inst.dst[d].field), inst.dst[d].code);
+        }
+        for (u32 src = 0; src < inst.src_count; ++src) {
+            out += fmt::format(" s{}:{}", u32(inst.src[src].field), inst.src[src].code);
+        }
+    }
+    return out;
 }
 
 static constexpr size_t LabelReserveSize = 32;
@@ -132,8 +181,8 @@ void CFG::EmitLabels() {
                     ASSERT_MSG(
                         false,
                         "S_SETPC_B64 without a resolvable offset at PC {:#x} (Index {}): Involved "
-                        "instructions not recognized or invalid pattern",
-                        pc, i);
+                        "instructions not recognized or invalid pattern:{}",
+                        pc, i, DescribeSetPcWindow(inst_list, i));
                 }
             }
             AddLabel(target);
