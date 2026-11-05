@@ -23,7 +23,6 @@
 #include "core/libraries/pad/pad.h"
 #include "core/libraries/system/userservice.h"
 #include "core/neural_screen.h"
-#include "video_core/renderer_vulkan/vk_dlss_g.h"
 #include "core/user_settings.h"
 #include "imgui/brightness_layer.h"
 #include "imgui/friends_layer.h"
@@ -346,20 +345,13 @@ void WindowSDL::WaitEvent() {
         ImGui::Friends::Toggle();
         break;
     case SDL_EVENT_TOGGLE_FRAME_GENERATION: {
-        std::optional<bool> state;
-        std::string message;
-        if (EmulatorSettings.GetFrameGenerationBackend() == "DLSS-G") {
-            if (Vulkan::DlssG::IsAvailable()) {
-                Vulkan::DlssG::SetEnabled(!Vulkan::DlssG::IsEnabled());
-                message = "FG " + std::string(Vulkan::DlssG::IsEnabled() ? "on" : "off");
-            } else {
-                message = "DLSS-G is not available in this build";
-            }
-        } else {
-            state = NeuralScreen::ToggleFrameGeneration();
-            message = !state ? "NeuralScreen is not running"
-                             : "FG " + std::string(*state ? "on" : "off");
+        std::string message = "Frame generation is not available";
+#ifdef ENABLE_FSR_FRAMEGEN
+        if (Vulkan::FrameGeneration::IsAvailable()) {
+            Vulkan::FrameGeneration::SetEnabled(!Vulkan::FrameGeneration::IsEnabled());
+            message = "FG " + std::string(Vulkan::FrameGeneration::IsEnabled() ? "on" : "off");
         }
+#endif
         LOG_INFO(Frontend, "{}", message);
         shadNotifications::QueueNotification(message, 2.0f,
                                              shadNotifications::position::BottomRight);

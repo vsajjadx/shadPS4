@@ -376,20 +376,6 @@ jobs:
         test -f bundle/qtplugins/NeuralScreen/runtime/pythonw.exe
         echo "NeuralScreen embedded: $(du -sh bundle/qtplugins/NeuralScreen | cut -f1)"
 
-    - name: Bundle the Streamline DLLs (DLSS-G)
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: |
-        mkdir sl-sdk
-        gh release download v2.9.0 --repo NVIDIA-RTX/Streamline --pattern '*.zip' --dir sl-sdk
-        unzip -q sl-sdk/*.zip -d sl-sdk/x
-        for dll in sl.interposer.dll sl.common.dll sl.dlss_g.dll sl.reflex.dll sl.pcl.dll nvngx_dlssg.dll; do
-          src=$(find sl-sdk/x -ipath '*bin/x64/*' ! -ipath '*development*' -iname "$dll" | head -n1)
-          test -n "$src"
-          cp "$src" bundle/
-        done
-        ls -la bundle/*.dll
-
     - name: Upload the package
       uses: actions/upload-artifact@v7
       with:

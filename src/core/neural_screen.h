@@ -49,7 +49,6 @@ void ApplySettings();
 // is the right one.
 std::optional<float> GetOutputFps();
 
-std::optional<bool> ToggleFrameGeneration();
 std::optional<bool> ToggleDLSS5();
 std::optional<bool> ToggleBoost();
 

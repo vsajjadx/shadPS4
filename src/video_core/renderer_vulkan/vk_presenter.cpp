@@ -501,8 +501,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
 #ifdef ENABLE_FSR_FRAMEGEN
     frame_generator = std::make_unique<FrameGenerator>(instance, draw_scheduler);
-    FrameGeneration::SetEnabled(EmulatorSettings.IsFrameGenerationEnabled() &&
-                                EmulatorSettings.GetFrameGenerationBackend() != "DLSS-G");
+    FrameGeneration::SetEnabled(EmulatorSettings.IsFrameGenerationEnabled());
 #endif
 
     ImGui::Layer::AddLayer(Common::Singleton<Core::Devtools::Layer>::Instance());

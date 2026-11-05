@@ -21,7 +21,6 @@
 #include "common/path_util.h"
 #include "core/emulator_settings.h"
 #include "sdl_window.h"
-#include "video_core/renderer_vulkan/vk_dlss_g.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 
 #ifdef __APPLE__
@@ -272,10 +271,8 @@ vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool e
 #endif
 
     static vk::detail::DynamicLoader dl;
-    auto get_instance_proc_addr = DlssG::Initialize();
-    if (!get_instance_proc_addr) {
-        get_instance_proc_addr = dl.getProcAddress<PFN_vkGetInstanceProcAddr>("vkGetInstanceProcAddr");
-    }
+    const auto get_instance_proc_addr =
+        dl.getProcAddress<PFN_vkGetInstanceProcAddr>("vkGetInstanceProcAddr");
     VULKAN_HPP_DEFAULT_DISPATCHER.init(get_instance_proc_addr);
 
     const auto [available_version_result, available_version] =

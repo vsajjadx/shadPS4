@@ -27,13 +27,6 @@
 
 namespace NeuralScreen {
 
-namespace {
-bool FsrFrameGenerationEnabled() {
-    return EmulatorSettings.IsFrameGenerationEnabled() &&
-           EmulatorSettings.GetFrameGenerationBackend() != "DLSS-G";
-}
-} // namespace
-
 using json = nlohmann::json;
 
 constexpr int ControlPort = 53194;
@@ -74,7 +67,6 @@ static HANDLE LifetimeJob() {
     return job;
 }
 #endif
-static bool g_frameGenerationOn = false;
 static bool g_dlss5On = false;
 static bool g_boostOn = false;
 
@@ -152,7 +144,7 @@ static void WriteAppConfig() {
     j["fullscreen"] = false;
     j["open_menu_on_start"] = false;
     j["nr_on"] = s.enabled;
-    j["frame_generation"] = FsrFrameGenerationEnabled();
+    j["frame_generation"] = false;
     j["nr_small"] = s.boost;
     j["auto_quality"] = s.autoQuality;
     j["work_scale"] = std::clamp(s.networkResolutionPercent, 30, 100) / 100.0;
@@ -166,7 +158,6 @@ static void WriteAppConfig() {
     j["local_tone"] = s.localTone;
     j["local_structure"] = s.localStructure;
     j["skin_structure"] = s.skinStructure;
-    g_frameGenerationOn = FsrFrameGenerationEnabled();
     g_dlss5On = s.enabled;
     g_boostOn = s.boost;
 
@@ -295,7 +286,7 @@ bool StartForGameWindow(SDL_Window* window) {
     // too: NR then comes up off (nr_on = false in the generated config) and the
     // frame generation setting and hotkey still work. A missing install is only
     // reported when something that needs it is switched on.
-    const bool wanted = GetSettings().enabled || FsrFrameGenerationEnabled();
+    const bool wanted = GetSettings().enabled;
     const auto dir = FindDirectory();
     if (dir.empty()) {
         if (wanted) {
@@ -357,9 +348,8 @@ bool StartForGameWindow(SDL_Window* window) {
     g_running = true;
     g_pollStop = false;
     g_poller = std::thread(PollOutputFps);
-    LOG_INFO(Loader, "NeuralScreen started on the game window (DLSS5 {} | FG {} | Boost {})",
+    LOG_INFO(Loader, "NeuralScreen started on the game window (DLSS5 {} | Boost {})",
              GetSettings().enabled ? "on" : "off",
-             FsrFrameGenerationEnabled() ? "on" : "off",
              GetSettings().boost ? "on" : "off");
     return true;
 }
@@ -413,10 +403,6 @@ std::optional<float> GetOutputFps() {
     return value;
 }
 
-std::optional<bool> ToggleFrameGeneration() {
-    return SendHotkey("fg", g_frameGenerationOn);
-}
-
 std::optional<bool> ToggleDLSS5() {
     return SendHotkey("nr", g_dlss5On);
 }
@@ -438,10 +424,6 @@ void ApplySettings() {
 }
 
 std::optional<float> GetOutputFps() {
-    return std::nullopt;
-}
-
-std::optional<bool> ToggleFrameGeneration() {
     return std::nullopt;
 }
 
