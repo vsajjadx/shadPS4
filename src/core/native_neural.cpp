@@ -105,7 +105,7 @@ bool Probe(const std::array<uint8_t, 8>& adapter_luid) {
         return false;
     }
     const auto load = reinterpret_cast<PFN_FwdLoad>(GetProcAddress(fwd, "NsFwdLoad"));
-    const auto init_ext = reinterpret_cast<PFN_FwdInitExt*>(GetProcAddress(fwd, "NsFwdInitExt"));
+    const auto init_ext = reinterpret_cast<PFN_FwdInitExt>(GetProcAddress(fwd, "NsFwdInitExt"));
     if (!load || !init_ext) {
         LOG_WARNING(Loader, "NativeNeural: forwarder is missing exports");
         return false;
