@@ -31,7 +31,52 @@ per-game settings. The default settings work.
 
 ## What's new
 
-Latest release: [**DLSS5 arrives: frame generation, Boost and Auto Quality**](https://github.com/vsajjadx/shadPS4/releases/tag/dlss5-2026-11-01)
+### Direct PKG execution: launch games faster than on the console
+
+No installation. No extraction. No waiting. Launch your PS4 games straight from PKG files,
+even faster than the console's usual installation process.
+
+You no longer need to extract game files, create installation folders, or convert anything to
+ZAR:
+
+1. Put your **Base Game PKG**, **Update PKG** and **DLC PKG** files together in one folder.
+2. Select that folder in the launcher.
+3. Launch the game.
+
+The emulator reads the original PKG files directly and handles the base game, updates and DLCs
+separately.
+
+- Much less preparation time.
+- Much less storage space needed, with no duplicate game files.
+- No waiting for large games to finish extracting.
+- Updates and DLCs stay separate.
+- No noticeable FPS loss during gameplay in my tests.
+
+### FC 27 runs smoothly
+
+FC 27 was tested with direct PKG execution and runs remarkably smoothly.
+
+![EA SPORTS FC 27](./documents/Screenshots/games/fc27.jpg)
+
+Recommended settings:
+
+- **Redback Mode:** set it to `Precise` for the best image quality.
+- **Pitch colors:** if the pitch colors look wrong, set the stadium weather to
+  `Sunny (Summer)` for now.
+
+You may still see some visual issues in cutscenes, such as excessive brightness or visible lines.
+These and the pitch color problem are expected to be fixed in upcoming updates. Gameplay itself
+stays smooth, with no noticeable FPS loss from direct PKG execution.
+
+### More performance optimizations
+
+This update also improves performance and compatibility in several games, including
+**The Order: 1886**, **UFC 4**, **NHL 24** and many others. The goal is not only to run more
+games, but to make the playable ones run better and more consistently.
+
+### Earlier: DLSS5, frame generation and Boost
+
+Release: [**DLSS5 arrives: frame generation, Boost and Auto Quality**](https://github.com/vsajjadx/shadPS4/releases/tag/dlss5-2026-11-01)
 
 - **DLSS5, one key away.** Press `2` in game for sharper, cleaner images.
 - **Frame Generation** on `1` and **Boost** on `3`: smoother motion and extra performance when
@@ -40,8 +85,6 @@ Latest release: [**DLSS5 arrives: frame generation, Boost and Auto Quality**](ht
   their switches there, and they start off.
 - **On an RTX 20 or 30 series card?** Turn on **Boost**, **Frame Generation** and **Auto
   Quality** together for a smooth, steady experience.
-- **The Order: 1886:** fixes the black bands and scrambled blocks that could cover the title
-  screen.
 - **Alt+Enter** gives a borderless fullscreen window when a game runs in a window.
 
 ## The launcher
@@ -56,7 +99,8 @@ The zip includes the latest official shadPS4 Qt launcher, with a few additions:
 - **Graphics switches.** DLSS5, Boost, Frame Generation and Auto Quality are all in **Settings → Graphics**.
 - **Compatibility list.** Shows the official list, plus the games this build runs that the
   official one doesn't.
-- **Install PKG files.**
+- **Direct PKG execution.** Point it at a folder with your base game, update and DLC PKGs and
+  launch, with no extraction.
 
 > Already using the official launcher with a `user` folder next to it? Unzip into that same
 > folder and replace the files. Your games, saves and settings stay as they are.
@@ -94,6 +138,7 @@ The zip includes the latest official shadPS4 Qt launcher, with a few additions:
 - **Faster.** Better use of your CPU and GPU.
 - **DLSS5, Boost and frame generation (optional).** In game, `1` toggles frame generation, `2`
   DLSS5 and `3` Boost, or use the switches in the launcher settings. All are off by default.
+- **Direct PKG execution.** Launch games from base, update and DLC PKGs with no extraction.
 - **More games run.** Games like NHL 24, The Order: 1886, The Grand Tour Game and Need for Speed
   Hot Pursuit Remastered, which do not run on the official version, work here.
 - **Launcher included.** One download, with automatic updates.
