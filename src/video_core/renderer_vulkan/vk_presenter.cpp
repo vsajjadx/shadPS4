@@ -22,6 +22,7 @@
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/renderdoc.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
+#include "core/native_neural.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/texture_cache/image.h"
@@ -503,6 +504,22 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     frame_generator = std::make_unique<FrameGenerator>(instance, draw_scheduler);
     FrameGeneration::SetEnabled(EmulatorSettings.IsFrameGenerationEnabled());
 #endif
+#ifdef ENABLE_NATIVE_NEURAL
+    // Milestone 1 (documents/native-neural.md): log-only probe, opt in with the environment
+    // variable SHADPS4_NATIVE_NEURAL_PROBE=1. Renders nothing.
+    if (const char* probe = std::getenv("SHADPS4_NATIVE_NEURAL_PROBE");
+        probe && probe[0] == '1') {
+        const auto props = instance.GetPhysicalDevice()
+                               .getProperties2<vk::PhysicalDeviceProperties2,
+                                               vk::PhysicalDeviceIDProperties>();
+        const auto& id = props.get<vk::PhysicalDeviceIDProperties>();
+        if (id.deviceLUIDValid) {
+            std::array<u8, 8> luid{};
+            std::copy_n(id.deviceLUID.data(), luid.size(), luid.begin());
+            NativeNeural::Probe(luid);
+        }
+    }
+#endif
 
     ImGui::Layer::AddLayer(Common::Singleton<Core::Devtools::Layer>::Instance());
     ImGui::Friends::Register();
@@ -523,6 +540,9 @@ Presenter::~Presenter() {
     Check(present_scheduler.DirectCommandBuffer().reset());
     Check(flip_scheduler.DirectCommandBuffer().reset());
 
+#ifdef ENABLE_NATIVE_NEURAL
+    NativeNeural::Shutdown();
+#endif
 #ifdef ENABLE_FSR_FRAMEGEN
     frame_generator.reset();
 #endif

@@ -40,6 +40,8 @@ option(ENABLE_DISCORD_RPC "Enable the Discord RPC integration" ON)
 option(ENABLE_UPDATER "Enables the options to updater" ON)
 option(ENABLE_TESTS "Build unit tests (requires GTest)" OFF)
 option(ENABLE_SYSTEM_LIBRARIES "Enable building against system libraries" OFF)
+option(ENABLE_NATIVE_NEURAL "Run the neural pass inside the emulator (experimental, needs the NVIDIA NGX SDK)" OFF)
+set(NGX_SDK_DIR "" CACHE PATH "NGX SDK root holding include/ and lib/Windows_x86_64/x64/nvsdk_ngx_d.lib")
 cmake_dependent_option(ENABLE_FSR_FRAMEGEN "Enable FSR 3.1 frame generation" ON WIN32 OFF)
 
 # First, determine whether to use CMAKE_OSX_ARCHITECTURES or CMAKE_SYSTEM_PROCESSOR.
@@ -1057,6 +1059,8 @@ set(CORE src/core/aerolib/stubs.cpp
          src/core/emulator_state.cpp
          src/core/emulator_state.h
          src/core/emulator_settings.cpp
+         src/core/native_neural.cpp
+         src/core/native_neural.h
          src/core/neural_screen.cpp
          src/core/neural_screen.h
          src/core/emulator_settings.h
@@ -1430,6 +1434,15 @@ if (ENABLE_FSR_FRAMEGEN)
     )
     target_link_libraries(shadps4 PRIVATE ffx-vulkan::fsr3-vk-framegeneration-3.1.6)
     target_compile_definitions(shadps4 PRIVATE ENABLE_FSR_FRAMEGEN)
+endif()
+
+if (ENABLE_NATIVE_NEURAL AND WIN32)
+    if (NOT NGX_SDK_DIR)
+        message(FATAL_ERROR "ENABLE_NATIVE_NEURAL needs -DNGX_SDK_DIR=<dir with include/ and lib/>")
+    endif()
+    target_include_directories(shadps4 PRIVATE ${NGX_SDK_DIR}/include)
+    target_link_libraries(shadps4 PRIVATE ${NGX_SDK_DIR}/lib/Windows_x86_64/x64/nvsdk_ngx_d.lib d3d12 dxgi)
+    target_compile_definitions(shadps4 PRIVATE ENABLE_NATIVE_NEURAL)
 endif()
 
 if (${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
