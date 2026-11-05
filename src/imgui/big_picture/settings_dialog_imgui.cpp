@@ -1,6 +1,7 @@
 //  SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
 //  SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <map>
 #include <ranges>
 #include <ImGuiFileDialog.h>
@@ -71,6 +72,14 @@ void SettingsWindow::LoadSettings(std::string profile) {
             : (EmulatorSettings.GetFrameGenerationBackend() == "Lemon" ? 2 : 1);
     lemonFgHighQualitySetting = EmulatorSettings.IsLemonFgHighQuality();
     lemonFgHudProtectionSetting = EmulatorSettings.IsLemonFgHudProtection();
+    {
+        const auto multiplier =
+            std::ranges::find(lemonFgMultipliers, EmulatorSettings.GetLemonFgMultiplier());
+        lemonFgMultiplierSetting =
+            multiplier == lemonFgMultipliers.end()
+                ? 0
+                : static_cast<int>(std::distance(lemonFgMultipliers.begin(), multiplier));
+    }
     rcasEnabledSetting = EmulatorSettings.IsRcasEnabled();
     rcasAttenuationSetting = static_cast<float>(EmulatorSettings.GetRcasAttenuation() * 0.001f);
     {
@@ -156,6 +165,8 @@ void SettingsWindow::SaveSettings(std::string profile) {
     }
     EmulatorSettings.SetLemonFgHighQuality(lemonFgHighQualitySetting, isSpecific);
     EmulatorSettings.SetLemonFgHudProtection(lemonFgHudProtectionSetting, isSpecific);
+    EmulatorSettings.SetLemonFgMultiplier(lemonFgMultipliers.at(lemonFgMultiplierSetting),
+                                          isSpecific);
     EmulatorSettings.SetRcasEnabled(rcasEnabledSetting, isSpecific);
     EmulatorSettings.SetRcasAttenuation(static_cast<int>(rcasAttenuationSetting * 1000),
                                         isSpecific);
@@ -797,6 +808,8 @@ void SettingsWindow::DrawSettingsTable(SettingsCategory category) {
 
             AddSettingCombo("Frame Generation", frameGenerationSetting, frameGenerationOptions);
             if (frameGenerationSetting == 2) {
+                AddSettingCombo("Lemon FG Multiplier", lemonFgMultiplierSetting,
+                                lemonFgMultiplierOptions);
                 AddSettingCheckbox("Lemon FG High Quality", lemonFgHighQualitySetting);
                 AddSettingCheckbox("Lemon FG HUD Protection", lemonFgHudProtectionSetting);
             }

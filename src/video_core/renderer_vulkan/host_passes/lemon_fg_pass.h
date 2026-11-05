@@ -38,11 +38,12 @@ public:
 
     void Create(const Instance& instance, Scheduler& scheduler, Settings settings);
 
-    /// Records the frame between the previous `frame` and this one into `output`. `frame` has
-    /// the given 32-bit RGBA or BGRA format, is in the general layout and stays there; `output`
-    /// has the same format and ends in the shader read only layout when it was written.
-    bool Generate(vk::CommandBuffer cmdbuf, vk::Image frame, vk::Format frame_format,
-                  vk::Image output, u32 width, u32 height);
+    /// Records the frames between the previous `frame` and this one into `outputs`, evenly
+    /// spaced in time, and returns how many were written. `frame` has the given 32-bit RGBA or
+    /// BGRA format, is in the general layout and stays there; the outputs have the same format
+    /// and end in the shader read only layout when they were written.
+    u32 Generate(vk::CommandBuffer cmdbuf, vk::Image frame, vk::Format frame_format,
+                 std::span<const vk::Image> outputs, u32 width, u32 height);
 
     /// The next frame starts a new sequence (scene cut, resize, frame generation toggled).
     void Reset() {

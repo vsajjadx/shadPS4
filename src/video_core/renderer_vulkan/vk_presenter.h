@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -31,6 +32,16 @@ struct Liverpool;
 
 namespace Vulkan {
 
+struct GeneratedImage {
+    VmaAllocation allocation{};
+    vk::Image image{};
+    vk::ImageView image_view{};
+    ImTextureID imgui_texture{};
+};
+
+/// The most frames generated between two game frames (6x).
+constexpr u32 MaxGeneratedFrames = 5;
+
 struct Frame {
     u32 width;
     u32 height;
@@ -45,11 +56,8 @@ struct Frame {
 
     ImTextureID imgui_texture;
 
-    VmaAllocation generated_allocation{};
-    vk::Image generated_image{};
-    vk::ImageView generated_image_view{};
-    ImTextureID generated_imgui_texture{};
-    bool has_generated{false};
+    std::array<GeneratedImage, MaxGeneratedFrames> generated{};
+    u32 num_generated{};
     u64 signature_id{};
     std::chrono::steady_clock::time_point prepared_at{};
 };
@@ -121,11 +129,12 @@ public:
 private:
     Frame* GetRenderFrame();
 
-    void PresentImage(Frame* frame, bool is_reusing_frame, bool is_game_frame, bool generated);
+    void PresentImage(Frame* frame, bool is_reusing_frame, bool is_game_frame,
+                      const GeneratedImage* generated);
     bool UpdateGenerationPacing();
     bool IsSceneCut(Frame* frame);
-    void CreateGeneratedImage(Frame* frame, vk::Format format);
-    void DestroyGeneratedImage(Frame* frame);
+    void CreateGeneratedImages(Frame* frame, vk::Format format);
+    void DestroyGeneratedImages(Frame* frame);
 
     void RecreateFrame(Frame* frame, u32 width, u32 height);
 
@@ -166,6 +175,7 @@ private:
     std::chrono::steady_clock::time_point last_real_present{};
     std::chrono::nanoseconds flip_interval{};
     std::atomic_bool generation_wanted{false};
+    u32 generated_frames{1};
 };
 
 } // namespace Vulkan

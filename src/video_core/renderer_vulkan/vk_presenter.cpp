@@ -497,6 +497,10 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
     FrameGeneration::SetBackend(
         FrameGeneration::BackendFromSetting(EmulatorSettings.GetFrameGenerationBackend()));
+    if (FrameGeneration::GetBackend() == FrameGeneration::Backend::Lemon) {
+        generated_frames =
+            std::clamp(EmulatorSettings.GetLemonFgMultiplier(), 2u, MaxGeneratedFrames + 1) - 1;
+    }
     if (HostPasses::LemonFgPass::IsSupported(instance)) {
         lemon_fg_pass.Create(instance, draw_scheduler,
                              {
@@ -512,8 +516,8 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     frame_generator = std::make_unique<FrameGenerator>(instance, draw_scheduler);
 #endif
     FrameGeneration::SetEnabled(EmulatorSettings.IsFrameGenerationEnabled());
-    LOG_INFO(Render_Vulkan, "Frame generation: {} ({})",
-             FrameGeneration::BackendName(FrameGeneration::GetBackend()),
+    LOG_INFO(Render_Vulkan, "Frame generation: {} {}x ({})",
+             FrameGeneration::BackendName(FrameGeneration::GetBackend()), generated_frames + 1,
              FrameGeneration::IsEnabled() ? "on" : "off");
 
     ImGui::Layer::AddLayer(Common::Singleton<Core::Devtools::Layer>::Instance());
@@ -540,32 +544,30 @@ Presenter::~Presenter() {
 #endif
     const vk::Device device = instance.GetDevice();
     for (auto& frame : present_frames) {
-        DestroyGeneratedImage(&frame);
+        DestroyGeneratedImages(&frame);
         vmaDestroyImage(instance.GetAllocator(), frame.image, frame.allocation);
         device.destroyImageView(frame.image_view);
         device.destroyFence(frame.present_done);
     }
 }
 
-void Presenter::DestroyGeneratedImage(Frame* frame) {
-    if (frame->generated_imgui_texture) {
-        ImGui::Vulkan::RemoveTexture(frame->generated_imgui_texture);
+void Presenter::DestroyGeneratedImages(Frame* frame) {
+    for (auto& generated : frame->generated) {
+        if (generated.imgui_texture) {
+            ImGui::Vulkan::RemoveTexture(generated.imgui_texture);
+        }
+        if (generated.image_view) {
+            instance.GetDevice().destroyImageView(generated.image_view);
+        }
+        if (generated.image) {
+            vmaDestroyImage(instance.GetAllocator(), generated.image, generated.allocation);
+        }
+        generated = {};
     }
-    if (frame->generated_image_view) {
-        instance.GetDevice().destroyImageView(frame->generated_image_view);
-    }
-    if (frame->generated_image) {
-        vmaDestroyImage(instance.GetAllocator(), frame->generated_image,
-                        frame->generated_allocation);
-    }
-    frame->generated_imgui_texture = {};
-    frame->generated_image_view = vk::ImageView{};
-    frame->generated_image = vk::Image{};
-    frame->generated_allocation = {};
-    frame->has_generated = false;
+    frame->num_generated = 0;
 }
 
-void Presenter::CreateGeneratedImage(Frame* frame, vk::Format format) {
+void Presenter::CreateGeneratedImages(Frame* frame, vk::Format format) {
     if (!FrameGeneration::IsAvailable() || frame->is_hdr) {
         return;
     }
@@ -582,32 +584,35 @@ void Presenter::CreateGeneratedImage(Frame* frame, vk::Format format) {
         .flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT,
         .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
     };
-    VkImage image{};
-    if (vmaCreateImage(instance.GetAllocator(), &image_info, &alloc_info, &image,
-                       &frame->generated_allocation, nullptr) != VK_SUCCESS) {
-        frame->generated_allocation = {};
-        return;
+    for (u32 i = 0; i < generated_frames; ++i) {
+        GeneratedImage& generated = frame->generated[i];
+        VkImage image{};
+        if (vmaCreateImage(instance.GetAllocator(), &image_info, &alloc_info, &image,
+                           &generated.allocation, nullptr) != VK_SUCCESS) {
+            generated.allocation = {};
+            return;
+        }
+        generated.image = vk::Image{image};
+        SetObjectName(instance.GetDevice(), generated.image, "Generated frame image #{}.{}",
+                      frame->id, i);
+        const vk::ImageViewCreateInfo view_info = {
+            .image = generated.image,
+            .viewType = vk::ImageViewType::e2D,
+            .format = format,
+            .components{.a = vk::ComponentSwizzle::eOne},
+            .subresourceRange{
+                .aspectMask = vk::ImageAspectFlagBits::eColor,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+        };
+        generated.image_view = Check<"create generated frame image view">(
+            instance.GetDevice().createImageView(view_info));
+        generated.imgui_texture = ImGui::Vulkan::AddTexture(
+            generated.image_view, vk::ImageLayout::eShaderReadOnlyOptimal);
     }
-    frame->generated_image = vk::Image{image};
-    SetObjectName(instance.GetDevice(), frame->generated_image, "Generated frame image #{}",
-                  frame->id);
-    const vk::ImageViewCreateInfo view_info = {
-        .image = frame->generated_image,
-        .viewType = vk::ImageViewType::e2D,
-        .format = format,
-        .components{.a = vk::ComponentSwizzle::eOne},
-        .subresourceRange{
-            .aspectMask = vk::ImageAspectFlagBits::eColor,
-            .baseMipLevel = 0,
-            .levelCount = 1,
-            .baseArrayLayer = 0,
-            .layerCount = 1,
-        },
-    };
-    frame->generated_image_view =
-        Check<"create generated frame image view">(instance.GetDevice().createImageView(view_info));
-    frame->generated_imgui_texture = ImGui::Vulkan::AddTexture(
-        frame->generated_image_view, vk::ImageLayout::eShaderReadOnlyOptimal);
 }
 
 bool Presenter::IsVideoOutSurface(const AmdGpu::ColorBuffer& color_buffer) const {
@@ -616,7 +621,7 @@ bool Presenter::IsVideoOutSurface(const AmdGpu::ColorBuffer& color_buffer) const
 
 void Presenter::RecreateFrame(Frame* frame, u32 width, u32 height) {
     const vk::Device device = instance.GetDevice();
-    DestroyGeneratedImage(frame);
+    DestroyGeneratedImages(frame);
     if (frame->imgui_texture) {
         ImGui::Vulkan::RemoveTexture(frame->imgui_texture);
     }
@@ -681,7 +686,7 @@ void Presenter::RecreateFrame(Frame* frame, u32 width, u32 height) {
 
     frame->imgui_texture = ImGui::Vulkan::AddTexture(view, vk::ImageLayout::eShaderReadOnlyOptimal);
     frame->is_hdr = swapchain.GetHDR();
-    CreateGeneratedImage(frame, format);
+    CreateGeneratedImages(frame, format);
 }
 
 Frame* Presenter::PrepareLastFrame() {
@@ -740,7 +745,7 @@ Frame* Presenter::PrepareLastFrame() {
     });
 
     // Flush frame creation commands.
-    frame->has_generated = false;
+    frame->num_generated = 0;
     frame->ready_semaphore = scheduler.GetWorkSemaphore()->Handle();
     frame->ready_tick = scheduler.CurrentTick();
     SubmitInfo info{};
@@ -856,16 +861,20 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     pp_pass.Render(cmdbuf, image_view, image_size, *frame, pp_settings);
 
     frame->prepared_at = std::chrono::steady_clock::now();
-    frame->has_generated = false;
+    frame->num_generated = 0;
     frame->signature_id = 0;
     const bool generate = FrameGeneration::IsEnabled() && generation_wanted &&
-                          frame->generated_image && !frame->is_hdr;
+                          frame->generated[generated_frames - 1].image && !frame->is_hdr;
     switch (FrameGeneration::GetBackend()) {
     case FrameGeneration::Backend::Lemon:
         if (generate) {
-            frame->has_generated =
-                lemon_fg_pass.Generate(cmdbuf, frame->image, swapchain.GetSurfaceFormat().format,
-                                       frame->generated_image, frame->width, frame->height);
+            std::array<vk::Image, MaxGeneratedFrames> outputs{};
+            for (u32 i = 0; i < generated_frames; ++i) {
+                outputs[i] = frame->generated[i].image;
+            }
+            frame->num_generated = lemon_fg_pass.Generate(
+                cmdbuf, frame->image, swapchain.GetSurfaceFormat().format,
+                std::span{outputs.data(), generated_frames}, frame->width, frame->height);
         } else {
             lemon_fg_pass.Reset();
         }
@@ -873,8 +882,11 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     case FrameGeneration::Backend::Fsr:
 #ifdef ENABLE_FSR_FRAMEGEN
         if (generate) {
-            frame->has_generated = frame_generator->Generate(
-                cmdbuf, frame->image, frame->generated_image, frame->width, frame->height);
+            frame->num_generated =
+                frame_generator->Generate(cmdbuf, frame->image, frame->generated[0].image,
+                                          frame->width, frame->height)
+                    ? 1
+                    : 0;
             frame->signature_id = frame_generator->SignatureId();
         } else {
             frame_generator->Reset();
@@ -969,7 +981,7 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
 
     // Flush frame creation commands.
     frame->prepared_at = std::chrono::steady_clock::now();
-    frame->has_generated = false;
+    frame->num_generated = 0;
     frame->ready_semaphore = scheduler.GetWorkSemaphore()->Handle();
     frame->ready_tick = scheduler.CurrentTick();
     SubmitInfo info{};
@@ -1012,7 +1024,7 @@ bool Presenter::IsSceneCut(Frame* frame) {
 void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame,
                         const std::function<void()>& flipped) {
     if (is_reusing_frame || !is_game_frame) {
-        PresentImage(frame, is_reusing_frame, is_game_frame, false);
+        PresentImage(frame, is_reusing_frame, is_game_frame, nullptr);
         if (flipped) {
             flipped();
         }
@@ -1036,35 +1048,40 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame,
     const bool behind = std::chrono::steady_clock::now() - now > flip_interval;
     const bool scene_cut = IsSceneCut(frame);
     bool flip_reported = false;
-    if (frame->has_generated) {
-        frame->has_generated = false;
-        if (paceable && steady_cadence && !behind && !scene_cut) {
-            // The game's flip is done once its frame is accepted. Holding it back until the pair
-            // is on screen would add half a game frame to every flip, and a game that waits for
-            // its flips would run at half speed with frame generation on.
-            if (flipped) {
-                flipped();
-                flip_reported = true;
-            }
-            const auto generated_shown = std::chrono::steady_clock::now();
-            PresentImage(frame, false, is_game_frame, true);
-            // The real frame follows halfway to the next one.
-            const auto real_due = generated_shown + flip_interval / 2;
-            const auto wait = real_due - std::chrono::steady_clock::now();
+    const u32 num_generated = std::exchange(frame->num_generated, 0);
+    if (num_generated > 0 && paceable && steady_cadence && !behind && !scene_cut) {
+        // The game's flip is done once its frame is accepted. Holding it back until the
+        // generated frames are on screen would add most of a game frame to every flip, and a
+        // game that waits for its flips would slow down with frame generation on.
+        if (flipped) {
+            flipped();
+            flip_reported = true;
+        }
+        // The generated frames and then the real one follow each other at even steps over the
+        // next game frame.
+        const auto step = flip_interval / (num_generated + 1);
+        const auto first_shown = std::chrono::steady_clock::now();
+        const auto wait_until = [](std::chrono::steady_clock::time_point due) {
+            const auto wait = due - std::chrono::steady_clock::now();
             if (wait > std::chrono::nanoseconds::zero()) {
                 Common::AccurateSleep(std::chrono::duration_cast<std::chrono::nanoseconds>(wait),
                                       nullptr, false);
             }
+        };
+        for (u32 i = 0; i < num_generated; ++i) {
+            wait_until(first_shown + step * i);
+            PresentImage(frame, false, is_game_frame, &frame->generated[i]);
         }
+        wait_until(first_shown + step * num_generated);
     }
-    PresentImage(frame, false, is_game_frame, false);
+    PresentImage(frame, false, is_game_frame, nullptr);
     if (!flip_reported && flipped) {
         flipped();
     }
 }
 
 void Presenter::PresentImage(Frame* frame, bool is_reusing_frame, bool is_game_frame,
-                             bool generated) {
+                             const GeneratedImage* generated) {
     // Free the frame for reuse.
     // The frame that was just presented stays reserved, because DrawLastFrame re-presents it while
     // no new flip arrives; the previously presented frame is released to the GPU thread instead.
@@ -1156,7 +1173,7 @@ void Presenter::PresentImage(Frame* frame, bool is_reusing_frame, bool is_game_f
                 .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .image = generated ? frame->generated_image : frame->image,
+                .image = generated ? generated->image : frame->image,
                 .subresourceRange{
                     .aspectMask = vk::ImageAspectFlagBits::eColor,
                     .baseMipLevel = 0,
@@ -1181,8 +1198,7 @@ void Presenter::PresentImage(Frame* frame, bool is_reusing_frame, bool is_game_f
             ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
             ImGui::SetNextWindowDockID(dockId, ImGuiCond_Once);
             if (ImGui::Begin("Display##game_display", nullptr, ImGuiWindowFlags_NoNav)) {
-                auto game_texture =
-                    generated ? frame->generated_imgui_texture : frame->imgui_texture;
+                auto game_texture = generated ? generated->imgui_texture : frame->imgui_texture;
                 auto game_width = frame->width;
                 auto game_height = frame->height;
 

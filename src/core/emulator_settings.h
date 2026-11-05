@@ -444,6 +444,7 @@ struct GPUSettings {
     Setting<std::string> frame_generation_backend{"FSR"};
     Setting<bool> lemon_fg_high_quality{false};
     Setting<bool> lemon_fg_hud_protection{true};
+    Setting<u32> lemon_fg_multiplier{2};
     Setting<bool> anti_aliasing{false};
     Setting<u32> resolution_scale{100};
     // Windows: the GPU command thread gets a physical core of its own.
@@ -484,6 +485,7 @@ struct GPUSettings {
                                        &GPUSettings::lemon_fg_high_quality),
             make_override<GPUSettings>("lemon_fg_hud_protection",
                                        &GPUSettings::lemon_fg_hud_protection),
+            make_override<GPUSettings>("lemon_fg_multiplier", &GPUSettings::lemon_fg_multiplier),
             make_override<GPUSettings>("anti_aliasing", &GPUSettings::anti_aliasing),
             make_override<GPUSettings>("resolution_scale", &GPUSettings::resolution_scale),
             make_override<GPUSettings>("gpu_thread_core_reserve",
@@ -509,17 +511,15 @@ struct GPUSettings {
         };
     }
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GPUSettings, window_width, window_height, internal_screen_width,
-                                   internal_screen_height, null_gpu, copy_gpu_buffers,
-                                   readbacks_mode, readback_linear_images_enabled,
-                                   direct_memory_access_enabled, dump_shaders, patch_shaders,
-                                   vblank_limit, full_screen, full_screen_mode, present_mode,
-                                   hdr_allowed, fsr_enabled, rcas_enabled, rcas_attenuation,
-                                   userfaultfd, inline_fetch_shader, anisotropic_filtering,
-                                   texture_lod_bias, frame_generation_enabled,
-                                   frame_generation_backend, lemon_fg_high_quality,
-                                   lemon_fg_hud_protection, gpu_thread_core_reserve, anti_aliasing,
-                                   resolution_scale, fast_shader_math, brightness, contrast)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(
+    GPUSettings, window_width, window_height, internal_screen_width, internal_screen_height,
+    null_gpu, copy_gpu_buffers, readbacks_mode, readback_linear_images_enabled,
+    direct_memory_access_enabled, dump_shaders, patch_shaders, vblank_limit, full_screen,
+    full_screen_mode, present_mode, hdr_allowed, fsr_enabled, rcas_enabled, rcas_attenuation,
+    userfaultfd, inline_fetch_shader, anisotropic_filtering, texture_lod_bias,
+    frame_generation_enabled, frame_generation_backend, lemon_fg_high_quality,
+    lemon_fg_hud_protection, lemon_fg_multiplier, gpu_thread_core_reserve, anti_aliasing,
+    resolution_scale, fast_shader_math, brightness, contrast)
 
 // -------------------------------
 // Vulkan settings
@@ -828,6 +828,7 @@ public:
     SETTING_FORWARD(m_gpu, FrameGenerationBackend, frame_generation_backend)
     SETTING_FORWARD_BOOL(m_gpu, LemonFgHighQuality, lemon_fg_high_quality)
     SETTING_FORWARD_BOOL(m_gpu, LemonFgHudProtection, lemon_fg_hud_protection)
+    SETTING_FORWARD(m_gpu, LemonFgMultiplier, lemon_fg_multiplier)
     SETTING_FORWARD_BOOL(m_gpu, AntiAliasing, anti_aliasing)
     SETTING_FORWARD(m_gpu, ResolutionScale, resolution_scale)
     SETTING_FORWARD_BOOL(m_gpu, GpuThreadCoreReserve, gpu_thread_core_reserve)

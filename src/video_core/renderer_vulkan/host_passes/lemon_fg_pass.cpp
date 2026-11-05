@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <utility>
 #include <vector>
 
 #include "common/assert.h"
@@ -483,10 +484,10 @@ void LemonFgPass::Interpolate(vk::CommandBuffer cmdbuf, u32 slot, float t) {
         DivCeil(extent.width, 16u), DivCeil(extent.height, 8u));
 }
 
-bool LemonFgPass::Generate(vk::CommandBuffer cmdbuf, vk::Image frame, vk::Format frame_format,
-                           vk::Image output, u32 width, u32 height) {
-    if (width == 0 || height == 0) {
-        return false;
+u32 LemonFgPass::Generate(vk::CommandBuffer cmdbuf, vk::Image frame, vk::Format frame_format,
+                          std::span<const vk::Image> outputs, u32 width, u32 height) {
+    if (width == 0 || height == 0 || outputs.empty()) {
+        return 0;
     }
     if (extent != vk::Extent2D{width, height} || format != frame_format) {
         Recreate(cmdbuf, width, height, frame_format);
@@ -514,18 +515,23 @@ bool LemonFgPass::Generate(vk::CommandBuffer cmdbuf, vk::Image frame, vk::Format
 
     BuildPyramid(cmdbuf, slot);
 
-    const bool was_reset = reset;
-    reset = false;
-    if (!was_reset) {
-        SearchMotion(cmdbuf, slot, last_flow + 1 == frame_count);
-        last_flow = frame_count;
-        if (settings.hud_protection) {
-            MaskStillContent(cmdbuf, slot);
-        } else {
-            ClearStillMask(cmdbuf);
-        }
-        Interpolate(cmdbuf, slot, 0.5f);
+    const bool was_reset = std::exchange(reset, false);
+    const u64 pair = frame_count++;
+    if (was_reset) {
+        return 0;
+    }
+    SearchMotion(cmdbuf, slot, last_flow + 1 == pair);
+    last_flow = pair;
+    if (settings.hud_protection) {
+        MaskStillContent(cmdbuf, slot);
+    } else {
+        ClearStillMask(cmdbuf);
+    }
 
+    const u32 count = static_cast<u32>(outputs.size());
+    for (u32 i = 0; i < count; ++i) {
+        const vk::Image output = outputs[i];
+        Interpolate(cmdbuf, slot, static_cast<float>(i + 1) / static_cast<float>(count + 1));
         const std::array to_output{
             ImageBarrier(interpolated.image, Stage::eComputeShader, Access::eShaderStorageWrite,
                          Stage::eTransfer, Access::eTransferRead, Layout::eGeneral,
@@ -543,8 +549,7 @@ bool LemonFgPass::Generate(vk::CommandBuffer cmdbuf, vk::Image frame, vk::Format
         };
         ImageBarriers(cmdbuf, to_present);
     }
-    ++frame_count;
-    return !was_reset;
+    return count;
 }
 
 } // namespace Vulkan::HostPasses

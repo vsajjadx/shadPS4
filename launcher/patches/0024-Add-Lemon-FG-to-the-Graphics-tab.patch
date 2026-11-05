@@ -1,30 +1,31 @@
-From 6f0133bd0acb2c1a9fff4d03c131a6472d980452 Mon Sep 17 00:00:00 2001
+From 062e0d204222c1caf7dff2d5d3d7ce65223644bb Mon Sep 17 00:00:00 2001
 From: vsajjadx <168470755+vsajjadx@users.noreply.github.com>
 Date: Thu, 5 Nov 2026 16:16:55 +0000
 Subject: [PATCH] Add Lemon FG to the Graphics tab: frame generation method
- (FSR 3.1 or Lemon FG), High Quality and HUD Protection
+ (FSR 3.1 or Lemon FG), multiplier, High Quality and HUD Protection
 
 ---
- src/core/emulator_settings.h   | 14 +++++++++++
- src/qt_gui/settings_dialog.cpp | 46 +++++++++++++++++++++++++++++++++-
- src/qt_gui/settings_dialog.h   |  3 +++
- 3 files changed, 62 insertions(+), 1 deletion(-)
+ src/core/emulator_settings.h   | 17 +++++++++
+ src/qt_gui/settings_dialog.cpp | 64 +++++++++++++++++++++++++++++++++-
+ src/qt_gui/settings_dialog.h   |  4 +++
+ 3 files changed, 84 insertions(+), 1 deletion(-)
 
 diff --git a/src/core/emulator_settings.h b/src/core/emulator_settings.h
-index f3b1fe7..b96bd1d 100644
+index f3b1fe7..8274e89 100644
 --- a/src/core/emulator_settings.h
 +++ b/src/core/emulator_settings.h
-@@ -433,6 +433,9 @@ struct GPUSettings {
+@@ -433,6 +433,10 @@ struct GPUSettings {
      Setting<bool> userfaultfd{false};
      Setting<bool> inline_fetch_shader{false};
      Setting<bool> frame_generation_enabled{false};
 +    Setting<std::string> frame_generation_backend{"FSR"};
 +    Setting<bool> lemon_fg_high_quality{false};
 +    Setting<bool> lemon_fg_hud_protection{true};
++    Setting<u32> lemon_fg_multiplier{2};
      Setting<bool> anti_aliasing{false};
      Setting<u32> resolution_scale{100};
      Setting<u32> anisotropic_filtering{0};
-@@ -464,6 +467,12 @@ struct GPUSettings {
+@@ -464,6 +468,13 @@ struct GPUSettings {
              make_override<GPUSettings>("inline_fetch_shader", &GPUSettings::inline_fetch_shader),
              make_override<GPUSettings>("frame_generation_enabled",
                                         &GPUSettings::frame_generation_enabled),
@@ -34,43 +35,46 @@ index f3b1fe7..b96bd1d 100644
 +                                       &GPUSettings::lemon_fg_high_quality),
 +            make_override<GPUSettings>("lemon_fg_hud_protection",
 +                                       &GPUSettings::lemon_fg_hud_protection),
++            make_override<GPUSettings>("lemon_fg_multiplier", &GPUSettings::lemon_fg_multiplier),
              make_override<GPUSettings>("anti_aliasing", &GPUSettings::anti_aliasing),
              make_override<GPUSettings>("resolution_scale", &GPUSettings::resolution_scale),
              make_override<GPUSettings>("anisotropic_filtering",
-@@ -480,6 +489,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GPUSettings, window_width, window_height, int
+@@ -480,6 +491,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GPUSettings, window_width, window_height, int
                                     vblank_frequency, full_screen, full_screen_mode, present_mode,
                                     hdr_allowed, fsr_enabled, rcas_enabled, rcas_attenuation,
                                     userfaultfd, inline_fetch_shader, frame_generation_enabled,
 +                                   frame_generation_backend, lemon_fg_high_quality,
-+                                   lemon_fg_hud_protection,
++                                   lemon_fg_hud_protection, lemon_fg_multiplier,
                                     anti_aliasing, resolution_scale, anisotropic_filtering,
                                     brightness, contrast)
  
-@@ -761,6 +772,9 @@ public:
+@@ -761,6 +774,10 @@ public:
      SETTING_FORWARD_BOOL(m_gpu, UserfaultfdTracking, userfaultfd)
      SETTING_FORWARD_BOOL_READONLY(m_gpu, InlineFetchShader, inline_fetch_shader)
      SETTING_FORWARD_BOOL(m_gpu, FrameGenerationEnabled, frame_generation_enabled)
 +    SETTING_FORWARD(m_gpu, FrameGenerationBackend, frame_generation_backend)
 +    SETTING_FORWARD_BOOL(m_gpu, LemonFgHighQuality, lemon_fg_high_quality)
 +    SETTING_FORWARD_BOOL(m_gpu, LemonFgHudProtection, lemon_fg_hud_protection)
++    SETTING_FORWARD(m_gpu, LemonFgMultiplier, lemon_fg_multiplier)
      SETTING_FORWARD_BOOL(m_gpu, AntiAliasing, anti_aliasing)
      SETTING_FORWARD(m_gpu, ResolutionScale, resolution_scale)
      SETTING_FORWARD(m_gpu, AnisotropicFiltering, anisotropic_filtering)
 diff --git a/src/qt_gui/settings_dialog.cpp b/src/qt_gui/settings_dialog.cpp
-index 9f0f1b7..5119a90 100644
+index 9f0f1b7..4091ca1 100644
 --- a/src/qt_gui/settings_dialog.cpp
 +++ b/src/qt_gui/settings_dialog.cpp
-@@ -575,6 +575,9 @@ SettingsDialog::SettingsDialog(std::shared_ptr<gui_settings> gui_settings,
+@@ -575,6 +575,10 @@ SettingsDialog::SettingsDialog(std::shared_ptr<gui_settings> gui_settings,
          ui->graphicsAdapterGroupBox->installEventFilter(this);
          ui->windowSizeGroupBox->installEventFilter(this);
          frameGenCheckBox->installEventFilter(this);
 +        frameGenBackendComboBox->installEventFilter(this);
 +        lemonFgHighQualityCheckBox->installEventFilter(this);
 +        lemonFgHudProtectionCheckBox->installEventFilter(this);
++        lemonFgMultiplierComboBox->installEventFilter(this);
          antiAliasingCheckBox->installEventFilter(this);
          resolutionScaleComboBox->installEventFilter(this);
          anisotropicComboBox->installEventFilter(this);
-@@ -794,6 +797,13 @@ void SettingsDialog::LoadValuesFromConfig() {
+@@ -794,6 +798,18 @@ void SettingsDialog::LoadValuesFromConfig() {
      ui->enableHDRCheckBox->setChecked(EmulatorSettings.IsHdrAllowed());
      SyncResolutionComboBox();
      frameGenCheckBox->setChecked(EmulatorSettings.IsFrameGenerationEnabled());
@@ -81,10 +85,15 @@ index 9f0f1b7..5119a90 100644
 +    }
 +    lemonFgHighQualityCheckBox->setChecked(EmulatorSettings.IsLemonFgHighQuality());
 +    lemonFgHudProtectionCheckBox->setChecked(EmulatorSettings.IsLemonFgHudProtection());
++    {
++        const int multiplierIndex =
++            lemonFgMultiplierComboBox->findData(EmulatorSettings.GetLemonFgMultiplier());
++        lemonFgMultiplierComboBox->setCurrentIndex(multiplierIndex >= 0 ? multiplierIndex : 0);
++    }
      LoadDlss5Settings();
      antiAliasingCheckBox->setChecked(EmulatorSettings.IsAntiAliasing());
      SyncImageQualityComboBoxes();
-@@ -1066,8 +1076,14 @@ void SettingsDialog::updateNoteTextEdit(const QString& elementName) {
+@@ -1066,8 +1082,16 @@ void SettingsDialog::updateNoteTextEdit(const QString& elementName) {
          text = tr("Contrast:\\nMakes the difference between dark and bright tones larger or smaller. 100% shows the image as the game draws it. Higher values make the picture punchier, lower values flatter. It can also be changed while playing from the game window's title bar menu.");
      } else if (elementName == "anisotropicComboBox") {
          text = tr("Anisotropic Filtering:\\nMakes textures sharper on surfaces seen at a steep angle, such as roads and floors. Higher values look better and cost a little GPU time. Off leaves it as the game sets it.");
@@ -94,13 +103,15 @@ index 9f0f1b7..5119a90 100644
 +        text = tr("Lemon FG: High Quality:\\nSearches motion at half the window resolution instead of a quarter. Small and fast moving objects follow their motion better and smear less, at about four times the cost of the motion search. Turn it off if frame generation makes the game slower.");
 +    } else if (elementName == "lemonFgHudProtectionCheckBox") {
 +        text = tr("Lemon FG: HUD Protection:\\nKeeps what does not move on screen, such as the HUD, health bars and subtitles, in place in the generated frames instead of dragging it along with the moving scene. Turn it off if parts of a moving scene look frozen or doubled in a game with film grain or a constantly animated HUD.");
++    } else if (elementName == "lemonFgMultiplierComboBox") {
++        text = tr("Lemon FG: Multiplier:\\nHow many frames are shown for every game frame. 2x adds one generated frame, 3x two, 4x three and 6x five. A 30 FPS game shows 60, 90, 120 or 180 frames per second, so pick a multiplier your monitor's refresh rate can show. Higher multipliers use more video memory and GPU time, and the generated frames' mistakes are easier to see.");
      } else if (elementName == "frameGenCheckBox") {
 -        text = tr("Enable Frame Generation:\\nAdds a generated frame between every two game frames with AMD FSR 3.1, so the game looks smoother.\\nWorks best when the game already runs at 30 FPS or more. The key that turns it on and off while playing is set in Hotkeys (default: 1).");
 +        text = tr("Enable Frame Generation:\\nAdds a generated frame between every two game frames with the method chosen below (FSR 3.1 or Lemon FG), so the game looks smoother.\\nWorks best when the game already runs at 30 FPS or more. The key that turns it on and off while playing is set in Hotkeys (default: 1).");
      } else if (elementName == "heightDivider") {
          text = tr("Vblank Frequency:\\nThe frame rate at which the emulator refreshes at (60hz is the baseline, whether the game runs at 30 or 60fps). Changing this may have adverse effects, such as increasing the game speed, or breaking critical game functionality that does not expect this to change!");
      } else if (elementName == "dumpShadersCheckBox") {
-@@ -1231,6 +1247,11 @@ void SettingsDialog::UpdateSettings(bool is_specific) {
+@@ -1231,6 +1255,13 @@ void SettingsDialog::UpdateSettings(bool is_specific) {
      EmulatorSettings.SetHdrAllowed(ui->enableHDRCheckBox->isChecked(), is_specific);
      EmulatorSettings.SetFsrEnabled(ui->FSRCheckBox->isChecked(), is_specific);
      EmulatorSettings.SetFrameGenerationEnabled(frameGenCheckBox->isChecked(), is_specific);
@@ -109,10 +120,12 @@ index 9f0f1b7..5119a90 100644
 +    EmulatorSettings.SetLemonFgHighQuality(lemonFgHighQualityCheckBox->isChecked(), is_specific);
 +    EmulatorSettings.SetLemonFgHudProtection(lemonFgHudProtectionCheckBox->isChecked(),
 +                                             is_specific);
++    EmulatorSettings.SetLemonFgMultiplier(lemonFgMultiplierComboBox->currentData().toUInt(),
++                                          is_specific);
      SaveDlss5Settings();
      EmulatorSettings.SetAntiAliasing(antiAliasingCheckBox->isChecked(), is_specific);
      EmulatorSettings.SetResolutionScale(resolutionScaleComboBox->currentData().toUInt(),
-@@ -1650,6 +1671,29 @@ void SettingsDialog::SetupGraphicsExtras() {
+@@ -1650,6 +1681,37 @@ void SettingsDialog::SetupGraphicsExtras() {
      frameGenCheckBox->setObjectName("frameGenCheckBox");
      ui->verticalLayout_5->insertWidget(0, frameGenCheckBox);
  
@@ -130,10 +143,18 @@ index 9f0f1b7..5119a90 100644
 +    lemonFgHudProtectionCheckBox->setObjectName("lemonFgHudProtectionCheckBox");
 +    ui->verticalLayout_5->insertWidget(3, lemonFgHudProtectionCheckBox);
 +
++    lemonFgMultiplierComboBox = new QComboBox(ui->FSRGroupBox);
++    lemonFgMultiplierComboBox->setObjectName("lemonFgMultiplierComboBox");
++    for (const uint multiplier : {2u, 3u, 4u, 6u}) {
++        lemonFgMultiplierComboBox->addItem(tr("Lemon FG: %1x").arg(multiplier), multiplier);
++    }
++    ui->verticalLayout_5->insertWidget(4, lemonFgMultiplierComboBox);
++
 +    const auto updateLemonFgOptions = [this] {
 +        const bool lemon = frameGenBackendComboBox->currentData().toString() == "Lemon";
 +        lemonFgHighQualityCheckBox->setEnabled(lemon);
 +        lemonFgHudProtectionCheckBox->setEnabled(lemon);
++        lemonFgMultiplierComboBox->setEnabled(lemon);
 +    };
 +    connect(frameGenBackendComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
 +            updateLemonFgOptions);
@@ -143,16 +164,17 @@ index 9f0f1b7..5119a90 100644
      imageQualityGroupBox->setObjectName("imageQualityGroupBox");
      auto* imageQualityLayout = new QVBoxLayout(imageQualityGroupBox);
 diff --git a/src/qt_gui/settings_dialog.h b/src/qt_gui/settings_dialog.h
-index 8a087e4..52e2e84 100644
+index 8a087e4..14010e1 100644
 --- a/src/qt_gui/settings_dialog.h
 +++ b/src/qt_gui/settings_dialog.h
-@@ -73,6 +73,9 @@ private:
+@@ -73,6 +73,10 @@ private:
  
      QComboBox* resolutionComboBox{};
      QCheckBox* frameGenCheckBox{};
 +    QComboBox* frameGenBackendComboBox{};
 +    QCheckBox* lemonFgHighQualityCheckBox{};
 +    QCheckBox* lemonFgHudProtectionCheckBox{};
++    QComboBox* lemonFgMultiplierComboBox{};
      QCheckBox* antiAliasingCheckBox{};
      QComboBox* resolutionScaleComboBox{};
      QComboBox* anisotropicComboBox{};
