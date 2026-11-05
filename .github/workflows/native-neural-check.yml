@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 shadPS4 Emulator Project
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+# Compile check only for the experimental native neural pass (ENABLE_NATIVE_NEURAL).
+# Manual; it does not touch the release build and uploads nothing.
+name: Native neural compile check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  compile:
+    runs-on: windows-2025-vs2026
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: recursive
+
+    - name: Get the NGX SDK headers and library from NeuralScreen
+      shell: bash
+      run: git clone --depth 1 https://github.com/vsajjadx/NeuralScreen.git ns
+
+    - name: Configure
+      shell: pwsh
+      run: cmake --fresh -G Ninja -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DENABLE_NATIVE_NEURAL=ON "-DNGX_SDK_DIR=${{github.workspace}}/ns/native"
+
+    - name: Build
+      shell: pwsh
+      run: |
+        cmake --build build --parallel $env:NUMBER_OF_PROCESSORS 2>&1 | Tee-Object -FilePath build.log
+        exit $LASTEXITCODE
+
+    - name: Report compile errors
+      if: failure()
+      shell: pwsh
+      run: |
+        $errs = Select-String -Path build.log -Pattern ' error[: ]|FAILED:|undefined|fatal error' | Select-Object -First 25 | ForEach-Object { $_.Line.Trim().Replace('%','%25') }
+        Write-Output "::error title=compile-errors::$($errs -join '%0A')"
