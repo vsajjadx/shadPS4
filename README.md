@@ -56,8 +56,6 @@ separately.
 
 FC 27 was tested with direct PKG execution and runs remarkably smoothly.
 
-![EA SPORTS FC 27](./documents/Screenshots/games/fc27.jpg)
-
 Recommended settings:
 
 - **Redback Mode:** set it to `Precise` for the best image quality.
@@ -106,6 +104,10 @@ The zip includes the latest official shadPS4 Qt launcher, with a few additions:
 > folder and replace the files. Your games, saves and settings stay as they are.
 
 ## Screenshots
+
+| EA SPORTS FC 27 |
+| :---: |
+| ![EA SPORTS FC 27](./documents/Screenshots/games/fc27.jpg) |
 
 | inFAMOUS Second Son | DRIVECLUB |
 | :---: | :---: |
