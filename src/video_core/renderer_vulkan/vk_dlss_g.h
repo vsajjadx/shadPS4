@@ -3,22 +3,22 @@
 
 #pragma once
 
-#include <atomic>
+#include "common/types.h"
+#include "video_core/renderer_vulkan/vk_common.h"
 
 namespace Vulkan::DlssG {
 
-inline std::atomic_bool enabled{false};
+/// Loads the Streamline interposer when DLSS-G is selected and returns its
+/// vkGetInstanceProcAddr, or nullptr when the regular Vulkan loader must be used.
+PFN_vkGetInstanceProcAddr Initialize();
 
-inline bool IsAvailable() {
-    return false;
-}
+void OnDeviceCreated(vk::Instance instance, vk::PhysicalDevice physical_device, vk::Device device,
+                     u32 queue_family_index);
 
-inline void SetEnabled(bool value) {
-    enabled = value;
-}
+void Shutdown();
 
-inline bool IsEnabled() {
-    return enabled;
-}
+bool IsAvailable();
+void SetEnabled(bool enabled);
+bool IsEnabled();
 
 } // namespace Vulkan::DlssG

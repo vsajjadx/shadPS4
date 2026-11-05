@@ -40,6 +40,7 @@ option(ENABLE_DISCORD_RPC "Enable the Discord RPC integration" ON)
 option(ENABLE_UPDATER "Enables the options to updater" ON)
 option(ENABLE_TESTS "Build unit tests (requires GTest)" OFF)
 option(ENABLE_SYSTEM_LIBRARIES "Enable building against system libraries" OFF)
+cmake_dependent_option(ENABLE_DLSS_G "Enable DLSS-G (Streamline) frame generation" ON WIN32 OFF)
 cmake_dependent_option(ENABLE_FSR_FRAMEGEN "Enable FSR 3.1 frame generation (superseded by NeuralScreen DLSS5)" OFF WIN32 OFF)
 
 # First, determine whether to use CMAKE_OSX_ARCHITECTURES or CMAKE_SYSTEM_PROCESSOR.
@@ -1242,6 +1243,8 @@ set(VIDEO_CORE src/video_core/amdgpu/cb_db_extent.h
                src/video_core/renderer_vulkan/vk_presenter.cpp
                src/video_core/renderer_vulkan/vk_presenter.h
                src/video_core/renderer_vulkan/vk_frame_generation.h
+               src/video_core/renderer_vulkan/vk_dlss_g.cpp
+               src/video_core/renderer_vulkan/vk_dlss_g.h
                src/video_core/renderer_vulkan/vk_occlusion_counter.cpp
                src/video_core/renderer_vulkan/vk_occlusion_counter.h
                src/video_core/renderer_vulkan/vk_rasterizer.cpp
@@ -1421,6 +1424,18 @@ target_compile_definitions(Dear_ImGui PRIVATE IMGUI_USER_CONFIG="${PROJECT_SOURC
 
 if (ENABLE_DISCORD_RPC)
     target_compile_definitions(shadps4 PRIVATE ENABLE_DISCORD_RPC)
+endif()
+
+if (ENABLE_DLSS_G)
+    FetchContent_Declare(streamline
+        GIT_REPOSITORY https://github.com/NVIDIA-RTX/Streamline.git
+        GIT_TAG v2.9.0
+        GIT_SHALLOW TRUE
+        SOURCE_SUBDIR nonexistent
+    )
+    FetchContent_MakeAvailable(streamline)
+    target_include_directories(shadps4 PRIVATE ${streamline_SOURCE_DIR}/include)
+    target_compile_definitions(shadps4 PRIVATE ENABLE_DLSS_G)
 endif()
 
 if (ENABLE_FSR_FRAMEGEN)
