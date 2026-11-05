@@ -13,7 +13,6 @@
 #include <sl_consts.h>
 #include <sl_dlss_g.h>
 #include <sl_helpers_vk.h>
-#include <sl_pcl.h>
 #endif
 
 namespace Vulkan::DlssG {
