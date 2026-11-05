@@ -57,7 +57,7 @@ index 0df6c30..26b72da 100644
  
      // Frame generation; its in-game toggle key is set in the Hotkeys dialog.
 -    frameGenCheckBox = new QCheckBox(tr("Enable Frame Generation (FSR 3.1)"), ui->FSRGroupBox);
-+    frameGenCheckBox = new QCheckBox(tr("Enable Frame Generation (NeuralScreen)"), ui->FSRGroupBox);
++    frameGenCheckBox = new QCheckBox(tr("Enable Frame Generation (FSR 3.1)"), ui->FSRGroupBox);
      frameGenCheckBox->setObjectName("frameGenCheckBox");
      ui->verticalLayout_5->insertWidget(0, frameGenCheckBox);
  
