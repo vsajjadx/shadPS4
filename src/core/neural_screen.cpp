@@ -32,6 +32,7 @@ using json = nlohmann::json;
 constexpr int ControlPort = 53194;
 constexpr const char* SettingsFileName = "neural_screen.json";
 constexpr const char* AppConfigFileName = "neural_screen_app.json";
+constexpr int PerformanceDefaultsVersion = 1;
 
 const std::vector<std::string>& ProfileOptions() {
     static const std::vector<std::string> options = {"Faithful", "Natural", "Strong / Cinematic",
@@ -109,6 +110,15 @@ void LoadSettings() {
         s.localTone = std::clamp(j.value("LocalTone", s.localTone), 0.0f, 2.0f);
         s.localStructure = std::clamp(j.value("LocalStructure", s.localStructure), 0.0f, 2.0f);
         s.skinStructure = std::clamp(j.value("SkinStructure", s.skinStructure), -1.0f, 2.5f);
+
+        // One-time migration: old shadPS4 configs wrote Boost=false, which made
+        // the reduced work resolution ineffective and ran NGX at full resolution.
+        if (j.value("PerformanceDefaultsVersion", 0) < PerformanceDefaultsVersion) {
+            s.boost = true;
+            s.networkResolutionPercent = 30;
+            s.passes = 1;
+            SaveSettings();
+        }
     } catch (const json::exception& e) {
         LOG_ERROR(Loader, "NeuralScreen settings could not be read: {}", e.what());
     }
@@ -117,6 +127,7 @@ void LoadSettings() {
 void SaveSettings() {
     const auto& s = g_settings;
     json j;
+    j["PerformanceDefaultsVersion"] = PerformanceDefaultsVersion;
     j["Enabled"] = s.enabled;
     j["Boost"] = s.boost;
     j["AutoQuality"] = s.autoQuality;
