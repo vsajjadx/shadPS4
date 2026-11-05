@@ -447,6 +447,16 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
             if (stall_dumps++ < 3) {
                 LOG_CRITICAL(Lib_VideoOut, "GPU state at stall: {}",
                              Libraries::GnmDriver::GetGpuDebugState());
+                {
+                    std::scoped_lock lock{main_port.vo_mutex, mutex};
+                    const auto& flip = main_port.flip_status;
+                    LOG_CRITICAL(Lib_VideoOut,
+                                 "VideoOut state at stall: flips {} (arg {}, buffer {}), pending "
+                                 "{}, gc queue {}, queued requests {}, vblanks {}, flip rate {}",
+                                 flip.count, flip.flip_arg, flip.current_buffer,
+                                 flip.flip_pending_num, flip.gc_queue_num, requests.size(),
+                                 vblank_status.count, main_port.flip_rate);
+                }
                 Libraries::Kernel::DumpThreadsForHang("no flip for 10 seconds");
             }
         }

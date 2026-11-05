@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <string_view>
 #include "common/types.h"
 
@@ -58,6 +59,21 @@ struct SemaDiag {
     u64 last_take_ms{};
 };
 bool GetSemaDiag(const void* sema, SemaDiag& out);
+
+/// An HLE function call site of a guest thread, for the hang dump.
+struct HleCallRecord {
+    const void* function{};
+    const void* caller{};
+    u64 last_ms{};
+    u64 count{};
+};
+constexpr size_t HleCallHistory = 16;
+
+/// Remembers that the current guest thread called the HLE function from the given address.
+void RecordHleCall(const void* function, const void* caller);
+
+/// Names an HLE function wrapper for the hang dump.
+void RegisterHleFunctionName(const void* function, const char* name);
 
 /// Registers the calling host thread (GPU, presenter, ...) so it is included in the hang dump.
 void RegisterHangDiagHostThread(std::string_view name);

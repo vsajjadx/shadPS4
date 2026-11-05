@@ -8,11 +8,12 @@
 #include "core/tls.h"
 
 void LinkSymbolImpl(Core::Loader::SymbolsResolver* sym, char const* nid, char const* lib,
-                    u16 libversion, char const* mod, u64 symbol, Core::Loader::SymbolType sym_type);
+                    u16 libversion, char const* mod, u64 symbol, Core::Loader::SymbolType sym_type,
+                    char const* function_name = nullptr);
 
 #define LIB_FUNCTION(nid, lib, libversion, mod, function)                                          \
     LinkSymbolImpl(sym, nid, lib, libversion, mod, reinterpret_cast<u64>(HOST_CALL(function)),     \
-                   Core::Loader::SymbolType::Function)
+                   Core::Loader::SymbolType::Function, #function)
 
 #define LIB_OBJ(nid, lib, libversion, mod, obj)                                                    \
     LinkSymbolImpl(sym, nid, lib, libversion, mod, reinterpret_cast<u64>(obj),                     \

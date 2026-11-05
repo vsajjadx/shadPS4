@@ -17,6 +17,10 @@ namespace Libraries::Fiber {
 struct OrbisFiberContext;
 }
 
+namespace Libraries::Kernel {
+void RecordHleCall(const void* function, const void* caller);
+}
+
 namespace Core {
 
 union DtvEntry {
@@ -53,6 +57,8 @@ struct HostCallWrapperImpl;
 template <class ReturnType, class... Args, PS4_SYSV_ABI ReturnType (*func)(Args...)>
 struct HostCallWrapperImpl<func> {
     static ReturnType PS4_SYSV_ABI wrap(Args... args) {
+        ::Libraries::Kernel::RecordHleCall(reinterpret_cast<const void*>(&wrap),
+                                           __builtin_return_address(0));
         return func(args...);
     }
 };

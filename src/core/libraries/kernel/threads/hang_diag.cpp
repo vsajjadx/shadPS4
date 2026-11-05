@@ -6,6 +6,7 @@
 #include <chrono>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <fmt/format.h>
 
@@ -73,7 +74,17 @@ struct ThreadSnapshot {
     u64 rbp{};
     std::array<u64, 16> gprs{};
     std::vector<u64> stack;
+    std::array<HleCallRecord, HleCallHistory> hle_calls{};
 };
+
+std::mutex hle_names_mutex;
+std::unordered_map<const void*, const char*> hle_names;
+
+const char* HleFunctionName(const void* function) {
+    std::scoped_lock lk{hle_names_mutex};
+    const auto it = hle_names.find(function);
+    return it != hle_names.end() ? it->second : "?";
+}
 
 #ifdef _WIN32
 struct HostThread {
@@ -136,6 +147,7 @@ void CaptureSuspended(HANDLE handle, u64 stack_lo, u64 stack_hi, ThreadSnapshot&
 #endif
 
 std::string DescribeAddress(u64 addr);
+std::string DescribeAge(u64 since_ms, u64 now);
 
 /// For a thread found running guest code: its registers and the instructions at its rip, which
 /// show what a spinning loop waits for.
@@ -195,6 +207,22 @@ std::string DescribeAddress(u64 addr) {
     }
 #endif
     return fmt::format("{:#x}", addr);
+}
+
+/// The HLE functions a guest thread called last, newest first: a thread polling for something
+/// shows which call it repeats and from where.
+void LogRecentHleCalls(const ThreadSnapshot& snap, u64 now) {
+    auto calls = snap.hle_calls;
+    std::ranges::sort(calls, std::ranges::greater{}, &HleCallRecord::last_ms);
+    for (const auto& call : calls) {
+        if (call.function == nullptr) {
+            break;
+        }
+        LOG_CRITICAL(Kernel_Pthread, "    hle: {} x{} from {}, last {}",
+                     HleFunctionName(call.function), call.count,
+                     DescribeAddress(reinterpret_cast<u64>(call.caller)),
+                     DescribeAge(call.last_ms, now));
+    }
 }
 
 std::string DescribeThread(const Pthread* thread, const std::vector<ThreadSnapshot>& all) {
@@ -287,6 +315,27 @@ WaitScope::~WaitScope() {
     thread->hang_wait_kind.store(prev_kind, std::memory_order_release);
 }
 
+void RecordHleCall(const void* function, const void* caller) {
+    Pthread* thread = g_curthread;
+    if (thread == nullptr) {
+        return;
+    }
+    const u64 now = NowMs();
+    for (auto& record : thread->hle_calls) {
+        if (record.function == function && record.caller == caller) {
+            record.last_ms = now;
+            ++record.count;
+            return;
+        }
+    }
+    thread->hle_calls[thread->hle_call_next++ % HleCallHistory] = {function, caller, now, 1};
+}
+
+void RegisterHleFunctionName(const void* function, const char* name) {
+    std::scoped_lock lk{hle_names_mutex};
+    hle_names.emplace(function, name);
+}
+
 void RegisterHangDiagHostThread(std::string_view name) {
     // The GPU command processor is the emulator's busiest thread.
     if (name == "shadPS4:GpuCommandProcessor" && EmulatorSettings.IsGpuThreadCoreReserve()) {
@@ -333,6 +382,7 @@ void DumpThreadsForHang(std::string_view reason) {
                 snap.wait_obj = thread->hang_wait_obj;
                 snap.wait_caller = thread->hang_wait_caller;
                 snap.wait_since_ms = thread->hang_wait_since_ms;
+                snap.hle_calls = thread->hle_calls;
                 CaptureSuspended(handle, stack_lo, stack_hi, snap);
                 ResumeThread(handle);
                 continue;
@@ -342,6 +392,7 @@ void DumpThreadsForHang(std::string_view reason) {
             snap.wait_obj = thread->hang_wait_obj;
             snap.wait_caller = thread->hang_wait_caller;
             snap.wait_since_ms = thread->hang_wait_since_ms;
+            snap.hle_calls = thread->hle_calls;
         }
     }
 #ifdef _WIN32
@@ -390,6 +441,9 @@ void DumpThreadsForHang(std::string_view reason) {
         }
         if (!frames.empty()) {
             LOG_CRITICAL(Kernel_Pthread, "    stack:{}", frames);
+        }
+        if (snap.guest) {
+            LogRecentHleCalls(snap, now);
         }
     }
     LOG_CRITICAL(Kernel_Pthread, "==== End of hang dump ====");

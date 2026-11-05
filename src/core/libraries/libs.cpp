@@ -26,6 +26,7 @@
 #include "core/libraries/ime/ime_dialog.h"
 #include "core/libraries/invitation_dialog/invitation_dialog.h"
 #include "core/libraries/kernel/kernel.h"
+#include "core/libraries/kernel/threads/hang_diag.h"
 #include "core/libraries/keyboard/keyboard.h"
 #include "core/libraries/libc_internal/libc_internal.h"
 #include "core/libraries/libs.h"
@@ -90,8 +91,12 @@
 #include <array>
 
 void LinkSymbolImpl(Core::Loader::SymbolsResolver* sym, char const* nid, char const* lib,
-                    u16 libversion, char const* mod, u64 symbol,
-                    Core::Loader::SymbolType sym_type) {
+                    u16 libversion, char const* mod, u64 symbol, Core::Loader::SymbolType sym_type,
+                    char const* function_name) {
+    if (function_name != nullptr) {
+        Libraries::Kernel::RegisterHleFunctionName(reinterpret_cast<const void*>(symbol),
+                                                   function_name);
+    }
     Core::Loader::SymbolResolver sr{};
     sr.name = nid;
     sr.library = lib;

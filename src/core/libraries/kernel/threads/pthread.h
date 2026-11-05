@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <forward_list>
@@ -365,6 +366,8 @@ struct Pthread {
     const void* hang_wait_obj{};
     const void* hang_wait_caller{};
     u64 hang_wait_since_ms{};
+    std::array<HleCallRecord, HleCallHistory> hle_calls{};
+    u32 hle_call_next{};
 
     bool IsSignalBlocked(s32 sig) const;
     void QueueSignal(s32 sig);
