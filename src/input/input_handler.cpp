@@ -722,9 +722,16 @@ void ControllerOutput::AddUpdate(InputEvent event) {
     }
 }
 
+constexpr u64 HotkeyDebounceMs = 300;
+
 void ControllerOutput::FinalizeUpdate(u8 gamepad_index) {
     auto PushSDLEvent = [&](u32 event_type) {
-        if (new_button_state) {
+        // One press can reach several outputs bound to the same hotkey; a toggle that arrives
+        // again right away would undo itself.
+        static std::unordered_map<u32, u64> last_pushed;
+        const u64 now = SDL_GetTicks();
+        if (new_button_state && now - last_pushed[event_type] >= HotkeyDebounceMs) {
+            last_pushed[event_type] = now;
             SDL_Event e;
             SDL_memset(&e, 0, sizeof(e));
             e.type = event_type;
