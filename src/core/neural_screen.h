@@ -15,10 +15,12 @@ namespace NeuralScreen {
 
 struct Settings {
     bool enabled = false;
-    bool boost = false;
+    // Run the network below native resolution by default to reduce frame-time cost.
+    bool boost = true;
     // NeuralScreen's automatic resolution (auto_quality); acts with Boost on.
     bool autoQuality = false;
-    int networkResolutionPercent = 65;
+    // Start at the fastest supported scale; users can raise it in settings.
+    int networkResolutionPercent = 30;
     int passes = 1;
     int profile = 1;
     // Which network produces the picture: Default, Natural or Cinematic.
