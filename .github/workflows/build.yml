@@ -444,7 +444,6 @@ jobs:
         path: upload/
 
   linux-sdl:
-    if: false  # Windows-only build
     runs-on: ubuntu-24.04
     needs: get-info
     steps:
