@@ -2,9 +2,10 @@
 
 The Windows package can ship [NeuralScreen](https://github.com/vsajjadx/NeuralScreen)
 next to the emulator. NeuralScreen is a separate process that hooks the game window
-and provides neural rendering (DLSS5 in the UI), FSR frame generation and its boost
-mode. The emulator starts it with the game window, feeds it its configuration and
-forwards the three hotkeys to it; it never renders inside the emulator process, so
+and provides neural rendering (DLSS5 in the UI) and its boost mode. Frame generation is
+not part of it: the emulator's own FSR 3.1 frame generation in the presenter does it,
+independently of NeuralScreen. The emulator starts NeuralScreen with the game window,
+feeds it its configuration and forwards the DLSS5 and boost hotkeys to it; it never renders inside the emulator process, so
 emulator updates and NeuralScreen updates stay independent.
 
 ## What runs where
@@ -15,7 +16,7 @@ emulator updates and NeuralScreen updates stay independent.
 | Emulator UI rows | Graphics tab of the in-game settings dialog (`settings_dialog_imgui.cpp`) |
 | Launcher UI | `launcher/patches/0011-*` (Graphics tab), `0012-*` (Hotkeys dialog) and `0013-*` (Model + Fine Tuning group) on top of shadps4-qtlauncher |
 | Hotkeys | The emulator's regular hotkey system (`input_handler`), keys `1` / `2` / `3` by default |
-| Frame generation | NeuralScreen's; the emulator's built-in FSR 3.1 frame generation is compiled out (`ENABLE_FSR_FRAMEGEN` defaults to `OFF`) |
+| Frame generation | The emulator's own FSR 3.1 frame generation in the presenter (`ENABLE_FSR_FRAMEGEN`, `ON` by default on Windows); NeuralScreen never generates frames (`frame_generation` is always `false` in its config) |
 
 ## Files
 
@@ -34,9 +35,9 @@ emulator updates and NeuralScreen updates stay independent.
   menu has no sliders for them. `launcher/neuralscreen/0003-*` makes it keep
   the values the emulator writes and apply a changed model, intensity or fine
   tuning live on `reload`.
-- Frame generation itself stays an emulator setting (`frame_generation_enabled`,
-  the launcher's Graphics switch) and is passed to NeuralScreen on start; the
-  frame generation hotkey toggles it inside NeuralScreen.
+- Frame generation is an emulator setting (`frame_generation_enabled`, the
+  launcher's Graphics switch) read by the presenter; the frame generation hotkey
+  toggles it in the emulator. NeuralScreen is not told about it.
 
 ## Runtime protocol
 
@@ -47,10 +48,11 @@ The emulator starts the bundled `runtime/pythonw.exe` on `main.py` itself (looke
 main.py --config <user>/neural_screen_app.json --window <hwnd> --ctl 53194 --instance shadPS4
 ```
 
-and talks to it on localhost TCP port 53194, one command per line: `nr`, `fg`,
-`boost`, `reload`, `quit`. Replies are `ok`/`err`. The three hotkeys map to
-`hotkey_toggle_frame_generation` (default `1`), `hotkey_toggle_dlss5` (`2`) and
-`hotkey_toggle_boost` (`3`) in the input config, so they can be rebound to
+and talks to it on localhost TCP port 53194, one command per line: `nr`, `boost`,
+`reload`, `quit`. Replies are `ok`/`err`. The hotkeys
+`hotkey_toggle_dlss5` (`2`) and `hotkey_toggle_boost` (`3`) go to NeuralScreen;
+`hotkey_toggle_frame_generation` (default `1`) toggles the emulator's own frame generation,
+all in the input config, so they can be rebound to
 combinations or controller buttons in the launcher's Hotkeys dialog like every
 other hotkey. All commands are sent on a detached thread; a dead NeuralScreen
 never stalls a frame.
@@ -67,7 +69,7 @@ update, rebase this branch on it (do not merge in place) and keep:
   `CMakeLists.txt` (CORE sources, `ws2_32`)
 - the `NeuralScreen::StartForGameWindow` / `Stop` calls in `emulator.cpp`
 - the three hotkey cases in `input_handler` and `sdl_window.cpp`
-- `ENABLE_FSR_FRAMEGEN` left `OFF` (NeuralScreen owns frame generation)
+- `ENABLE_FSR_FRAMEGEN` left `ON` (the emulator owns frame generation, NeuralScreen does not)
 - `launcher/patches/0011-*` to `0013-*`, `launcher/neuralscreen/0001-*` to `0003-*`; rebase them if the launcher's
   `UPSTREAM_COMMIT` moves
 

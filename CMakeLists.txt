@@ -40,7 +40,7 @@ option(ENABLE_DISCORD_RPC "Enable the Discord RPC integration" ON)
 option(ENABLE_UPDATER "Enables the options to updater" ON)
 option(ENABLE_TESTS "Build unit tests (requires GTest)" OFF)
 option(ENABLE_SYSTEM_LIBRARIES "Enable building against system libraries" OFF)
-cmake_dependent_option(ENABLE_FSR_FRAMEGEN "Enable FSR 3.1 frame generation (superseded by NeuralScreen DLSS5)" OFF WIN32 OFF)
+cmake_dependent_option(ENABLE_FSR_FRAMEGEN "Enable FSR 3.1 frame generation" ON WIN32 OFF)
 
 # First, determine whether to use CMAKE_OSX_ARCHITECTURES or CMAKE_SYSTEM_PROCESSOR.
 if (APPLE AND CMAKE_OSX_ARCHITECTURES)

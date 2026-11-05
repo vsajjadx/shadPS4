@@ -345,9 +345,16 @@ void WindowSDL::WaitEvent() {
         ImGui::Friends::Toggle();
         break;
     case SDL_EVENT_TOGGLE_FRAME_GENERATION: {
-        const auto state = NeuralScreen::ToggleFrameGeneration();
-        const std::string message =
-            !state ? "NeuralScreen is not running" : "FG " + std::string(*state ? "on" : "off");
+#ifdef ENABLE_FSR_FRAMEGEN
+        const bool enable = !Vulkan::FrameGeneration::IsEnabled();
+        Vulkan::FrameGeneration::SetEnabled(enable);
+        const std::string message = !Vulkan::FrameGeneration::IsAvailable()
+                                        ? "FSR frame generation is not available on this GPU"
+                                    : enable ? "FSR frame generation: ON"
+                                             : "FSR frame generation: OFF";
+#else
+        const std::string message = "Frame generation is not available in this build";
+#endif
         LOG_INFO(Frontend, "{}", message);
         shadNotifications::QueueNotification(message, 2.0f,
                                              shadNotifications::position::BottomRight);

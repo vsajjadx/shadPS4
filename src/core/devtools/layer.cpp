@@ -12,7 +12,6 @@
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
 #include "core/emulator_state.h"
-#include "core/neural_screen.h"
 #include "imgui/imgui_std.h"
 #include "imgui_internal.h"
 #include "options.h"
@@ -281,9 +280,6 @@ void L::DrawAdvanced() {
 
 void L::DrawSimple() {
     float frameRate = DebugState.Framerate;
-    if (const auto shown = NeuralScreen::GetOutputFps(); shown && *shown > 0.0f) {
-        frameRate = *shown;
-    }
     if (frameRate < 10) {
         PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.0f, 0.0f, 1.0f)); // Red
     } else if (frameRate >= 10 && frameRate < 20) {

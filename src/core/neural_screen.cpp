@@ -67,7 +67,6 @@ static HANDLE LifetimeJob() {
     return job;
 }
 #endif
-static bool g_frameGenerationOn = false;
 static bool g_dlss5On = false;
 static bool g_boostOn = false;
 
@@ -145,7 +144,9 @@ static void WriteAppConfig() {
     j["fullscreen"] = false;
     j["open_menu_on_start"] = false;
     j["nr_on"] = s.enabled;
-    j["frame_generation"] = EmulatorSettings.IsFrameGenerationEnabled();
+    // Frame generation is the emulator's own (FSR 3.1 in the presenter); NeuralScreen only
+    // does the neural rendering and boost, so its frame generation always stays off.
+    j["frame_generation"] = false;
     j["nr_small"] = s.boost;
     j["auto_quality"] = s.autoQuality;
     j["work_scale"] = std::clamp(s.networkResolutionPercent, 30, 100) / 100.0;
@@ -159,7 +160,6 @@ static void WriteAppConfig() {
     j["local_tone"] = s.localTone;
     j["local_structure"] = s.localStructure;
     j["skin_structure"] = s.skinStructure;
-    g_frameGenerationOn = EmulatorSettings.IsFrameGenerationEnabled();
     g_dlss5On = s.enabled;
     g_boostOn = s.boost;
 
@@ -284,16 +284,14 @@ bool StartForGameWindow(SDL_Window* window) {
     if (g_running) {
         return false;
     }
-    // NeuralScreen also carries Frame Generation, so it starts with DLSS5 off
-    // too: NR then comes up off (nr_on = false in the generated config) and the
-    // frame generation setting and hotkey still work. A missing install is only
-    // reported when something that needs it is switched on.
-    const bool wanted = GetSettings().enabled || EmulatorSettings.IsFrameGenerationEnabled();
+    // NeuralScreen only carries DLSS5 and Boost. It still starts with DLSS5 off so the hotkey
+    // can switch it on later. A missing install is only reported when DLSS5 is switched on.
+    const bool wanted = GetSettings().enabled;
     const auto dir = FindDirectory();
     if (dir.empty()) {
         if (wanted) {
             LOG_WARNING(Loader, "NeuralScreen was not found next to the emulator - "
-                                "DLSS5 / frame generation is configured but will not run");
+                                "DLSS5 is configured but will not run");
         }
         return false;
     }
@@ -302,15 +300,14 @@ bool StartForGameWindow(SDL_Window* window) {
         !std::filesystem::is_regular_file(dir / "native" / "nvngx_dlssnr.dll", ec)) {
         if (wanted) {
             LOG_WARNING(Loader, "NeuralScreen: native\\nvngx.dll or native\\nvngx_dlssnr.dll is "
-                                "missing, DLSS5 / frame generation is off");
+                                "missing, DLSS5 is off");
         }
         return false;
     }
     const auto python = FindPython(dir);
     if (python.empty()) {
         if (wanted) {
-            LOG_WARNING(Loader, "NeuralScreen: pythonw.exe was not found, DLSS5 / frame "
-                                "generation is off");
+            LOG_WARNING(Loader, "NeuralScreen: pythonw.exe was not found, DLSS5 is off");
         }
         return false;
     }
@@ -350,10 +347,8 @@ bool StartForGameWindow(SDL_Window* window) {
     g_running = true;
     g_pollStop = false;
     g_poller = std::thread(PollOutputFps);
-    LOG_INFO(Loader, "NeuralScreen started on the game window (DLSS5 {} | FG {} | Boost {})",
-             GetSettings().enabled ? "on" : "off",
-             EmulatorSettings.IsFrameGenerationEnabled() ? "on" : "off",
-             GetSettings().boost ? "on" : "off");
+    LOG_INFO(Loader, "NeuralScreen started on the game window (DLSS5 {} | Boost {})",
+             GetSettings().enabled ? "on" : "off", GetSettings().boost ? "on" : "off");
     return true;
 }
 
@@ -406,10 +401,6 @@ std::optional<float> GetOutputFps() {
     return value;
 }
 
-std::optional<bool> ToggleFrameGeneration() {
-    return SendHotkey("fg", g_frameGenerationOn);
-}
-
 std::optional<bool> ToggleDLSS5() {
     return SendHotkey("nr", g_dlss5On);
 }
@@ -431,10 +422,6 @@ void ApplySettings() {
 }
 
 std::optional<float> GetOutputFps() {
-    return std::nullopt;
-}
-
-std::optional<bool> ToggleFrameGeneration() {
     return std::nullopt;
 }
 
