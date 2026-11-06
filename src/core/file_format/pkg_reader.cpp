@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
+#include <thread>
 
 #include <openssl/bn.h>
 #include <openssl/evp.h>
@@ -59,8 +61,7 @@ bool RsaDecrypt(const u8* cipher, u8* out32) {
     };
     RSA_set0_key(rsa, bn(Keyset::Modulus), bn(Keyset::PublicExponent), bn(Keyset::PrivateExponent));
     RSA_set0_factors(rsa, bn(Keyset::Prime1), bn(Keyset::Prime2));
-    RSA_set0_crt_params(rsa, bn(Keyset::Exponent1), bn(Keyset::Exponent2),
-                        bn(Keyset::Coefficient));
+    RSA_set0_crt_params(rsa, bn(Keyset::Exponent1), bn(Keyset::Exponent2), bn(Keyset::Coefficient));
     std::array<u8, 256> plain{};
     const int length = RSA_private_decrypt(256, cipher, plain.data(), rsa, RSA_PKCS1_PADDING);
     RSA_free(rsa);
@@ -78,8 +79,8 @@ bool AesCbcDecrypt(const std::array<u8, 32>& iv_key, const u8* src, u8* dst, siz
     }
     EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
     int out = 0;
-    bool ok = EVP_DecryptInit_ex(ctx, EVP_aes_128_cbc(), nullptr, iv_key.data() + 16,
-                                 iv_key.data()) == 1;
+    bool ok =
+        EVP_DecryptInit_ex(ctx, EVP_aes_128_cbc(), nullptr, iv_key.data() + 16, iv_key.data()) == 1;
     EVP_CIPHER_CTX_set_padding(ctx, 0);
     ok = ok && EVP_DecryptUpdate(ctx, dst, &out, src, static_cast<int>(size)) == 1;
     EVP_CIPHER_CTX_free(ctx);
@@ -98,22 +99,45 @@ void PasscodeKey(std::string_view content_id, u32 index, u8* key) {
     Sha256(data.data(), data.size(), key);
 }
 
+void XorTweaks(u8* data, const std::array<u64, SectorSize / 8>& tweaks) {
+    for (size_t i = 0; i < tweaks.size(); ++i) {
+        u64 word;
+        std::memcpy(&word, data + i * 8, 8);
+        word ^= tweaks[i];
+        std::memcpy(data + i * 8, &word, 8);
+    }
+}
+
 void XtsDecrypt(const std::array<u8, 16>& data_key, const std::array<u8, 16>& tweak_key,
                 const u8* src, u8* dst, size_t size, u64 first_sector) {
-    std::array<u8, 32> key;
-    std::memcpy(key.data(), data_key.data(), 16);
-    std::memcpy(key.data() + 16, tweak_key.data(), 16);
-    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
-    EVP_DecryptInit_ex(ctx, EVP_aes_128_xts(), nullptr, key.data(), nullptr);
+    const EVP_CIPHER* const ecb = EVP_aes_128_ecb();
+    EVP_CIPHER_CTX* decrypt = EVP_CIPHER_CTX_new();
+    EVP_CIPHER_CTX* tweak = EVP_CIPHER_CTX_new();
+    EVP_DecryptInit_ex(decrypt, ecb, nullptr, data_key.data(), nullptr);
+    EVP_EncryptInit_ex(tweak, ecb, nullptr, tweak_key.data(), nullptr);
+    EVP_CIPHER_CTX_set_padding(decrypt, 0);
+    EVP_CIPHER_CTX_set_padding(tweak, 0);
+    std::array<u64, SectorSize / 8> tweaks;
     for (size_t offset = 0; offset + SectorSize <= size; offset += SectorSize) {
-        std::array<u8, 16> iv{};
-        const u64 sector = first_sector + offset / SectorSize;
-        std::memcpy(iv.data(), &sector, sizeof(sector));
-        EVP_DecryptInit_ex(ctx, nullptr, nullptr, nullptr, iv.data());
+        std::array<u64, 2> t{first_sector + offset / SectorSize, 0};
         int out = 0;
-        EVP_DecryptUpdate(ctx, dst + offset, &out, src + offset, static_cast<int>(SectorSize));
+        EVP_EncryptUpdate(tweak, reinterpret_cast<u8*>(t.data()), &out,
+                          reinterpret_cast<const u8*>(t.data()), 16);
+        for (size_t i = 0; i < tweaks.size(); i += 2) {
+            tweaks[i] = t[0];
+            tweaks[i + 1] = t[1];
+            const u64 carry = t[1] >> 63;
+            t[1] = (t[1] << 1) | (t[0] >> 63);
+            t[0] = (t[0] << 1) ^ (carry * 0x87);
+        }
+        u8* sector = dst + offset;
+        std::memcpy(sector, src + offset, SectorSize);
+        XorTweaks(sector, tweaks);
+        EVP_DecryptUpdate(decrypt, sector, &out, sector, static_cast<int>(SectorSize));
+        XorTweaks(sector, tweaks);
     }
-    EVP_CIPHER_CTX_free(ctx);
+    EVP_CIPHER_CTX_free(tweak);
+    EVP_CIPHER_CTX_free(decrypt);
 }
 
 void PfsGenCryptoKey(const std::array<u8, 32>& ekpfs, const std::array<u8, 16>& seed,
@@ -439,8 +463,8 @@ bool PkgReader::ParsePfsTree(const std::vector<u8>& pfsc, const Keys&) {
             }
         }
 
-        if (block[0x10] == '.' && std::string_view{reinterpret_cast<const char*>(block.data()) +
-                                                    0x28, 2} == "..") {
+        if (block[0x10] == '.' &&
+            std::string_view{reinterpret_cast<const char*>(block.data()) + 0x28, 2} == "..") {
             dinode_reached = true;
         }
 
@@ -491,33 +515,88 @@ bool PkgReader::ParsePfsTree(const std::vector<u8>& pfsc, const Keys&) {
     return found_root;
 }
 
+PkgReader::BlockSpan PkgReader::GetBlockSpan(u32 index) const {
+    const u64 sector_offset = sector_map[index];
+    const u64 absolute = pfsc_offset + sector_offset;
+    BlockSpan span;
+    span.size = sector_map[index + 1] - sector_offset;
+    span.aligned = absolute & ~(SectorSize - 1);
+    span.skip = absolute - span.aligned;
+    span.length = (span.skip + span.size + SectorSize - 1) & ~(SectorSize - 1);
+    return span;
+}
+
+bool PkgReader::DecodeBlock(u32 index, const u8* encrypted, u8* out) const {
+    const BlockSpan span = GetBlockSpan(index);
+    if (span.size > BlockSize) {
+        return false;
+    }
+    thread_local std::vector<u8> decrypted;
+    decrypted.resize(span.length);
+    XtsDecrypt(data_key, tweak_key, encrypted, decrypted.data(), span.length,
+               span.aligned / SectorSize);
+    if (span.size == BlockSize) {
+        std::memcpy(out, decrypted.data() + span.skip, BlockSize);
+        return true;
+    }
+    if (span.size == 0) {
+        std::memset(out, 0, BlockSize);
+        return true;
+    }
+    return Inflate(decrypted.data() + span.skip, span.size, out, BlockSize);
+}
+
 bool PkgReader::ReadBlock(u32 index, std::vector<u8>& out) {
     if (static_cast<size_t>(index) + 1 >= sector_map.size()) {
         return false;
     }
-    const u64 sector_offset = sector_map[index];
-    const u64 sector_size = sector_map[index + 1] - sector_offset;
-    if (sector_size > BlockSize) {
+    const BlockSpan span = GetBlockSpan(index);
+    if (span.size > BlockSize) {
         return false;
     }
-    const u64 absolute = pfsc_offset + sector_offset;
-    const u64 aligned = absolute & ~(SectorSize - 1);
-    const u64 skip = absolute - aligned;
-    const u64 span = (skip + sector_size + SectorSize - 1) & ~(SectorSize - 1);
+    std::vector<u8> encrypted(span.length);
+    ReadRaw(pfs_image_offset + span.aligned, encrypted.data(), span.length);
+    out.resize(BlockSize);
+    return DecodeBlock(index, encrypted.data(), out.data());
+}
 
-    std::vector<u8> encrypted(span);
-    std::vector<u8> decrypted(span);
-    ReadRaw(pfs_image_offset + aligned, encrypted.data(), span);
-    XtsDecrypt(data_key, tweak_key, encrypted.data(), decrypted.data(), span,
-               aligned / SectorSize);
-
-    out.assign(BlockSize, 0);
-    if (sector_size == BlockSize) {
-        std::memcpy(out.data(), decrypted.data() + skip, BlockSize);
-    } else if (sector_size > 0) {
-        return Inflate(decrypted.data() + skip, sector_size, out.data(), BlockSize);
+bool PkgReader::ReadBlocks(u32 first, u32 count, u64 skip, u64 size, u8* dst) {
+    if (static_cast<size_t>(first) + count >= sector_map.size()) {
+        return false;
     }
-    return true;
+    const u64 start = GetBlockSpan(first).aligned;
+    const BlockSpan last = GetBlockSpan(first + count - 1);
+    std::vector<u8> encrypted(last.aligned + last.length - start);
+    ReadRaw(pfs_image_offset + start, encrypted.data(), encrypted.size());
+
+    const u32 workers = std::clamp(std::thread::hardware_concurrency(), 1u, 8u);
+    std::atomic<u32> next{0};
+    std::atomic<bool> ok{true};
+    const auto work = [&] {
+        std::vector<u8> partial(BlockSize);
+        for (u32 i = next++; i < count; i = next++) {
+            const u32 index = first + i;
+            const u8* source = encrypted.data() + (GetBlockSpan(index).aligned - start);
+            const u64 begin = i == 0 ? skip : 0;
+            const u64 block_start = static_cast<u64>(i) * BlockSize;
+            const u64 end = std::min<u64>(BlockSize, skip + size - block_start);
+            u8* target = dst + block_start + begin - skip;
+            if (begin == 0 && end == BlockSize) {
+                ok = DecodeBlock(index, source, target) && ok;
+            } else if (DecodeBlock(index, source, partial.data())) {
+                std::memcpy(target, partial.data() + begin, end - begin);
+            } else {
+                ok = false;
+            }
+        }
+    };
+    std::vector<std::jthread> threads;
+    for (u32 i = 1; i < std::min(workers, count); ++i) {
+        threads.emplace_back(work);
+    }
+    work();
+    threads.clear();
+    return ok;
 }
 
 std::shared_ptr<const std::vector<u8>> PkgReader::GetBlock(u32 index) {
@@ -564,6 +643,21 @@ s64 PkgReader::Read(u32 node_index, u64 offset, void* dst, u64 size) {
     }
     auto* out = static_cast<u8*>(dst);
     u64 done = 0;
+    while (size - done >= BulkReadBlocks * BlockSize) {
+        const u64 position = offset + done;
+        const u64 block_index = position / BlockSize;
+        const u64 in_block = position % BlockSize;
+        const u64 count = std::min<u64>((in_block + size - done) / BlockSize, MaxBulkBlocks);
+        if (block_index + count > it->second.block_count) {
+            break;
+        }
+        const u64 chunk = count * BlockSize - in_block;
+        if (!ReadBlocks(it->second.first_block + static_cast<u32>(block_index),
+                        static_cast<u32>(count), in_block, chunk, out + done)) {
+            return done > 0 ? static_cast<s64>(done) : -1;
+        }
+        done += chunk;
+    }
     while (done < size) {
         const u64 position = offset + done;
         const u64 block_index = position / BlockSize;

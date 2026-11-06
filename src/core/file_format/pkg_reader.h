@@ -80,7 +80,16 @@ private:
     bool IndexPfs(const Keys& keys, std::string& error);
     bool ParsePfsTree(const std::vector<u8>& pfsc, const Keys& keys);
     u32 AddNode(std::string_view path, bool is_directory);
+    struct BlockSpan {
+        u64 size;
+        u64 aligned;
+        u64 skip;
+        u64 length;
+    };
+    BlockSpan GetBlockSpan(u32 index) const;
+    bool DecodeBlock(u32 index, const u8* encrypted, u8* out) const;
     bool ReadBlock(u32 block, std::vector<u8>& out);
+    bool ReadBlocks(u32 first, u32 count, u64 skip, u64 size, u8* dst);
     std::shared_ptr<const std::vector<u8>> GetBlock(u32 block);
 
     std::ifstream file;
@@ -110,6 +119,8 @@ private:
     };
     std::unordered_map<u32, CachedBlock> cache;
     static constexpr size_t CacheBlocks = 96;
+    static constexpr u64 BulkReadBlocks = 4;
+    static constexpr u64 MaxBulkBlocks = 256;
 };
 
 } // namespace Core::Pkg

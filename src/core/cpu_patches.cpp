@@ -13,6 +13,7 @@
 #include <optional>
 #include <set>
 #include <span>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 #include <Zydis/Zydis.h>
@@ -2010,46 +2011,65 @@ const PatchInfo* FindMatchingPatch(const DecodedCodeInstruction& decoded) {
 /// from the EH frame table, which lists the cold part of a split function as a function of its
 /// own, and that part jumps back into the middle of the hot part. An instruction that is such a
 /// target must stay where it is, or the jump lands inside the bytes that were patched over it.
-std::unordered_set<uintptr_t> CollectSegmentBranchTargets(std::span<const uintptr_t> starts,
-                                                          uintptr_t segment_start,
-                                                          uintptr_t segment_end) {
-    std::unordered_set<uintptr_t> targets;
+void CollectFunctionBranchTargets(const DecodedFunction& function, uintptr_t segment_start,
+                                  uintptr_t segment_end, std::unordered_set<uintptr_t>& targets) {
     const auto add = [&](uintptr_t target) {
         if (target >= segment_start && target < segment_end) {
             targets.insert(target);
         }
     };
-    for (size_t index = 0; index < starts.size(); ++index) {
-        const uintptr_t function_end = index + 1 < starts.size() ? starts[index + 1] : segment_end;
-        if (function_end <= starts[index]) {
+    for (const uintptr_t target : function.branch_targets) {
+        add(target);
+    }
+    for (const auto& [address, decoded] : function.instructions) {
+        add(GetRelativeTarget(decoded));
+        if (decoded.instruction.mnemonic != ZYDIS_MNEMONIC_LEA) {
             continue;
         }
-        const auto function =
-            DecodeFunction(starts[index], function_end, segment_start, segment_end);
-        for (const uintptr_t target : function.branch_targets) {
-            add(target);
-        }
-        for (const auto& [address, decoded] : function.instructions) {
-            add(GetRelativeTarget(decoded));
-            if (decoded.instruction.mnemonic != ZYDIS_MNEMONIC_LEA) {
-                continue;
-            }
-            const auto& source = decoded.operands[1];
-            if (source.type == ZYDIS_OPERAND_TYPE_MEMORY && source.mem.base == ZYDIS_REGISTER_RIP) {
-                ZyanU64 absolute{};
-                if (ZYAN_SUCCESS(ZydisCalcAbsoluteAddress(&decoded.instruction, &source, address,
-                                                          &absolute))) {
-                    add(static_cast<uintptr_t>(absolute));
-                }
+        const auto& source = decoded.operands[1];
+        if (source.type == ZYDIS_OPERAND_TYPE_MEMORY && source.mem.base == ZYDIS_REGISTER_RIP) {
+            ZyanU64 absolute{};
+            if (ZYAN_SUCCESS(
+                    ZydisCalcAbsoluteAddress(&decoded.instruction, &source, address, &absolute))) {
+                add(static_cast<uintptr_t>(absolute));
             }
         }
     }
-    return targets;
+}
+
+template <typename Func>
+void ParallelForEach(size_t count, size_t workers, Func&& func) {
+    std::atomic<size_t> next{0};
+    const auto work = [&](size_t worker) {
+        for (size_t index = next++; index < count; index = next++) {
+            func(worker, index);
+        }
+    };
+    std::vector<std::jthread> threads;
+    for (size_t worker = 1; worker < std::min(workers, count); ++worker) {
+        threads.emplace_back(work, worker);
+    }
+    work(0);
 }
 
 } // namespace
 
 using AddressRanges = std::vector<std::pair<uintptr_t, uintptr_t>>;
+
+void AddCoveredRange(AddressRanges& ranges, uintptr_t start, uintptr_t end) {
+    if (!ranges.empty() && start <= ranges.back().second) {
+        ranges.back().second = std::max(ranges.back().second, end);
+    } else {
+        ranges.emplace_back(start, end);
+    }
+}
+
+struct FunctionScan {
+    std::optional<DecodedFunction> function;
+    AddressRanges covered;
+    size_t instruction_count{};
+    bool decoded{};
+};
 
 /// Applies the CPU patches to every function of the segment. If red_zone_protection is true,
 /// the red-zone accesses of those functions are protected as well. If covered_ranges is not
@@ -2076,34 +2096,65 @@ static RedZonePatchResult PatchSegmentStatically(u64 segment_addr, u64 segment_s
     const auto unique_end = std::ranges::unique(starts).begin();
     starts.erase(unique_end, starts.end());
 
-    const auto segment_targets = CollectSegmentBranchTargets(starts, segment_addr, segment_end);
-
-    std::unique_lock lock{module->mutex};
-    for (size_t function_index = 0; function_index < starts.size(); ++function_index) {
+    // Decoding and analysis only read the original code, so every function is handled in
+    // parallel. Only functions that have something to patch are kept for the serial pass.
+    const size_t workers = std::clamp(std::thread::hardware_concurrency(), 1u, 16u);
+    std::vector<std::unordered_set<uintptr_t>> worker_targets(workers);
+    std::vector<FunctionScan> scans(starts.size());
+    ParallelForEach(starts.size(), workers, [&](size_t worker, size_t function_index) {
         const uintptr_t function_start = starts[function_index];
         const uintptr_t function_end =
             function_index + 1 < starts.size() ? starts[function_index + 1] : segment_end;
         if (function_end <= function_start) {
-            continue;
+            return;
         }
-
-        ++result.function_count;
         auto function = DecodeFunction(function_start, function_end, segment_addr, segment_end);
-        if (red_zone_protection) {
-            AnalyzeRedZoneLiveness(function);
-        }
-        result.instruction_count += function.instructions.size();
+        CollectFunctionBranchTargets(function, segment_addr, segment_end, worker_targets[worker]);
+        auto& scan = scans[function_index];
+        scan.decoded = true;
+        scan.instruction_count = function.instructions.size();
         if (covered_ranges != nullptr) {
-            // Functions and their instructions are visited in address order.
             for (const auto& [address, decoded] : function.instructions) {
-                const uintptr_t end = address + decoded.instruction.length;
-                if (!covered_ranges->empty() && address <= covered_ranges->back().second) {
-                    covered_ranges->back().second = std::max(covered_ranges->back().second, end);
-                } else {
-                    covered_ranges->emplace_back(address, end);
-                }
+                AddCoveredRange(scan.covered, address, address + decoded.instruction.length);
             }
         }
+        const bool has_cpu_patch =
+            std::ranges::any_of(function.instructions, [](const auto& instruction) {
+                return IsInPlaceMemoryPatch(instruction.second.instruction.mnemonic) ||
+                       FindMatchingPatch(instruction.second) != nullptr;
+            });
+        if (has_cpu_patch || (red_zone_protection && function.uses_red_zone)) {
+            if (red_zone_protection) {
+                AnalyzeRedZoneLiveness(function);
+            }
+            scan.function = std::move(function);
+        }
+    });
+    std::unordered_set<uintptr_t> segment_targets = std::move(worker_targets[0]);
+    for (size_t worker = 1; worker < workers; ++worker) {
+        segment_targets.merge(worker_targets[worker]);
+    }
+
+    std::unique_lock lock{module->mutex};
+    for (size_t function_index = 0; function_index < starts.size(); ++function_index) {
+        auto& scan = scans[function_index];
+        if (!scan.decoded) {
+            continue;
+        }
+        ++result.function_count;
+        result.instruction_count += scan.instruction_count;
+        if (covered_ranges != nullptr) {
+            // Functions and their instructions are visited in address order.
+            for (const auto& [start, end] : scan.covered) {
+                AddCoveredRange(*covered_ranges, start, end);
+            }
+        }
+        if (!scan.function) {
+            continue;
+        }
+        const uintptr_t function_end =
+            function_index + 1 < starts.size() ? starts[function_index + 1] : segment_end;
+        auto& function = *scan.function;
 
         std::map<uintptr_t, InstructionRewrite> rewrite_sites;
         const auto is_branch_target = [&](uintptr_t address) {
