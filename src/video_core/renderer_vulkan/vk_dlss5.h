@@ -11,11 +11,12 @@
 namespace Vulkan {
 
 class Instance;
+class Scheduler;
 
 /// NVIDIA's DLSS 5 neural rendering, run on the final game picture inside the emulator.
 class Dlss5Pass {
 public:
-    explicit Dlss5Pass(const Instance& instance);
+    Dlss5Pass(const Instance& instance, Scheduler& scheduler);
     ~Dlss5Pass();
 
     /// True when NVIDIA's runtime and the neural rendering library came up on this device.

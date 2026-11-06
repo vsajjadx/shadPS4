@@ -18,9 +18,9 @@ struct Settings {
     int style = 0;
     float intensity = 1.0f;
     float globalTone = 1.0f;
-    float localTone = 1.5f;
-    float localStructure = 1.5f;
-    float skinStructure = 1.5f;
+    float localTone = 0.0f;
+    float localStructure = 1.0f;
+    float skinStructure = 1.0f;
     int preset = 0;
 };
 

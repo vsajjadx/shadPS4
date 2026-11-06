@@ -17,6 +17,7 @@
 #include "common/logging/log.h"
 #include "common/path_util.h"
 #include "core/dlss5.h"
+#include "video_core/renderer_vulkan/host_passes/lemon_fg_pass.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 
 #include <boost/container/static_vector.hpp>
@@ -158,8 +159,15 @@ struct Dlss5Pass::Impl {
     WorkImage motion{};
     WorkImage srgb{};
     vk::Format frame_format{};
+    HostPasses::LemonFgPass motion_search;
+    bool motion_supported{};
 
-    explicit Impl(const Instance& instance_) : instance{instance_}, device{instance_.GetDevice()} {
+    Impl(const Instance& instance_, Scheduler& scheduler)
+        : instance{instance_}, device{instance_.GetDevice()} {
+        if (HostPasses::LemonFgPass::IsSupported(instance)) {
+            motion_search.Create(instance, scheduler, {});
+            motion_supported = true;
+        }
         if (!instance.IsNeuralRenderingSupported()) {
             LOG_INFO(Render_Vulkan, "DLSS5: the device lacks the NVIDIA interop extensions");
             return;
@@ -442,6 +450,7 @@ struct Dlss5Pass::Impl {
         parameters->Set("DLSSNR.UseAutoMask", 1);
         parameters->Set("DLSSNR.UICorrection", 0);
         parameters->Set("DLSSNR.Hint.Render.Preset", settings.preset);
+        parameters->Set("DLSSNR.ScalingRatio", 1.0f);
         const auto result = create(device, cmdbuf, NeuralRendering, parameters, &feature);
         if (NVSDK_NGX_FAILED(result)) {
             LOG_WARNING(Render_Vulkan, "DLSS5: the {}x{} feature was not created ({:#x})", width,
@@ -480,6 +489,8 @@ struct Dlss5Pass::Impl {
             Recreate(cmdbuf, work_width, work_height);
             return;
         }
+        const bool has_motion =
+            motion_supported && motion_search.EstimateMotion(cmdbuf, image, format, w, h);
         FullBarrier(cmdbuf);
         if (srgb.image) {
             Copy(cmdbuf, image, srgb.image);
@@ -493,7 +504,11 @@ struct Dlss5Pass::Impl {
         auto color_resource = Resource(color[0], width, height, false);
         auto output_resource = Resource(color[1], width, height, true);
         auto depth_resource = Resource(depth, width, height, false);
-        auto motion_resource = Resource(motion, width, height, false);
+        const WorkImage estimated_motion{.image = motion_search.MotionImage(),
+                                         .view = motion_search.MotionView(),
+                                         .format = vk::Format::eR16G16Sfloat};
+        auto motion_resource =
+            Resource(has_motion ? estimated_motion : motion, width, height, false);
         parameters->Set("DLSSNR.Color", static_cast<void*>(&color_resource));
         parameters->Set("DLSSNR.Output", static_cast<void*>(&output_resource));
         parameters->Set("DLSSNR.Depth", static_cast<void*>(&depth_resource));
@@ -528,7 +543,8 @@ struct Dlss5Pass::Impl {
     }
 };
 
-Dlss5Pass::Dlss5Pass(const Instance& instance) : impl{std::make_unique<Impl>(instance)} {
+Dlss5Pass::Dlss5Pass(const Instance& instance, Scheduler& scheduler)
+    : impl{std::make_unique<Impl>(instance, scheduler)} {
     if (impl->available) {
         g_pass = this;
     }
@@ -627,7 +643,7 @@ namespace Vulkan {
 
 struct Dlss5Pass::Impl {};
 
-Dlss5Pass::Dlss5Pass(const Instance&) : impl{std::make_unique<Impl>()} {}
+Dlss5Pass::Dlss5Pass(const Instance&, Scheduler&) : impl{std::make_unique<Impl>()} {}
 Dlss5Pass::~Dlss5Pass() = default;
 bool Dlss5Pass::IsAvailable() const {
     return false;
