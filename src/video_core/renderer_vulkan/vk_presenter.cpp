@@ -708,9 +708,10 @@ Frame* Presenter::PrepareLastFrame() {
         }
         if (result == vk::Result::eTimeout) {
             waited_s += 2;
-            LOG_WARNING(Render_Vulkan,
-                        "PrepareLastFrame: waited {}s for the present fence of frame {} (thread {})",
-                        waited_s, frame->id, Common::GetCurrentThreadName());
+            LOG_WARNING(
+                Render_Vulkan,
+                "PrepareLastFrame: waited {}s for the present fence of frame {} (thread {})",
+                waited_s, frame->id, Common::GetCurrentThreadName());
             continue;
         }
         if (result == vk::Result::eErrorDeviceLost) {
@@ -862,9 +863,17 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     pp_settings.brightness = std::clamp(EmulatorSettings.GetBrightness(), 25, 400) / 100.0f;
     pp_settings.contrast = std::clamp(EmulatorSettings.GetContrast(), 25, 400) / 100.0f;
     pp_pass.Render(cmdbuf, image_view, image_size, *frame, pp_settings);
-    const bool dlss5_before_hud = rasterizer->TakeDlss5BeforeHud();
+    // A frame now and then without the scene found (a loading frame, a menu) keeps the scene mode
+    // instead of switching to the final picture and back, which rebuilds DLSS5 at each switch.
+    constexpr u32 SceneModeFrames = 120;
+    if (rasterizer->TakeDlss5BeforeHud()) {
+        frames_without_dlss5_scene = 0;
+    } else if (frames_without_dlss5_scene < SceneModeFrames) {
+        ++frames_without_dlss5_scene;
+    }
     ::Dlss5::ReloadIfChanged();
-    if (!dlss5_before_hud && dlss5_pass->IsAvailable() && ::Dlss5::GetSettings().enabled) {
+    if (frames_without_dlss5_scene >= SceneModeFrames && dlss5_pass->IsAvailable() &&
+        ::Dlss5::GetSettings().enabled) {
         const auto dlss5_depth = rasterizer->PrepareDlss5Depth(image_size.width, image_size.height);
         dlss5_pass->Render(cmdbuf, frame->image, frame->image_view,
                            swapchain.GetSurfaceFormat().format, frame->width, frame->height,

@@ -150,6 +150,7 @@ private:
     Instance instance;
     HostPasses::FsrPass fsr_pass;
     std::unique_ptr<Dlss5Pass> dlss5_pass;
+    u32 frames_without_dlss5_scene{120};
     HostPasses::FsrPass::Settings fsr_settings{};
     HostPasses::PostProcessingPass::Settings pp_settings{};
     HostPasses::PostProcessingPass pp_pass;
