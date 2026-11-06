@@ -12,6 +12,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <span>
 #include <unordered_set>
 #include <vector>
 #include <Zydis/Zydis.h>
@@ -2003,6 +2004,49 @@ const PatchInfo* FindMatchingPatch(const DecodedCodeInstruction& decoded) {
     return patch != patches->second.end() ? &*patch : nullptr;
 }
 
+/// Addresses of the segment that code may reach from outside the function that holds them:
+/// direct branch and call targets anywhere in the segment, resolved jump table entries, and code
+/// addresses taken with RIP-relative LEA (function pointers, computed jumps). Function ranges come
+/// from the EH frame table, which lists the cold part of a split function as a function of its
+/// own, and that part jumps back into the middle of the hot part. An instruction that is such a
+/// target must stay where it is, or the jump lands inside the bytes that were patched over it.
+std::unordered_set<uintptr_t> CollectSegmentBranchTargets(std::span<const uintptr_t> starts,
+                                                          uintptr_t segment_start,
+                                                          uintptr_t segment_end) {
+    std::unordered_set<uintptr_t> targets;
+    const auto add = [&](uintptr_t target) {
+        if (target >= segment_start && target < segment_end) {
+            targets.insert(target);
+        }
+    };
+    for (size_t index = 0; index < starts.size(); ++index) {
+        const uintptr_t function_end = index + 1 < starts.size() ? starts[index + 1] : segment_end;
+        if (function_end <= starts[index]) {
+            continue;
+        }
+        const auto function =
+            DecodeFunction(starts[index], function_end, segment_start, segment_end);
+        for (const uintptr_t target : function.branch_targets) {
+            add(target);
+        }
+        for (const auto& [address, decoded] : function.instructions) {
+            add(GetRelativeTarget(decoded));
+            if (decoded.instruction.mnemonic != ZYDIS_MNEMONIC_LEA) {
+                continue;
+            }
+            const auto& source = decoded.operands[1];
+            if (source.type == ZYDIS_OPERAND_TYPE_MEMORY && source.mem.base == ZYDIS_REGISTER_RIP) {
+                ZyanU64 absolute{};
+                if (ZYAN_SUCCESS(ZydisCalcAbsoluteAddress(&decoded.instruction, &source, address,
+                                                          &absolute))) {
+                    add(static_cast<uintptr_t>(absolute));
+                }
+            }
+        }
+    }
+    return targets;
+}
+
 } // namespace
 
 using AddressRanges = std::vector<std::pair<uintptr_t, uintptr_t>>;
@@ -2032,6 +2076,8 @@ static RedZonePatchResult PatchSegmentStatically(u64 segment_addr, u64 segment_s
     const auto unique_end = std::ranges::unique(starts).begin();
     starts.erase(unique_end, starts.end());
 
+    const auto segment_targets = CollectSegmentBranchTargets(starts, segment_addr, segment_end);
+
     std::unique_lock lock{module->mutex};
     for (size_t function_index = 0; function_index < starts.size(); ++function_index) {
         const uintptr_t function_start = starts[function_index];
@@ -2060,6 +2106,9 @@ static RedZonePatchResult PatchSegmentStatically(u64 segment_addr, u64 segment_s
         }
 
         std::map<uintptr_t, InstructionRewrite> rewrite_sites;
+        const auto is_branch_target = [&](uintptr_t address) {
+            return function.branch_targets.contains(address) || segment_targets.contains(address);
+        };
 
         // Apply existing instruction substitutions ahead of time now that only verified
         // instruction boundaries are being visited. Short trampoline patches are combined with
@@ -2204,8 +2253,7 @@ static RedZonePatchResult PatchSegmentStatically(u64 segment_addr, u64 segment_s
                 while (span.patch_size < NearJumpSize) {
                     const auto decoded_it = function.instructions.find(span.continuation);
                     if (decoded_it == function.instructions.end() ||
-                        (span.continuation != site &&
-                         function.branch_targets.contains(span.continuation))) {
+                        (span.continuation != site && is_branch_target(span.continuation))) {
                         return std::nullopt;
                     }
 
@@ -2234,7 +2282,7 @@ static RedZonePatchResult PatchSegmentStatically(u64 segment_addr, u64 segment_s
                 while (span.patch_size < NearJumpSize) {
                     const auto previous_end = function.instructions.lower_bound(span.patch_start);
                     if (previous_end == function.instructions.begin() ||
-                        function.branch_targets.contains(span.patch_start)) {
+                        is_branch_target(span.patch_start)) {
                         return std::nullopt;
                     }
 
@@ -2389,7 +2437,7 @@ static RedZonePatchResult PatchSegmentStatically(u64 segment_addr, u64 segment_s
                         const auto instruction = function.instructions.find(span.continuation);
                         if (instruction == function.instructions.end() ||
                             (span.continuation != span.patch_start &&
-                             function.branch_targets.contains(span.continuation))) {
+                             is_branch_target(span.continuation))) {
                             span.instructions.clear();
                             break;
                         }
