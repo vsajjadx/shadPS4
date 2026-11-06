@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <set>
 #include <string>
 #include <magic_enum/magic_enum.hpp>
 #include "common/assert.h"
@@ -73,20 +74,99 @@ static bool IgnoresExecMask(const GcnInst& inst) {
 // How far before an S_SETPC_B64 the S_GETPC_B64 that its address comes from is looked for.
 static constexpr u32 SetPcSearchWindow = 8;
 
-static std::optional<s32> LiteralOperand(const GcnInst& inst, u32 reg) {
-    for (u32 i = 0; i < 2 && i < inst.src_count; ++i) {
-        const auto& other = inst.src[1 - i];
-        if (inst.src[i].field == OperandField::ScalarGPR && inst.src[i].code == reg &&
-            other.field == OperandField::LiteralConst) {
-            return static_cast<s32>(other.code);
+static std::optional<s64> ConstantOperand(const InstOperand& operand) {
+    switch (operand.field) {
+    case OperandField::LiteralConst:
+        return static_cast<s32>(operand.code);
+    case OperandField::ConstZero:
+        return 0;
+    case OperandField::SignedConstIntPos:
+        return static_cast<s64>(operand.code) - SignedConstIntPosMin + 1;
+    case OperandField::SignedConstIntNeg:
+        return -static_cast<s64>(operand.code) + SignedConstIntNegMin - 1;
+    default:
+        return std::nullopt;
+    }
+}
+
+// How many scalar registers an instruction writes from its destination operand onwards.
+static u32 ScalarDestinationWidth(const GcnInst& inst, const InstOperand& dst) {
+    const std::string_view name = magic_enum::enum_name(inst.opcode);
+    for (const u32 count : {16u, 8u, 4u, 2u}) {
+        if (name.find(fmt::format("DWORDX{}", count)) != std::string_view::npos) {
+            return count;
         }
+    }
+    switch (dst.type) {
+    case ScalarType::Uint16:
+    case ScalarType::Uint32:
+    case ScalarType::Sint16:
+    case ScalarType::Sint32:
+    case ScalarType::Float16:
+    case ScalarType::Float32:
+        return 1;
+    default:
+        return 2;
+    }
+}
+
+// The value a scalar register holds wherever it is read, when every write to it in the program
+// moves the same constant into it.
+static std::optional<u32> UniformScalarConstant(std::span<const GcnInst> list, u32 reg) {
+    std::optional<u32> value;
+    for (const auto& inst : list) {
+        for (u32 d = 0; d < inst.dst_count; ++d) {
+            const auto& dst = inst.dst[d];
+            if (dst.field != OperandField::ScalarGPR || reg < dst.code ||
+                reg >= dst.code + ScalarDestinationWidth(inst, dst)) {
+                continue;
+            }
+            std::optional<u32> written;
+            const auto constant =
+                inst.src_count > 0 ? ConstantOperand(inst.src[0]) : std::optional<s64>{};
+            if (constant && inst.opcode == Opcode::S_MOV_B32) {
+                written = static_cast<u32>(*constant);
+            } else if (constant && inst.opcode == Opcode::S_MOV_B64) {
+                written = static_cast<u32>(static_cast<u64>(*constant) >> (reg - dst.code) * 32);
+            }
+            if (!written || (value && *value != *written)) {
+                return std::nullopt;
+            }
+            value = written;
+        }
+    }
+    return value;
+}
+
+// The other source of a two source instruction that also reads `reg`.
+static const InstOperand* OtherSource(const GcnInst& inst, u32 reg) {
+    if (inst.src_count < 2) {
+        return nullptr;
+    }
+    if (inst.src[0].field == OperandField::ScalarGPR && inst.src[0].code == reg) {
+        return &inst.src[1];
+    }
+    if (inst.src[1].field == OperandField::ScalarGPR && inst.src[1].code == reg) {
+        return &inst.src[0];
+    }
+    return nullptr;
+}
+
+// The value of an operand: a constant, or a register that holds a single constant.
+static std::optional<u32> OperandValue(std::span<const GcnInst> list, const InstOperand& operand) {
+    if (const auto constant = ConstantOperand(operand)) {
+        return static_cast<u32>(*constant);
+    }
+    if (operand.field == OperandField::ScalarGPR) {
+        return UniformScalarConstant(list, operand.code);
     }
     return std::nullopt;
 }
 
-// The target of `S_GETPC_B64 s[n:n+1]; S_ADD_U32/S_SUB_U32 sn, sn, literal; S_ADDC_U32/S_SUBB_U32
-// sn+1, ...; S_SETPC_B64 s[n:n+1]`, with the literal on either side of the add and unrelated
-// instructions allowed in between.
+// The target of `S_GETPC_B64 s[n:n+1]; S_ADD_U32/S_SUB_U32 sn, sn, offset_lo; S_ADDC_U32/S_SUBB_U32
+// sn+1, sn+1, offset_hi; S_SETPC_B64 s[n:n+1]`, with unrelated instructions allowed in between.
+// The offset halves are literals, inline constants or registers that every write sets to the
+// same constant, as when the program keeps the offset in registers loaded once.
 static std::optional<u32> ResolveSetPcTarget(std::span<const GcnInst> list, u32 setpc_index,
                                              std::span<const u32> pc_map) {
     const auto& setpc = list[setpc_index];
@@ -113,38 +193,72 @@ static std::optional<u32> ResolveSetPcTarget(std::span<const GcnInst> list, u32 
             continue;
         }
         const u32 written = inst.dst[0].code;
-        if (written == low) {
-            const auto literal = LiteralOperand(inst, low);
-            if (!literal) {
-                return std::nullopt;
-            }
-            if (inst.opcode == Opcode::S_ADD_U32 || inst.opcode == Opcode::S_ADD_I32) {
-                offset += *literal;
-            } else if ((inst.opcode == Opcode::S_SUB_U32 || inst.opcode == Opcode::S_SUB_I32) &&
-                       inst.src[0].code == low) {
-                offset -= *literal;
-            } else {
-                return std::nullopt;
-            }
-        } else if (written == low + 1 && inst.opcode != Opcode::S_ADDC_U32 &&
-                   inst.opcode != Opcode::S_SUBB_U32) {
+        if (written != low && written != low + 1) {
+            continue;
+        }
+        const InstOperand* source = OtherSource(inst, written);
+        const auto value = source ? OperandValue(list, *source) : std::optional<u32>{};
+        if (!value) {
             return std::nullopt;
         }
+        const bool is_add = inst.opcode == Opcode::S_ADD_U32 || inst.opcode == Opcode::S_ADD_I32 ||
+                            inst.opcode == Opcode::S_ADDC_U32;
+        const bool is_sub = (inst.opcode == Opcode::S_SUB_U32 || inst.opcode == Opcode::S_SUB_I32 ||
+                             inst.opcode == Opcode::S_SUBB_U32) &&
+                            source == &inst.src[1];
+        const bool high = written == low + 1;
+        if (high != (inst.opcode == Opcode::S_ADDC_U32 || inst.opcode == Opcode::S_SUBB_U32) ||
+            (!is_add && !is_sub)) {
+            return std::nullopt;
+        }
+        const s64 part =
+            high ? static_cast<s64>(static_cast<u64>(*value) << 32) : static_cast<s64>(*value);
+        offset += is_add ? part : -part;
     }
     return std::nullopt;
 }
 
+static std::string DescribeInstruction(const GcnInst& inst) {
+    std::string out{magic_enum::enum_name(inst.opcode)};
+    for (u32 d = 0; d < inst.dst_count; ++d) {
+        out += fmt::format(" d{}:{}", u32(inst.dst[d].field), inst.dst[d].code);
+    }
+    for (u32 src = 0; src < inst.src_count; ++src) {
+        out += fmt::format(" s{}:{}", u32(inst.src[src].field), inst.src[src].code);
+    }
+    return out;
+}
+
+// The instructions before the jump, and every instruction of the program that writes a scalar
+// register they add to the jump address.
 static std::string DescribeSetPcWindow(std::span<const GcnInst> list, u32 setpc_index) {
     std::string out;
+    std::set<u32> offset_registers;
     const u32 first = setpc_index > SetPcSearchWindow ? setpc_index - SetPcSearchWindow : 0;
     for (u32 i = first; i <= setpc_index; ++i) {
         const auto& inst = list[i];
-        out += fmt::format("\n    {}", magic_enum::enum_name(inst.opcode));
-        for (u32 d = 0; d < inst.dst_count; ++d) {
-            out += fmt::format(" d{}:{}", u32(inst.dst[d].field), inst.dst[d].code);
+        out += fmt::format("\n    {}", DescribeInstruction(inst));
+        if (i == setpc_index || inst.dst_count == 0 ||
+            inst.dst[0].field != OperandField::ScalarGPR) {
+            continue;
         }
-        for (u32 src = 0; src < inst.src_count; ++src) {
-            out += fmt::format(" s{}:{}", u32(inst.src[src].field), inst.src[src].code);
+        if (const InstOperand* source = OtherSource(inst, inst.dst[0].code);
+            source && source->field == OperandField::ScalarGPR) {
+            offset_registers.insert(source->code);
+        }
+    }
+    for (const u32 reg : offset_registers) {
+        out += fmt::format("\n  writers of s{}:", reg);
+        for (u32 i = 0; i < list.size(); ++i) {
+            const auto& inst = list[i];
+            for (u32 d = 0; d < inst.dst_count; ++d) {
+                const auto& dst = inst.dst[d];
+                if (dst.field == OperandField::ScalarGPR && reg >= dst.code &&
+                    reg < dst.code + ScalarDestinationWidth(inst, dst)) {
+                    out += fmt::format("\n    [{}] {}", i, DescribeInstruction(inst));
+                    break;
+                }
+            }
         }
     }
     return out;
