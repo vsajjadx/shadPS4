@@ -1,44 +1,7 @@
-# Qt launcher
+# shadPS4 Qt launcher
 
-The Windows package ships the official [shadPS4 Qt launcher](https://github.com/shadps4-emu/shadps4-qtlauncher)
-together with this emulator. CI checks out the launcher at the commit in `UPSTREAM_COMMIT`,
-applies the patches in `patches/` and builds it with `FORK_BUNDLE_REV` set to this repository's
-commit.
+The launcher bundled with this emulator lives in the fork
+[vsajjadx/shadps4-qtlauncher](https://github.com/vsajjadx/shadps4-qtlauncher), branch `fork`.
+CI clones that branch and builds it with the emulator.
 
-The patches add:
-
-- Updates from this repository's latest GitHub release, looked for only from Help > Check for
-  Updates (the Version Manager still lists the official builds when opened). On confirmation the
-  zip is downloaded and replaces the launcher and the emulator, then the launcher restarts.
-- The included `shadPS4.exe` is listed and selected as the emulator version.
-- A list of common window sizes instead of typing the width and height.
-- A frame generation switch in the Graphics tab with a choice of method (FSR 3.1 or Lemon FG; Lemon
-  FG also has a 2x / 3x / 4x / 6x multiplier, High Quality and HUD Protection), and
-  a Toggle Frame Generation key in the Hotkeys dialog (default `1`; a single key, a combination like
-  `Ctrl+1`, or a controller button) that turns the chosen method on and off while playing.
-- DLSS5 options in the Graphics tab (the Magpie build of DLSS5-RTX30 bundled in
-  `qtplugins\DLSS5`): enable, Boost with the resolution the network runs at, intensity, style and
-  fine tuning. They are kept in the emulator's `user/dlss5.json` and take effect when the next
-  game starts. The Hotkeys dialog also gains Toggle DLSS5 (default `2`) and Toggle DLSS5 Boost
-  (default `3`).
-- The controller and Hotkeys dialogs read a click on the DualSense / DualShock 4 touchpad as
-  `touchpad_left`, `touchpad_center` or `touchpad_right`, by the third of the pad the finger is on
-  (it used to be ignored, leaving the field on `back`). The emulator takes these as inputs, so they
-  work for any output and for the hotkeys.
-- File > Scan for PS4 games: scans every drive in the background, skips the Windows folder and
-  system folders, and adds the PS4 games it finds to the library without asking for a folder.
-- The compatibility list comes from the official database, with the games listed in
-  `compatibility/overrides.json` on the `main` branch shown with the fork's status.
-- About links only to this repository.
-- Existing `user` and `launcher` folders next to the launcher (or in the working directory) are
-  used before the standard ones, and the emulator runs in the same place, so saves and settings
-  that already exist keep being used. New folders are only made when none exist.
-- PKG files run directly: `shadPS4.exe -g game.pkg`, or File > Boot Game with a `.pkg`. The files are
-  read from inside the package as the game asks for them (decrypted and decompressed block by
-  block), nothing is extracted. A `Game-UPDATE.pkg` next to `Game.pkg` is layered over it like a
-  `-UPDATE` folder. Update and DLC packages have no executable and cannot be started on their own.
-- Image quality options in the Graphics tab: anti-aliasing, resolution scaling, anisotropic
-  filtering, and brightness and contrast sliders, saved for all games or for one game like the
-  other settings.
-
-To update the launcher, change `UPSTREAM_COMMIT` and refresh the patches against it.
+Launcher changes are committed to the `fork` branch of that repository.

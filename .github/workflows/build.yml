@@ -213,15 +213,13 @@ jobs:
     steps:
     - uses: actions/checkout@v6
 
-    - name: Check out and patch the Qt launcher
+    - name: Check out the Qt launcher fork
       shell: bash
       run: |
         echo "FORK_TIME=$(git log -1 --format=%ct)" >> $GITHUB_ENV
-        git clone --filter=blob:none https://github.com/shadps4-emu/shadps4-qtlauncher qtlauncher
+        git clone --filter=blob:none --branch fork https://github.com/vsajjadx/shadps4-qtlauncher qtlauncher
         cd qtlauncher
-        git checkout "$(cat ../launcher/UPSTREAM_COMMIT)"
         git submodule update --init --recursive --depth 1 || git submodule update --init --recursive
-        git -c user.name=ci -c user.email=ci@localhost am ../launcher/patches/*.patch
 
     - name: Setup Qt
       uses: jurplel/install-qt-action@v4
