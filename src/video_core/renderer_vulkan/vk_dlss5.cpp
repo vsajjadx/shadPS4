@@ -19,6 +19,7 @@
 #include "core/dlss5.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 
+#include <boost/container/static_vector.hpp>
 #include <vk_mem_alloc.h>
 
 #include <nvsdk_ngx_defs.h>
@@ -155,6 +156,8 @@ struct Dlss5Pass::Impl {
     std::array<WorkImage, 2> color{};
     WorkImage depth{};
     WorkImage motion{};
+    WorkImage srgb{};
+    vk::Format frame_format{};
 
     explicit Impl(const Instance& instance_) : instance{instance_}, device{instance_.GetDevice()} {
         if (!instance.IsNeuralRenderingSupported()) {
@@ -276,7 +279,7 @@ struct Dlss5Pass::Impl {
     }
 
     void DestroyImages() {
-        for (auto* work : {&color[0], &color[1], &depth, &motion}) {
+        for (auto* work : {&color[0], &color[1], &depth, &motion, &srgb}) {
             if (work->view) {
                 device.destroyImageView(work->view);
             }
@@ -285,6 +288,37 @@ struct Dlss5Pass::Impl {
             }
             *work = {};
         }
+    }
+
+    /// The frame holds gamma-encoded colors in a UNORM format. Copying them into an image of
+    /// the matching sRGB format lets the blits to and from the float work images decode and
+    /// encode them, so DLSS5 sees linear light.
+    static vk::Format SrgbFormat(vk::Format format) {
+        switch (format) {
+        case vk::Format::eB8G8R8A8Unorm:
+            return vk::Format::eB8G8R8A8Srgb;
+        case vk::Format::eR8G8B8A8Unorm:
+            return vk::Format::eR8G8B8A8Srgb;
+        case vk::Format::eA8B8G8R8UnormPack32:
+            return vk::Format::eA8B8G8R8SrgbPack32;
+        default:
+            return vk::Format::eUndefined;
+        }
+    }
+
+    void Copy(vk::CommandBuffer cmdbuf, vk::Image src, vk::Image dst) const {
+        const vk::ImageSubresourceLayers layers = {
+            .aspectMask = vk::ImageAspectFlagBits::eColor,
+            .mipLevel = 0,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        };
+        const vk::ImageCopy region = {
+            .srcSubresource = layers,
+            .dstSubresource = layers,
+            .extent = {width, height, 1},
+        };
+        cmdbuf.copyImage(src, vk::ImageLayout::eGeneral, dst, vk::ImageLayout::eGeneral, region);
     }
 
     static vk::ImageSubresourceRange Range() {
@@ -354,6 +388,11 @@ struct Dlss5Pass::Impl {
         color[1] = CreateImage(vk::Format::eR16G16B16A16Sfloat, usage);
         depth = CreateImage(vk::Format::eR32Sfloat, usage);
         motion = CreateImage(vk::Format::eR16G16Sfloat, usage);
+        if (const auto srgb_format = SrgbFormat(frame_format);
+            srgb_format != vk::Format::eUndefined) {
+            srgb = CreateImage(srgb_format, vk::ImageUsageFlagBits::eTransferSrc |
+                                                vk::ImageUsageFlagBits::eTransferDst);
+        }
         if (!color[0].image || !color[1].image || !depth.image || !motion.image) {
             LOG_WARNING(Render_Vulkan, "DLSS5: could not allocate {}x{} work images", width,
                         height);
@@ -362,19 +401,22 @@ struct Dlss5Pass::Impl {
             return;
         }
 
-        std::array<vk::ImageMemoryBarrier2, 4> barriers{};
-        const std::array images = {color[0].image, color[1].image, depth.image, motion.image};
-        for (size_t i = 0; i < images.size(); ++i) {
-            barriers[i] = {
+        boost::container::static_vector<vk::ImageMemoryBarrier2, 5> barriers;
+        for (const vk::Image image :
+             {color[0].image, color[1].image, depth.image, motion.image, srgb.image}) {
+            if (!image) {
+                continue;
+            }
+            barriers.push_back({
                 .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
                 .dstStageMask = vk::PipelineStageFlagBits2::eAllCommands,
                 .dstAccessMask =
                     vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite,
                 .oldLayout = vk::ImageLayout::eUndefined,
                 .newLayout = vk::ImageLayout::eGeneral,
-                .image = images[i],
+                .image = image,
                 .subresourceRange = Range(),
-            };
+            });
         }
         cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = static_cast<u32>(barriers.size()),
                                  .pImageMemoryBarriers = barriers.data()});
@@ -419,9 +461,13 @@ struct Dlss5Pass::Impl {
         parameters->Set((prefix + "Height").c_str(), static_cast<int>(h));
     }
 
-    void Render(vk::CommandBuffer cmdbuf, vk::Image image, u32 w, u32 h) {
+    void Render(vk::CommandBuffer cmdbuf, vk::Image image, vk::Format format, u32 w, u32 h) {
         if (!available || w == 0 || h == 0) {
             return;
+        }
+        if (format != frame_format) {
+            frame_format = format;
+            invalidated = true;
         }
         if (const u32 current = ::Dlss5::SettingsGeneration(); current != generation) {
             generation = current;
@@ -435,7 +481,13 @@ struct Dlss5Pass::Impl {
             return;
         }
         FullBarrier(cmdbuf);
-        Blit(cmdbuf, image, w, h, color[0].image, width, height);
+        if (srgb.image) {
+            Copy(cmdbuf, image, srgb.image);
+            FullBarrier(cmdbuf);
+            Blit(cmdbuf, srgb.image, w, h, color[0].image, width, height);
+        } else {
+            Blit(cmdbuf, image, w, h, color[0].image, width, height);
+        }
         FullBarrier(cmdbuf);
 
         auto color_resource = Resource(color[0], width, height, false);
@@ -465,7 +517,13 @@ struct Dlss5Pass::Impl {
             }
             return;
         }
-        Blit(cmdbuf, color[1].image, width, height, image, w, h);
+        if (srgb.image) {
+            Blit(cmdbuf, color[1].image, width, height, srgb.image, w, h);
+            FullBarrier(cmdbuf);
+            Copy(cmdbuf, srgb.image, image);
+        } else {
+            Blit(cmdbuf, color[1].image, width, height, image, w, h);
+        }
         FullBarrier(cmdbuf);
     }
 };
@@ -486,9 +544,9 @@ bool Dlss5Pass::IsAvailable() const {
     return impl->available;
 }
 
-void Dlss5Pass::Render(vk::CommandBuffer cmdbuf, vk::Image image, vk::ImageView, vk::Format,
+void Dlss5Pass::Render(vk::CommandBuffer cmdbuf, vk::Image image, vk::ImageView, vk::Format format,
                        u32 width, u32 height) {
-    impl->Render(cmdbuf, image, width, height);
+    impl->Render(cmdbuf, image, format, width, height);
 }
 
 void Dlss5Pass::Reset() {
