@@ -722,16 +722,34 @@ void ControllerOutput::AddUpdate(InputEvent event) {
     }
 }
 
-constexpr u64 HotkeyDebounceMs = 300;
+// A hotkey's event is sent once per press. One press can reach several outputs of the same
+// hotkey (a binding without a gamepad is copied to every gamepad's outputs, and a hotkey can have
+// a keyboard and a controller binding), so the event goes out only when the first of them is
+// pressed, and again only after all of them were released. A press right after the previous
+// one is taken as contact bounce.
+constexpr u64 HotkeyBounceMs = 150;
+
+static bool HotkeyPressed(u32 event_type, bool pressed) {
+    static std::unordered_map<u32, u32> held_outputs;
+    static std::unordered_map<u32, u64> last_press;
+    u32& held = held_outputs[event_type];
+    if (!pressed) {
+        held = held > 0 ? held - 1 : 0;
+        return false;
+    }
+    if (held++ > 0) {
+        return false;
+    }
+    const u64 now = SDL_GetTicks();
+    const bool bounce =
+        last_press.contains(event_type) && now - last_press[event_type] < HotkeyBounceMs;
+    last_press[event_type] = now;
+    return !bounce;
+}
 
 void ControllerOutput::FinalizeUpdate(u8 gamepad_index) {
     auto PushSDLEvent = [&](u32 event_type) {
-        // One press can reach several outputs bound to the same hotkey; a toggle that arrives
-        // again right away would undo itself.
-        static std::unordered_map<u32, u64> last_pushed;
-        const u64 now = SDL_GetTicks();
-        if (new_button_state && now - last_pushed[event_type] >= HotkeyDebounceMs) {
-            last_pushed[event_type] = now;
+        if (HotkeyPressed(event_type, new_button_state)) {
             SDL_Event e;
             SDL_memset(&e, 0, sizeof(e));
             e.type = event_type;
