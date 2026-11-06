@@ -151,7 +151,6 @@ LemonFgPass::Pass LemonFgPass::CreatePass(std::span<const u32> code, u32 sampled
         .descriptorType = vk::DescriptorType::eSampler,
         .descriptorCount = 1,
         .stageFlags = vk::ShaderStageFlagBits::eCompute,
-        .pImmutableSamplers = &sampler.get(),
     };
     for (u32 binding = 1; binding <= sampled_count; ++binding) {
         bindings[binding] = {
@@ -329,22 +328,24 @@ void LemonFgPass::Recreate(vk::CommandBuffer cmdbuf, u32 width, u32 height,
 void LemonFgPass::Run(vk::CommandBuffer cmdbuf, const Pass& pass,
                       std::span<const vk::ImageView> sampled, const Target& destination,
                       const void* push, u32 groups_x, u32 groups_y) const {
-    std::array<vk::DescriptorImageInfo, MaxSampled + 1> infos{};
-    std::array<vk::WriteDescriptorSet, MaxSampled + 1> writes{};
+    std::array<vk::DescriptorImageInfo, MaxSampled + 2> infos{};
+    std::array<vk::WriteDescriptorSet, MaxSampled + 2> writes{};
     u32 count = 0;
     const auto add = [&](vk::ImageView view, vk::DescriptorType type) {
         infos[count] = {
+            .sampler = type == vk::DescriptorType::eSampler ? sampler.get() : vk::Sampler{},
             .imageView = view,
             .imageLayout = vk::ImageLayout::eGeneral,
         };
         writes[count] = {
-            .dstBinding = count + 1,
+            .dstBinding = count,
             .descriptorCount = 1,
             .descriptorType = type,
             .pImageInfo = &infos[count],
         };
         ++count;
     };
+    add({}, vk::DescriptorType::eSampler);
     for (const vk::ImageView view : sampled) {
         add(view, vk::DescriptorType::eSampledImage);
     }
