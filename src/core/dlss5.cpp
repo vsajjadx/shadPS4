@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 
@@ -31,6 +32,7 @@ const std::vector<std::string>& NetworkOptions() {
 
 static Settings g_settings;
 static bool g_loaded = false;
+static std::filesystem::file_time_type g_settings_time{};
 
 static std::filesystem::path SettingsPath() {
     return Common::FS::GetUserPath(Common::FS::PathType::UserDir) / SettingsFileName;
@@ -45,6 +47,8 @@ Settings& GetSettings() {
 
 void LoadSettings() {
     g_loaded = true;
+    std::error_code ec;
+    g_settings_time = std::filesystem::last_write_time(SettingsPath(), ec);
     g_settings = Settings{};
     std::ifstream file(SettingsPath());
     if (!file) {
@@ -86,8 +90,11 @@ void SaveSettings() {
 
     std::error_code ec;
     std::filesystem::create_directories(SettingsPath().parent_path(), ec);
-    std::ofstream file(SettingsPath());
-    file << j.dump(2) << std::endl;
+    {
+        std::ofstream file(SettingsPath());
+        file << j.dump(2) << std::endl;
+    }
+    g_settings_time = std::filesystem::last_write_time(SettingsPath(), ec);
 }
 
 static std::atomic<u32> g_generation{0};
@@ -98,6 +105,21 @@ u32 SettingsGeneration() {
 
 void ApplySettings() {
     g_generation.fetch_add(1, std::memory_order_relaxed);
+}
+
+void ReloadIfChanged() {
+    static std::chrono::steady_clock::time_point next_check{};
+    const auto now = std::chrono::steady_clock::now();
+    if (now < next_check) {
+        return;
+    }
+    next_check = now + std::chrono::seconds(1);
+    std::error_code ec;
+    const auto time = std::filesystem::last_write_time(SettingsPath(), ec);
+    if (!ec && time != g_settings_time) {
+        LoadSettings();
+        ApplySettings();
+    }
 }
 
 std::optional<bool> ToggleDLSS5() {

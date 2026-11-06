@@ -33,6 +33,9 @@ void SaveSettings();
 const std::vector<std::string>& StyleOptions();
 const std::vector<std::string>& NetworkOptions();
 
+/// Picks up changes another program (the launcher) made to the settings file.
+void ReloadIfChanged();
+
 /// Counts the settings changes, so the renderer rebuilds its pass after one.
 u32 SettingsGeneration();
 void ApplySettings();

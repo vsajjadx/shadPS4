@@ -863,6 +863,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     pp_settings.contrast = std::clamp(EmulatorSettings.GetContrast(), 25, 400) / 100.0f;
     pp_pass.Render(cmdbuf, image_view, image_size, *frame, pp_settings);
     const auto scene_depth = texture_cache.TakeSceneDepth();
+    ::Dlss5::ReloadIfChanged();
     if (dlss5_pass->IsAvailable() && ::Dlss5::GetSettings().enabled) {
         std::optional<Dlss5Depth> dlss5_depth;
         if (scene_depth) {
