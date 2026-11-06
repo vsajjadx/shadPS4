@@ -1,0 +1,60 @@
+// SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+// Per-pixel motion vectors from the block motion search: for each pixel of the current frame C,
+// the offset in output pixels to where it was in the previous frame A. The flow u (A(x) ~
+// C(x + u)) is anchored on A, so the offset d = u(x - d) is solved by fixed-point iteration.
+// The search can't tell how flat areas move, so a vector is only kept where the luma around it has
+// enough detail; flat areas get no motion, where a wrong vector would smear light across them.
+
+#version 460 core
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler linear_sampler;
+layout(set = 0, binding = 1) uniform texture2D flow;
+layout(set = 0, binding = 2) uniform texture2D luma;
+layout(set = 0, binding = 3, rg16f) uniform writeonly image2D motion;
+
+layout(push_constant) uniform PushConstants {
+    ivec2 size;
+    ivec2 grid;
+    vec2 search_scale;
+};
+
+const float BLOCK = 8.0;
+const int ITERATIONS = 4;
+const float FLAT = 0.015;
+const float DETAILED = 0.05;
+
+float LocalDetail(vec2 position) {
+    const ivec2 luma_size = textureSize(sampler2D(luma, linear_sampler), 0);
+    const ivec2 centre = clamp(ivec2(position), ivec2(0), luma_size - 1);
+    float sum = 0.0;
+    float sum_sq = 0.0;
+    for (int y = -2; y <= 2; ++y) {
+        for (int x = -2; x <= 2; ++x) {
+            const ivec2 at = clamp(centre + ivec2(x, y), ivec2(0), luma_size - 1);
+            const float value = texelFetch(sampler2D(luma, linear_sampler), at, 0).r;
+            sum += value;
+            sum_sq += value * value;
+        }
+    }
+    const float mean = sum / 25.0;
+    return sqrt(max(sum_sq / 25.0 - mean * mean, 0.0));
+}
+
+void main() {
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, size))) {
+        return;
+    }
+    const vec2 position = (vec2(pixel) + 0.5) / search_scale;
+    vec2 d = vec2(0.0);
+    for (int i = 0; i < ITERATIONS; ++i) {
+        const vec2 uv = (position - d) / BLOCK / vec2(grid);
+        d = textureLod(sampler2D(flow, linear_sampler), uv, 0.0).xy;
+    }
+    const float confidence = smoothstep(FLAT, DETAILED, LocalDetail(position));
+    imageStore(motion, pixel, vec4(-d * search_scale * confidence, 0.0, 0.0));
+}

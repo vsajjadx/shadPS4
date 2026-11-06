@@ -68,6 +68,7 @@ void LoadSettings() {
         s.autoMask = j.value("AutoMask", s.autoMask);
         s.temporal = j.value("Temporal", s.temporal);
         s.useDepth = j.value("UseDepth", s.useDepth);
+        s.useMotion = j.value("UseMotion", s.useMotion);
         s.beforeHud = j.value("BeforeHud", s.beforeHud);
         s.uiCorrection = std::clamp(j.value("UICorrection", s.uiCorrection), 0, 1);
         s.preset = std::clamp(j.value("Preset", s.preset), 0,
@@ -91,6 +92,7 @@ void SaveSettings() {
     j["AutoMask"] = s.autoMask;
     j["Temporal"] = s.temporal;
     j["UseDepth"] = s.useDepth;
+    j["UseMotion"] = s.useMotion;
     j["BeforeHud"] = s.beforeHud;
     j["UICorrection"] = s.uiCorrection;
 

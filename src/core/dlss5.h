@@ -21,11 +21,12 @@ struct Settings {
     float localTone = 0.0f;
     float localStructure = 1.0f;
     float skinStructure = 1.0f;
-    int preset = 2;
+    int preset = 1;
     bool autoMask = true;
     /// Blends earlier frames in; without motion vectors moving objects leave a trail.
     bool temporal = false;
     bool useDepth = true;
+    bool useMotion = true;
     bool beforeHud = true;
     int uiCorrection = 0;
 };
