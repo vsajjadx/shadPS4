@@ -23,6 +23,8 @@ struct Settings {
     float skinStructure = 1.0f;
     int preset = 2;
     bool autoMask = true;
+    /// Blends earlier frames in; without motion vectors moving objects leave a trail.
+    bool temporal = false;
     int uiCorrection = 0;
 };
 

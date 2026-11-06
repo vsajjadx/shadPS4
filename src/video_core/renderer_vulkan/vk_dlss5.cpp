@@ -600,7 +600,7 @@ struct Dlss5Pass::Impl {
         parameters->Set("DLSSNR.Output", static_cast<void*>(&output_resource));
         parameters->Set("DLSSNR.Depth", static_cast<void*>(&depth_resource));
         parameters->Set("DLSSNR.MVec", static_cast<void*>(&motion_resource));
-        parameters->Set("DLSSNR.Reset", reset ? 1 : 0);
+        parameters->Set("DLSSNR.Reset", reset || !::Dlss5::GetSettings().temporal ? 1 : 0);
         SetSubrect("Color", width, height);
         SetSubrect("Output", width, height);
         SetSubrect("Depth", width, height);
