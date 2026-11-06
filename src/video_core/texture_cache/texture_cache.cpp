@@ -1015,14 +1015,12 @@ void TextureCache::NoteDepthDraw(ImageId image_id, bool reversed) {
     }
 }
 
-std::optional<TextureCache::SceneDepth> TextureCache::TakeSceneDepth() {
+std::optional<TextureCache::SceneDepth> TextureCache::PeekSceneDepth() const {
     const auto it = std::ranges::max_element(depth_draws, {}, &DepthDraws::draws);
-    std::optional<SceneDepth> result;
-    if (it != depth_draws.end() && slot_images.IsAllocated(it->image_id)) {
-        result = SceneDepth{it->image_id, it->reversed_draws * 2 > it->draws};
+    if (it == depth_draws.end() || !slot_images.IsAllocated(it->image_id)) {
+        return std::nullopt;
     }
-    depth_draws.clear();
-    return result;
+    return SceneDepth{it->image_id, it->reversed_draws * 2 > it->draws};
 }
 
 ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc,

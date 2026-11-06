@@ -360,8 +360,13 @@ public:
     /// Counts a draw into a depth target, and whether it tests with reversed Z.
     void NoteDepthDraw(ImageId image_id, bool reversed);
 
-    /// The depth target most drawn into since the last call, which is the scene depth.
-    std::optional<SceneDepth> TakeSceneDepth();
+    /// The depth target most drawn into since the last reset, which is the scene depth.
+    std::optional<SceneDepth> PeekSceneDepth() const;
+
+    /// Starts counting the depth draws of the next frame.
+    void ResetSceneDepth() {
+        depth_draws.clear();
+    }
 
 private:
     struct DepthDraws {

@@ -862,37 +862,15 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     pp_settings.brightness = std::clamp(EmulatorSettings.GetBrightness(), 25, 400) / 100.0f;
     pp_settings.contrast = std::clamp(EmulatorSettings.GetContrast(), 25, 400) / 100.0f;
     pp_pass.Render(cmdbuf, image_view, image_size, *frame, pp_settings);
-    const auto scene_depth = texture_cache.TakeSceneDepth();
+    const bool dlss5_before_hud = rasterizer->TakeDlss5BeforeHud();
     ::Dlss5::ReloadIfChanged();
-    if (dlss5_pass->IsAvailable() && ::Dlss5::GetSettings().enabled) {
-        std::optional<Dlss5Depth> dlss5_depth;
-        if (scene_depth) {
-            auto& depth_image = texture_cache.GetImage(scene_depth->image_id);
-            const u32 depth_width = depth_image.info.size.width;
-            const u32 depth_height = depth_image.info.size.height;
-            const float depth_ratio =
-                static_cast<float>(depth_width) / static_cast<float>(std::max(depth_height, 1u));
-            if (depth_width != 0 && std::abs(depth_ratio - expected_ratio) < 0.05f) {
-                VideoCore::ImageViewInfo depth_view_info{};
-                depth_view_info.format = depth_image.info.pixel_format == vk::Format::eD16Unorm ||
-                                                 depth_image.info.pixel_format ==
-                                                     vk::Format::eD16UnormS8Uint
-                                             ? vk::Format::eR16Unorm
-                                             : vk::Format::eR32Sfloat;
-                const vk::ImageView depth_view =
-                    *depth_image.FindView(depth_view_info).image_view;
-                runtime.Transit(&depth_image, vk::ImageLayout::eGeneral,
-                                vk::PipelineStageFlagBits2::eComputeShader,
-                                vk::AccessFlagBits2::eShaderSampledRead);
-                runtime.FlushBarriers();
-                dlss5_depth = Dlss5Depth{depth_view, depth_width, depth_height,
-                                         scene_depth->reversed};
-            }
-        }
+    if (!dlss5_before_hud && dlss5_pass->IsAvailable() && ::Dlss5::GetSettings().enabled) {
+        const auto dlss5_depth = rasterizer->PrepareDlss5Depth(image_size.width, image_size.height);
         dlss5_pass->Render(cmdbuf, frame->image, frame->image_view,
                            swapchain.GetSurfaceFormat().format, frame->width, frame->height,
                            dlss5_depth ? &*dlss5_depth : nullptr);
     }
+    texture_cache.ResetSceneDepth();
 
     frame->prepared_at = std::chrono::steady_clock::now();
     frame->num_generated = 0;

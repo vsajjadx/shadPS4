@@ -15,13 +15,13 @@ namespace Dlss5 {
 struct Settings {
     bool enabled = false;
     /// NGX style: Standard, Natural or Cinematic.
-    int style = 0;
+    int style = 1;
     float intensity = 1.0f;
     float globalTone = 1.0f;
     float localTone = 0.0f;
-    float localStructure = 0.0f;
-    float skinStructure = 0.0f;
-    int preset = 0;
+    float localStructure = 1.0f;
+    float skinStructure = 1.0f;
+    int preset = 2;
     bool autoMask = true;
     int uiCorrection = 0;
 };

@@ -10,6 +10,7 @@
 #include "common/shared_first_mutex.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/page_manager.h"
+#include "video_core/renderer_vulkan/vk_dlss5.h"
 #include "video_core/renderer_vulkan/vk_occlusion_counter.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -103,6 +104,13 @@ public:
             func(mapped_range);
         }
     }
+
+    /// Whether DLSS5 already ran on the scene this frame, before post-processing and the HUD.
+    /// Starts watching the next frame.
+    bool TakeDlss5BeforeHud();
+
+    /// The scene depth of this frame for DLSS5, in the general layout, when its aspect matches.
+    std::optional<Dlss5Depth> PrepareDlss5Depth(u32 width, u32 height);
 
     std::thread::id GetGpuCommandProcessorThread();
 #ifdef __linux__
@@ -229,8 +237,16 @@ private:
     Pipeline::DescriptorWrites set_writes;
     Shader::PushData push_data;
 
+    void NoteSceneDraw(VideoCore::ImageId depth_id);
+    void NoteSampledImage(VideoCore::ImageId image_id);
+
     bool attachment_feedback_loop{};
     bool needs_barrier{};
+    VideoCore::ImageId dlss5_scene_color{};
+    VAddr dlss5_scene_address{};
+    bool dlss5_scene_drawn{};
+    bool dlss5_before_hud{};
+    bool binding_compute{};
 };
 
 } // namespace Vulkan

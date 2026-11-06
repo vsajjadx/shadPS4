@@ -7,6 +7,7 @@
 #include "common/debug.h"
 #include "common/hack_features.h"
 #include "core/debug_state.h"
+#include "core/dlss5.h"
 #include "core/emulator_settings.h"
 #include "core/memory.h"
 #include "shader_recompiler/resource.h"
@@ -480,6 +481,7 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
     }
 
     set_write_index = 0;
+    binding_compute = pipeline->IsCompute();
     set_writes.clear();
     buffer_infos.clear();
     image_infos.clear();
@@ -1195,6 +1197,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
             }
 
             image_id = texture_cache.FindImage(desc);
+            NoteSampledImage(image_id);
             auto* image = &texture_cache.GetImage(image_id);
             if (auto depth_image_id = texture_cache.GetAssociatedDepth(*image)) {
                 // If this image has an associated depth image, it's a stencil attachment.
@@ -1549,6 +1552,83 @@ void Rasterizer::UpdateHeapTextures() {
     runtime.FlushBarriers();
 }
 
+// The scene's color target is the one drawn together with the scene depth. Once the scene is
+// drawn, the first pass that samples that target starts post-processing and compositing (tone
+// mapping, bloom, HUD), so DLSS5 runs on the scene alone just before it.
+void Rasterizer::NoteSceneDraw(VideoCore::ImageId depth_id) {
+    const auto scene_depth = texture_cache.PeekSceneDepth();
+    if (!scene_depth || scene_depth->image_id != depth_id || !cb_descs[0].image_id) {
+        return;
+    }
+    dlss5_scene_color = cb_descs[0].image_id;
+    dlss5_scene_address = texture_cache.GetImage(dlss5_scene_color).info.guest_address;
+    dlss5_scene_drawn = true;
+}
+
+void Rasterizer::NoteSampledImage(VideoCore::ImageId image_id) {
+    if (!dlss5_scene_drawn || dlss5_before_hud ||
+        texture_cache.GetImage(image_id).info.guest_address != dlss5_scene_address) {
+        return;
+    }
+    for (const auto& target : cb_descs) {
+        if (!binding_compute && target.image_id &&
+            texture_cache.GetImage(target.image_id).info.guest_address == dlss5_scene_address) {
+            return;
+        }
+    }
+    auto* const pass = Dlss5::Get();
+    if (!pass || !::Dlss5::GetSettings().enabled) {
+        return;
+    }
+    dlss5_before_hud = true;
+    auto& image = texture_cache.GetImage(dlss5_scene_color);
+    const u32 width = image.info.size.width;
+    const u32 height = image.info.size.height;
+    scheduler.EndRendering();
+    const auto depth = PrepareDlss5Depth(width, height);
+    runtime.Transit(&image, vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eAllCommands,
+                    vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite);
+    runtime.FlushBarriers();
+    pass->Render(scheduler.CommandBuffer(), image.GetImage(), {}, image.info.pixel_format, width,
+                 height, depth ? &*depth : nullptr);
+}
+
+bool Rasterizer::TakeDlss5BeforeHud() {
+    const bool ran = dlss5_before_hud;
+    dlss5_before_hud = false;
+    dlss5_scene_drawn = false;
+    return ran;
+}
+
+std::optional<Dlss5Depth> Rasterizer::PrepareDlss5Depth(u32 width, u32 height) {
+    const auto scene_depth = texture_cache.PeekSceneDepth();
+    if (!scene_depth || height == 0) {
+        return std::nullopt;
+    }
+    auto& depth_image = texture_cache.GetImage(scene_depth->image_id);
+    const u32 depth_width = depth_image.info.size.width;
+    const u32 depth_height = depth_image.info.size.height;
+    if (depth_width == 0 || depth_height == 0) {
+        return std::nullopt;
+    }
+    const float ratio = static_cast<float>(width) / static_cast<float>(height);
+    const float depth_ratio = static_cast<float>(depth_width) / static_cast<float>(depth_height);
+    if (std::abs(depth_ratio - ratio) >= 0.05f) {
+        return std::nullopt;
+    }
+    VideoCore::ImageViewInfo view_info{};
+    view_info.format = depth_image.info.pixel_format == vk::Format::eD16Unorm ||
+                               depth_image.info.pixel_format == vk::Format::eD16UnormS8Uint
+                           ? vk::Format::eR16Unorm
+                           : vk::Format::eR32Sfloat;
+    const vk::ImageView view = *depth_image.FindView(view_info).image_view;
+    runtime.Transit(&depth_image, vk::ImageLayout::eGeneral,
+                    vk::PipelineStageFlagBits2::eComputeShader,
+                    vk::AccessFlagBits2::eShaderSampledRead);
+    runtime.FlushBarriers();
+    return Dlss5Depth{view, depth_width, depth_height, scene_depth->reversed};
+}
+
 RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
     attachment_feedback_loop = false;
     const auto& regs = liverpool->regs;
@@ -1636,6 +1716,7 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
             const auto func = regs.depth_control.depth_func;
             texture_cache.NoteDepthDraw(image_id, func == AmdGpu::CompareFunc::Greater ||
                                                       func == AmdGpu::CompareFunc::GreaterEqual);
+            NoteSceneDraw(image_id);
         }
         auto& image = texture_cache.GetImage(image_id);
 
