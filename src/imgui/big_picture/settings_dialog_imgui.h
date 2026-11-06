@@ -146,15 +146,11 @@ private:
     bool rcasEnabledSetting;
     float rcasAttenuationSetting;
 
-    // DLSS5 (NeuralScreen) settings; kept in their own neural_screen.json so
-    // emulator updates never collide with the integration.
+    // DLSS5 settings, kept in their own dlss5.json.
     bool dlss5EnabledSetting;
     bool dlss5BoostSetting;
-    bool dlss5AutoQualitySetting;
     int dlss5ResolutionSetting;
-    int dlss5PassesSetting;
-    int dlss5ProfileSetting;
-    int dlss5ModelSetting;
+    int dlss5StyleSetting;
     float dlss5IntensitySetting;
     float dlss5LocalToneSetting;
     float dlss5LocalStructureSetting;

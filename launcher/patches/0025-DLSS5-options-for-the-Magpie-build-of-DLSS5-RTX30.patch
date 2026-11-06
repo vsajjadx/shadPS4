@@ -1,0 +1,218 @@
+From e12d06ce77374b63cc007f485ab64d6473772691 Mon Sep 17 00:00:00 2001
+From: vsajjadx <168470755+vsajjadx@users.noreply.github.com>
+Date: Fri, 6 Nov 2026 02:04:49 +0000
+Subject: [PATCH] DLSS5 options for the Magpie build of DLSS5-RTX30 (replaces
+ NeuralScreen)
+
+The options are kept in the emulator's user/dlss5.json: enable, Boost with the resolution the network runs at, intensity, style and the three fine tuning strengths. NeuralScreen's Auto Quality, Passes and Profile have no counterpart and are removed.
+---
+ src/qt_gui/settings_dialog.cpp | 104 ++++++++++-----------------------
+ src/qt_gui/settings_dialog.h   |   9 +--
+ 2 files changed, 33 insertions(+), 80 deletions(-)
+
+diff --git a/src/qt_gui/settings_dialog.cpp b/src/qt_gui/settings_dialog.cpp
+index 4091ca1..dca9297 100644
+--- a/src/qt_gui/settings_dialog.cpp
++++ b/src/qt_gui/settings_dialog.cpp
+@@ -1782,45 +1782,27 @@ void SettingsDialog::SetupGraphicsExtras() {
+     ui->graphicsTabLayoutRight->insertWidget(
+         ui->graphicsTabLayoutRight->indexOf(ui->FSRGroupBox) + 1, imageQualityGroupBox);
+ 
+-    // DLSS5 (NeuralScreen); the options live in the emulator's
+-    // user/neural_screen.json and are applied when a game starts.
+-    dlss5GroupBox = new QGroupBox(tr("DLSS5 (NeuralScreen)"), this);
++    // DLSS5 (the Magpie build of DLSS5-RTX30); the options live in the emulator's
++    // user/dlss5.json and are applied when a game starts.
++    dlss5GroupBox = new QGroupBox(tr("DLSS5 (RTX 30)"), this);
+     dlss5GroupBox->setObjectName("dlss5GroupBox");
+     auto* dlss5Layout = new QVBoxLayout(dlss5GroupBox);
+ 
+     dlss5CheckBox = new QCheckBox(tr("Enable DLSS5 (Neural Rendering)"), dlss5GroupBox);
+     dlss5CheckBox->setObjectName("dlss5CheckBox");
++    dlss5CheckBox->setToolTip(
++        tr("Runs NVIDIA's DLSS5 neural renderer on the game window through the bundled Magpie "
++           "build for RTX 30 series cards. Play in a window; the key that turns it on and off "
++           "is set in Hotkeys (default: 2)."));
+     dlss5Layout->addWidget(dlss5CheckBox);
+ 
+     dlss5BoostCheckBox = new QCheckBox(tr("DLSS5 Boost"), dlss5GroupBox);
+     dlss5BoostCheckBox->setObjectName("dlss5BoostCheckBox");
++    dlss5BoostCheckBox->setToolTip(
++        tr("Runs the network at the resolution chosen below instead of the window's, which is "
++           "faster and a little softer."));
+     dlss5Layout->addWidget(dlss5BoostCheckBox);
+ 
+-    // Auto Quality (NeuralScreen's "Automatic resolution"): lowers the work
+-    // resolution when the rate falls under the target and raises it again
+-    // when there is headroom. It only acts while Boost is on.
+-    dlss5AutoQualityCheckBox =
+-        new QCheckBox(tr("Auto Quality (Automatic Resolution)"), dlss5GroupBox);
+-    dlss5AutoQualityCheckBox->setObjectName("dlss5AutoQualityCheckBox");
+-    dlss5AutoQualityCheckBox->setToolTip(
+-        tr("Lowers the resolution the network runs at when the frame rate drops under the "
+-           "target and raises it again when there is headroom. Turns DLSS5 Boost on with it."));
+-    dlss5Layout->addWidget(dlss5AutoQualityCheckBox);
+-    // Auto Quality only acts with Boost on: ticking it turns Boost on, and turning Boost off
+-    // clears it, so the box is never greyed out.
+-    connect(dlss5AutoQualityCheckBox, &QCheckBox::toggled, dlss5BoostCheckBox,
+-            [this](bool on) {
+-                if (on) {
+-                    dlss5BoostCheckBox->setChecked(true);
+-                }
+-            });
+-    connect(dlss5BoostCheckBox, &QCheckBox::toggled, dlss5AutoQualityCheckBox,
+-            [this](bool on) {
+-                if (!on) {
+-                    dlss5AutoQualityCheckBox->setChecked(false);
+-                }
+-            });
+-
+     const auto addDlss5Row = [this, dlss5Layout](QWidget* label, QWidget* control) {
+         auto* row = new QHBoxLayout();
+         row->addWidget(label, 0);
+@@ -1836,25 +1818,6 @@ void SettingsDialog::SetupGraphicsExtras() {
+     }
+     addDlss5Row(resolutionLabel, dlss5ResolutionComboBox);
+ 
+-    auto* passesLabel = new QLabel(tr("DLSS5 Passes:"), dlss5GroupBox);
+-    dlss5PassesComboBox = new QComboBox(dlss5GroupBox);
+-    dlss5PassesComboBox->setObjectName("dlss5PassesComboBox");
+-    for (int passes = 1; passes <= 4; ++passes) {
+-        dlss5PassesComboBox->addItem(QString::number(passes), passes);
+-    }
+-    addDlss5Row(passesLabel, dlss5PassesComboBox);
+-
+-    auto* profileLabel = new QLabel(tr("DLSS5 Profile:"), dlss5GroupBox);
+-    dlss5ProfileComboBox = new QComboBox(dlss5GroupBox);
+-    dlss5ProfileComboBox->setObjectName("dlss5ProfileComboBox");
+-    const QString profiles[] = {QStringLiteral("Faithful"),        QStringLiteral("Natural"),
+-                                QStringLiteral("Strong / Cinematic"),
+-                                QStringLiteral("Extreme / Overdrive")};
+-    for (int index = 0; index < 4; ++index) {
+-        dlss5ProfileComboBox->addItem(profiles[index], index);
+-    }
+-    addDlss5Row(profileLabel, dlss5ProfileComboBox);
+-
+     const auto addDlss5SliderRow = [this](QVBoxLayout* target, const QString& label,
+                                           QSlider*& slider, int min, int max, int initial) {
+         auto* row = new QHBoxLayout();
+@@ -1874,27 +1837,27 @@ void SettingsDialog::SetupGraphicsExtras() {
+     };
+     addDlss5SliderRow(dlss5Layout, tr("DLSS5 Intensity:"), dlss5IntensitySlider, 0, 100, 100);
+ 
+-    // Fine tuning: which network runs (Model) and the three strengths.
++    // Fine tuning: the NGX style and the three strengths.
+     auto* fineTuneBox = new QGroupBox(tr("DLSS5 Fine Tuning"), dlss5GroupBox);
+     fineTuneBox->setObjectName("dlss5FineTuneGroupBox");
+     auto* fineTuneLayout = new QVBoxLayout(fineTuneBox);
+ 
+-    auto* modelRow = new QHBoxLayout();
+-    modelRow->addWidget(new QLabel(tr("Model:"), fineTuneBox), 0);
+-    dlss5ModelComboBox = new QComboBox(fineTuneBox);
+-    dlss5ModelComboBox->setObjectName("dlss5ModelComboBox");
+-    const QString models[] = {tr("Default"), tr("Natural"), tr("Cinematic")};
++    auto* styleRow = new QHBoxLayout();
++    styleRow->addWidget(new QLabel(tr("Style:"), fineTuneBox), 0);
++    dlss5StyleComboBox = new QComboBox(fineTuneBox);
++    dlss5StyleComboBox->setObjectName("dlss5StyleComboBox");
++    const QString styles[] = {tr("Standard"), tr("Natural"), tr("Cinematic")};
+     for (int index = 0; index < 3; ++index) {
+-        dlss5ModelComboBox->addItem(models[index], index);
++        dlss5StyleComboBox->addItem(styles[index], index);
+     }
+-    modelRow->addWidget(dlss5ModelComboBox, 1);
+-    fineTuneLayout->addLayout(modelRow);
++    styleRow->addWidget(dlss5StyleComboBox, 1);
++    fineTuneLayout->addLayout(styleRow);
+ 
+-    addDlss5SliderRow(fineTuneLayout, tr("Local Tone:"), dlss5LocalToneSlider, 0, 200, 150);
++    addDlss5SliderRow(fineTuneLayout, tr("Local Tone:"), dlss5LocalToneSlider, 0, 200, 100);
+     addDlss5SliderRow(fineTuneLayout, tr("Local Structure:"), dlss5LocalStructureSlider, 0, 200,
+-                      150);
++                      100);
+     addDlss5SliderRow(fineTuneLayout, tr("Skin Structure:"), dlss5SkinStructureSlider, -100, 250,
+-                      150);
++                      -100);
+     dlss5Layout->addWidget(fineTuneBox);
+ 
+     ui->graphicsTabLayoutLeft->insertWidget(
+@@ -1904,7 +1867,7 @@ void SettingsDialog::SetupGraphicsExtras() {
+ void SettingsDialog::LoadDlss5Settings() {
+     QJsonObject j;
+     const std::filesystem::path path =
+-        Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "neural_screen.json";
++        Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "dlss5.json";
+     if (QFile file(QString::fromStdString(path.string())); file.open(QIODevice::ReadOnly)) {
+         j = QJsonDocument::fromJson(file.readAll()).object();
+     }
+@@ -1921,28 +1884,21 @@ void SettingsDialog::LoadDlss5Settings() {
+ 
+     dlss5CheckBox->setChecked(j.value("Enabled").toBool(false));
+     dlss5BoostCheckBox->setChecked(j.value("Boost").toBool(false));
+-    dlss5AutoQualityCheckBox->setChecked(j.value("AutoQuality").toBool(false) &&
+-                                         dlss5BoostCheckBox->isChecked());
+     selectData(dlss5ResolutionComboBox,
+-               qBound(30, j.value("NetworkResolutionPercent").toInt(65), 100));
+-    selectData(dlss5PassesComboBox, qBound(1, j.value("Passes").toInt(1), 4));
+-    selectData(dlss5ProfileComboBox, qBound(0, j.value("Profile").toInt(1), 3));
+-    selectData(dlss5ModelComboBox, qBound(0, j.value("Model").toInt(1), 2));
++               qBound(30, j.value("NetworkResolutionPercent").toInt(50), 100));
++    selectData(dlss5StyleComboBox, qBound(0, j.value("Style").toInt(1), 2));
+     setSlider(dlss5IntensitySlider, j.value("Intensity").toDouble(1.0), 0.0, 1.0);
+-    setSlider(dlss5LocalToneSlider, j.value("LocalTone").toDouble(1.5), 0.0, 2.0);
+-    setSlider(dlss5LocalStructureSlider, j.value("LocalStructure").toDouble(1.5), 0.0, 2.0);
+-    setSlider(dlss5SkinStructureSlider, j.value("SkinStructure").toDouble(1.5), -1.0, 2.5);
++    setSlider(dlss5LocalToneSlider, j.value("LocalTone").toDouble(1.0), 0.0, 2.0);
++    setSlider(dlss5LocalStructureSlider, j.value("LocalStructure").toDouble(1.0), 0.0, 2.0);
++    setSlider(dlss5SkinStructureSlider, j.value("SkinStructure").toDouble(-1.0), -1.0, 2.5);
+ }
+ 
+ void SettingsDialog::SaveDlss5Settings() {
+     QJsonObject j;
+     j["Enabled"] = dlss5CheckBox->isChecked();
+     j["Boost"] = dlss5BoostCheckBox->isChecked();
+-    j["AutoQuality"] = dlss5AutoQualityCheckBox->isChecked();
+     j["NetworkResolutionPercent"] = dlss5ResolutionComboBox->currentData().toInt();
+-    j["Passes"] = dlss5PassesComboBox->currentData().toInt();
+-    j["Profile"] = dlss5ProfileComboBox->currentData().toInt();
+-    j["Model"] = dlss5ModelComboBox->currentData().toInt();
++    j["Style"] = dlss5StyleComboBox->currentData().toInt();
+     j["Intensity"] = dlss5IntensitySlider->value() * 0.01;
+     j["LocalTone"] = dlss5LocalToneSlider->value() * 0.01;
+     j["LocalStructure"] = dlss5LocalStructureSlider->value() * 0.01;
+@@ -1951,7 +1907,7 @@ void SettingsDialog::SaveDlss5Settings() {
+     const std::filesystem::path dir = Common::FS::GetUserPath(Common::FS::PathType::UserDir);
+     std::error_code ec;
+     std::filesystem::create_directories(dir, ec);
+-    const std::filesystem::path path = dir / "neural_screen.json";
++    const std::filesystem::path path = dir / "dlss5.json";
+     QFile file(QString::fromStdString(path.string()));
+     if (!file.open(QIODevice::WriteOnly)) {
+         LOG_ERROR(Config, "Could not write {}", path.string());
+diff --git a/src/qt_gui/settings_dialog.h b/src/qt_gui/settings_dialog.h
+index 14010e1..f75fe47 100644
+--- a/src/qt_gui/settings_dialog.h
++++ b/src/qt_gui/settings_dialog.h
+@@ -84,16 +84,13 @@ private:
+     QSlider* contrastSlider{};
+     QGroupBox* imageQualityGroupBox{};
+ 
+-    // DLSS5 (NeuralScreen) group; options are stored in the emulator's
+-    // user/neural_screen.json so they survive emulator updates.
++    // DLSS5 (Magpie DLSS5-RTX30) group; options are stored in the emulator's
++    // user/dlss5.json so they survive emulator updates.
+     QGroupBox* dlss5GroupBox{};
+     QCheckBox* dlss5CheckBox{};
+     QCheckBox* dlss5BoostCheckBox{};
+-    QCheckBox* dlss5AutoQualityCheckBox{};
+     QComboBox* dlss5ResolutionComboBox{};
+-    QComboBox* dlss5PassesComboBox{};
+-    QComboBox* dlss5ProfileComboBox{};
+-    QComboBox* dlss5ModelComboBox{};
++    QComboBox* dlss5StyleComboBox{};
+     QSlider* dlss5IntensitySlider{};
+     QSlider* dlss5LocalToneSlider{};
+     QSlider* dlss5LocalStructureSlider{};
+-- 
+2.43.0
+

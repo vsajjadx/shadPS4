@@ -13,7 +13,7 @@
 #include "common/path_util.h"
 #include "core/cpu_patches.h"
 #include "core/devtools/layer.h"
-#include "core/neural_screen.h"
+#include "core/dlss5.h"
 #include "imgui/imgui_std.h"
 #include "settings_dialog_imgui.h"
 
@@ -83,14 +83,11 @@ void SettingsWindow::LoadSettings(std::string profile) {
     rcasEnabledSetting = EmulatorSettings.IsRcasEnabled();
     rcasAttenuationSetting = static_cast<float>(EmulatorSettings.GetRcasAttenuation() * 0.001f);
     {
-        const auto& ns = NeuralScreen::GetSettings();
+        const auto& ns = Dlss5::GetSettings();
         dlss5EnabledSetting = ns.enabled;
         dlss5BoostSetting = ns.boost;
-        dlss5AutoQualitySetting = ns.autoQuality;
         dlss5ResolutionSetting = ns.networkResolutionPercent;
-        dlss5PassesSetting = ns.passes;
-        dlss5ProfileSetting = ns.profile;
-        dlss5ModelSetting = ns.model;
+        dlss5StyleSetting = ns.style;
         dlss5IntensitySetting = ns.intensity;
         dlss5LocalToneSetting = ns.localTone;
         dlss5LocalStructureSetting = ns.localStructure;
@@ -175,20 +172,17 @@ void SettingsWindow::SaveSettings(std::string profile) {
     EmulatorSettings.SetTextureLodBias(textureLodBiasSetting, isSpecific);
 
     {
-        auto& ns = NeuralScreen::GetSettings();
+        auto& ns = Dlss5::GetSettings();
         ns.enabled = dlss5EnabledSetting;
         ns.boost = dlss5BoostSetting;
-        ns.autoQuality = dlss5AutoQualitySetting;
         ns.networkResolutionPercent = dlss5ResolutionSetting;
-        ns.passes = dlss5PassesSetting;
-        ns.profile = dlss5ProfileSetting;
-        ns.model = dlss5ModelSetting;
+        ns.style = dlss5StyleSetting;
         ns.intensity = dlss5IntensitySetting;
         ns.localTone = dlss5LocalToneSetting;
         ns.localStructure = dlss5LocalStructureSetting;
         ns.skinStructure = dlss5SkinStructureSetting;
-        NeuralScreen::SaveSettings();
-        NeuralScreen::ApplySettings();
+        Dlss5::SaveSettings();
+        Dlss5::ApplySettings();
     }
 
     /////////// Input Tab
@@ -814,21 +808,16 @@ void SettingsWindow::DrawSettingsTable(SettingsCategory category) {
                 AddSettingCheckbox("Lemon FG HUD Protection", lemonFgHudProtectionSetting);
             }
 
-            AddSettingCheckbox("Enable DLSS5 (NeuralScreen)", dlss5EnabledSetting);
+            AddSettingCheckbox("Enable DLSS5 (RTX 30)", dlss5EnabledSetting);
             if (dlss5EnabledSetting) {
                 AddSettingCheckbox("DLSS5 Boost", dlss5BoostSetting);
                 if (dlss5BoostSetting) {
-                    AddSettingCheckbox("DLSS5 Auto Quality (Automatic Resolution)",
-                                       dlss5AutoQualitySetting);
+                    AddSettingSliderInt("DLSS5 Resolution Network Runs At", dlss5ResolutionSetting,
+                                        30, 100);
                 }
-                AddSettingSliderInt("DLSS5 Resolution Network Runs At", dlss5ResolutionSetting, 30,
-                                    100);
-                AddSettingSliderInt("DLSS5 Passes", dlss5PassesSetting, 1, 4);
-                AddSettingCombo("DLSS5 Profile", dlss5ProfileSetting,
-                                NeuralScreen::ProfileOptions());
                 AddSettingSliderFloat("DLSS5 Intensity", dlss5IntensitySetting, 0.0f, 1.0f, 3);
-                AddSettingCombo("DLSS5 Fine Tuning: Model", dlss5ModelSetting,
-                                NeuralScreen::ModelOptions());
+                AddSettingCombo("DLSS5 Fine Tuning: Style", dlss5StyleSetting,
+                                Dlss5::StyleOptions());
                 AddSettingSliderFloat("DLSS5 Fine Tuning: Local Tone", dlss5LocalToneSetting, 0.0f,
                                       2.0f, 3);
                 AddSettingSliderFloat("DLSS5 Fine Tuning: Local Structure",

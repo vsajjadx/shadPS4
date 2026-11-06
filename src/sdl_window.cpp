@@ -17,12 +17,12 @@
 #include "common/scope_exit.h"
 #include "core/debug_state.h"
 #include "core/devtools/layer.h"
+#include "core/dlss5.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/kernel/threads/hang_diag.h"
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/pad/pad.h"
 #include "core/libraries/system/userservice.h"
-#include "core/neural_screen.h"
 #include "core/user_settings.h"
 #include "imgui/brightness_layer.h"
 #include "imgui/friends_layer.h"
@@ -357,18 +357,18 @@ void WindowSDL::WaitEvent() {
         break;
     }
     case SDL_EVENT_TOGGLE_DLSS5: {
-        const auto state = NeuralScreen::ToggleDLSS5();
+        const auto state = Dlss5::ToggleDLSS5();
         const std::string message =
-            !state ? "NeuralScreen is not running" : "DLSS5 " + std::string(*state ? "on" : "off");
+            !state ? "DLSS5 could not be started" : "DLSS5 " + std::string(*state ? "on" : "off");
         LOG_INFO(Frontend, "{}", message);
         shadNotifications::QueueNotification(message, 2.0f,
                                              shadNotifications::position::BottomRight);
         break;
     }
     case SDL_EVENT_TOGGLE_DLSS5_BOOST: {
-        const auto state = NeuralScreen::ToggleBoost();
+        const auto state = Dlss5::ToggleBoost();
         const std::string message =
-            !state ? "NeuralScreen is not running" : "Boost " + std::string(*state ? "on" : "off");
+            !state ? "DLSS5 is not available" : "Boost " + std::string(*state ? "on" : "off");
         LOG_INFO(Frontend, "{}", message);
         shadNotifications::QueueNotification(message, 2.0f,
                                              shadNotifications::position::BottomRight);

@@ -54,7 +54,7 @@ The zip includes the latest official shadPS4 Qt launcher, with a few additions:
   It only makes new ones if none exist, and updates never touch them.
 - **Easy window size.** Pick the size from a list (720p, 1080p, 1440p, 4K and more) instead of
   typing numbers.
-- **Graphics switches.** DLSS5, Boost, Frame Generation and Auto Quality are all in **Settings → Graphics**.
+- **Graphics switches.** DLSS5, Boost and Frame Generation (FSR 3.1 or Lemon FG) are all in **Settings → Graphics**.
 - **Compatibility list.** Shows the official list, plus the games this build runs that the
   official one doesn't.
 - **Install PKG files.**
@@ -95,6 +95,7 @@ The zip includes the latest official shadPS4 Qt launcher, with a few additions:
 - **Faster.** Better use of your CPU and GPU.
 - **DLSS5, Boost and frame generation (optional).** In game, `1` toggles frame generation, `2`
   DLSS5 and `3` Boost, or use the switches in the launcher settings. All are off by default.
+  DLSS5 is the Magpie build of DLSS5-RTX30 and needs an RTX 30 series card and a game in a window.
 - **More games run.** Games like NHL 24, The Order: 1886, The Grand Tour Game and Need for Speed
   Hot Pursuit Remastered, which do not run on the official version, work here.
 - **Launcher included.** One download, with automatic updates.

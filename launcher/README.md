@@ -16,10 +16,11 @@ The patches add:
   FG also has a 2x / 3x / 4x / 6x multiplier, High Quality and HUD Protection), and
   a Toggle Frame Generation key in the Hotkeys dialog (default `1`; a single key, a combination like
   `Ctrl+1`, or a controller button) that turns the chosen method on and off while playing.
-- DLSS5 (NeuralScreen) options in the Graphics tab: enable, boost, the resolution the network
-  runs at, passes, profile, intensity and fine tuning. They are kept in the emulator's
-  `user/neural_screen.json` and take effect when the next game starts. The Hotkeys dialog also
-  gains Toggle DLSS5 (default `2`) and Toggle DLSS5 Boost (default `3`).
+- DLSS5 options in the Graphics tab (the Magpie build of DLSS5-RTX30 bundled in
+  `qtplugins\DLSS5`): enable, Boost with the resolution the network runs at, intensity, style and
+  fine tuning. They are kept in the emulator's `user/dlss5.json` and take effect when the next
+  game starts. The Hotkeys dialog also gains Toggle DLSS5 (default `2`) and Toggle DLSS5 Boost
+  (default `3`).
 - The controller and Hotkeys dialogs read a click on the DualSense / DualShock 4 touchpad as
   `touchpad_left`, `touchpad_center` or `touchpad_right`, by the third of the pad the finger is on
   (it used to be ignored, leaving the field on `back`). The emulator takes these as inputs, so they

@@ -1057,8 +1057,8 @@ set(CORE src/core/aerolib/stubs.cpp
          src/core/emulator_state.cpp
          src/core/emulator_state.h
          src/core/emulator_settings.cpp
-         src/core/neural_screen.cpp
-         src/core/neural_screen.h
+         src/core/dlss5.cpp
+         src/core/dlss5.h
          src/core/emulator_settings.h
          src/core/user_manager.cpp
          src/core/user_manager.h
