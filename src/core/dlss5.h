@@ -19,9 +19,9 @@ struct Settings {
     float intensity = 1.0f;
     float globalTone = 1.0f;
     float localTone = 0.0f;
-    float localStructure = 0.5f;
-    float skinStructure = 0.5f;
-    int preset = 2;
+    float localStructure = 1.0f;
+    float skinStructure = 1.0f;
+    int preset = 1;
     bool autoMask = true;
     /// Blends earlier frames in; without motion vectors moving objects leave a trail.
     bool temporal = false;

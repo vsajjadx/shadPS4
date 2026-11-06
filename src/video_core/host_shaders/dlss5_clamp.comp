@@ -1,0 +1,34 @@
+// SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+// Keeps DLSS5 from brightening a pixel past the brightest pixel around it in the original
+// picture. Brightening that spills past an edge shows as a glow, and the game's own bloom grows
+// it into a halo when DLSS5 runs before post-processing.
+
+#version 460 core
+#extension GL_EXT_samplerless_texture_functions : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform texture2D original;
+layout(set = 0, binding = 1, rgba16f) uniform image2D result;
+
+layout(push_constant) uniform PushConstants {
+    ivec2 size;
+};
+
+void main() {
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, size))) {
+        return;
+    }
+    vec3 brightest = vec3(0.0);
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            const ivec2 at = clamp(pixel + ivec2(x, y), ivec2(0), size - 1);
+            brightest = max(brightest, texelFetch(original, at, 0).rgb);
+        }
+    }
+    const vec4 value = imageLoad(result, pixel);
+    imageStore(result, pixel, vec4(min(value.rgb, brightest), value.a));
+}

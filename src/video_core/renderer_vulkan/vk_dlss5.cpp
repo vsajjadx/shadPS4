@@ -10,14 +10,16 @@
 #include <cstring>
 #include <filesystem>
 #include <iterator>
+#include <span>
 #include <string>
 #include <vector>
 #include <windows.h>
 
+#include "common/div_ceil.h"
 #include "common/logging/log.h"
 #include "common/path_util.h"
 #include "core/dlss5.h"
-#include "common/div_ceil.h"
+#include "video_core/host_shaders/dlss5_clamp_comp.h"
 #include "video_core/host_shaders/dlss5_depth_comp.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
@@ -162,11 +164,16 @@ struct Dlss5Pass::Impl {
     WorkImage srgb{};
     vk::Format frame_format{};
     bool depth_reversed{};
-    vk::UniqueDescriptorSetLayout depth_set_layout;
-    vk::UniquePipelineLayout depth_layout;
-    vk::UniquePipeline depth_pipeline;
+    struct ComputePass {
+        vk::UniqueDescriptorSetLayout set_layout;
+        vk::UniquePipelineLayout layout;
+        vk::UniquePipeline pipeline;
+    };
+    ComputePass depth_pass;
+    ComputePass clamp_pass;
 
-    void CreateDepthPass() {
+    /// A compute pass reading one sampled image and writing one storage image.
+    ComputePass CreatePass(std::span<const u32> code) const {
         const std::array bindings{
             vk::DescriptorSetLayoutBinding{
                 .binding = 0,
@@ -181,8 +188,9 @@ struct Dlss5Pass::Impl {
                 .stageFlags = vk::ShaderStageFlagBits::eCompute,
             },
         };
-        depth_set_layout =
-            Check<"create DLSS5 depth set layout">(device.createDescriptorSetLayoutUnique({
+        ComputePass pass;
+        pass.set_layout =
+            Check<"create DLSS5 pass set layout">(device.createDescriptorSetLayoutUnique({
                 .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
                 .bindingCount = static_cast<u32>(bindings.size()),
                 .pBindings = bindings.data(),
@@ -192,35 +200,37 @@ struct Dlss5Pass::Impl {
             .offset = 0,
             .size = sizeof(u32) * 4,
         };
-        depth_layout = Check<"create DLSS5 depth layout">(device.createPipelineLayoutUnique({
+        pass.layout = Check<"create DLSS5 pass layout">(device.createPipelineLayoutUnique({
             .setLayoutCount = 1,
-            .pSetLayouts = &depth_set_layout.get(),
+            .pSetLayouts = &pass.set_layout.get(),
             .pushConstantRangeCount = 1,
             .pPushConstantRanges = &push,
         }));
-        const auto module = CompileSPV(DLSS5_DEPTH_COMP, device);
+        const auto module = CompileSPV(code, device);
         if (!module) {
-            return;
+            return {};
         }
-        depth_pipeline = Check<"create DLSS5 depth pipeline">(device.createComputePipelineUnique(
+        pass.pipeline = Check<"create DLSS5 pass pipeline">(device.createComputePipelineUnique(
             {}, vk::ComputePipelineCreateInfo{
                     .stage{
                         .stage = vk::ShaderStageFlagBits::eCompute,
                         .module = module,
                         .pName = "main",
                     },
-                    .layout = depth_layout.get(),
+                    .layout = pass.layout.get(),
                 }));
         device.destroyShaderModule(module);
+        return pass;
     }
 
-    void ConvertDepth(vk::CommandBuffer cmdbuf, const Dlss5Depth& scene_depth) const {
-        const vk::DescriptorImageInfo source{
-            .imageView = scene_depth.view,
+    void Dispatch(vk::CommandBuffer cmdbuf, const ComputePass& pass, vk::ImageView source,
+                  vk::ImageView destination, const std::array<u32, 4>& push) const {
+        const vk::DescriptorImageInfo source_info{
+            .imageView = source,
             .imageLayout = vk::ImageLayout::eGeneral,
         };
-        const vk::DescriptorImageInfo destination{
-            .imageView = depth.view,
+        const vk::DescriptorImageInfo destination_info{
+            .imageView = destination,
             .imageLayout = vk::ImageLayout::eGeneral,
         };
         const std::array writes{
@@ -228,21 +238,19 @@ struct Dlss5Pass::Impl {
                 .dstBinding = 0,
                 .descriptorCount = 1,
                 .descriptorType = vk::DescriptorType::eSampledImage,
-                .pImageInfo = &source,
+                .pImageInfo = &source_info,
             },
             vk::WriteDescriptorSet{
                 .dstBinding = 1,
                 .descriptorCount = 1,
                 .descriptorType = vk::DescriptorType::eStorageImage,
-                .pImageInfo = &destination,
+                .pImageInfo = &destination_info,
             },
         };
-        cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, depth_pipeline.get());
-        cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, depth_layout.get(), 0,
-                                    writes);
-        const std::array<u32, 4> push{width, height, scene_depth.width, scene_depth.height};
-        cmdbuf.pushConstants(depth_layout.get(), vk::ShaderStageFlagBits::eCompute, 0,
-                             sizeof(push), push.data());
+        cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pass.pipeline.get());
+        cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, pass.layout.get(), 0, writes);
+        cmdbuf.pushConstants(pass.layout.get(), vk::ShaderStageFlagBits::eCompute, 0, sizeof(push),
+                             push.data());
         cmdbuf.dispatch(Common::DivCeil(width, 8u), Common::DivCeil(height, 8u), 1);
     }
 
@@ -317,7 +325,8 @@ struct Dlss5Pass::Impl {
             return false;
         }
         library = module;
-        CreateDepthPass();
+        depth_pass = CreatePass(DLSS5_DEPTH_COMP);
+        clamp_pass = CreatePass(DLSS5_CLAMP_COMP);
         LOG_INFO(Render_Vulkan, "DLSS5: neural rendering is available ({})", path.string());
         return true;
     }
@@ -576,10 +585,12 @@ struct Dlss5Pass::Impl {
             return;
         }
         FullBarrier(cmdbuf);
-        if (scene_depth && depth_pipeline) {
-            ConvertDepth(cmdbuf, *scene_depth);
+        if (scene_depth && depth_pass.pipeline) {
+            Dispatch(cmdbuf, depth_pass, scene_depth->view, depth.view,
+                     {width, height, scene_depth->width, scene_depth->height});
         } else {
-            const vk::ClearColorValue far_depth{std::array{reversed ? 0.0f : 1.0f, 0.0f, 0.0f, 0.0f}};
+            const vk::ClearColorValue far_depth{
+                std::array{reversed ? 0.0f : 1.0f, 0.0f, 0.0f, 0.0f}};
             cmdbuf.clearColorImage(depth.image, vk::ImageLayout::eGeneral, far_depth, Range());
         }
         FullBarrier(cmdbuf);
@@ -619,6 +630,10 @@ struct Dlss5Pass::Impl {
             }
             return;
         }
+        if (clamp_pass.pipeline) {
+            Dispatch(cmdbuf, clamp_pass, color[0].view, color[1].view, {width, height, 0, 0});
+            FullBarrier(cmdbuf);
+        }
         if (srgb.image) {
             Blit(cmdbuf, color[1].image, width, height, srgb.image, w, h);
             FullBarrier(cmdbuf);
@@ -646,8 +661,8 @@ bool Dlss5Pass::IsAvailable() const {
     return impl->available;
 }
 
-void Dlss5Pass::Render(vk::CommandBuffer cmdbuf, vk::Image image, vk::ImageView,
-                       vk::Format format, u32 width, u32 height, const Dlss5Depth* depth) {
+void Dlss5Pass::Render(vk::CommandBuffer cmdbuf, vk::Image image, vk::ImageView, vk::Format format,
+                       u32 width, u32 height, const Dlss5Depth* depth) {
     impl->Render(cmdbuf, image, format, width, height, depth);
 }
 
