@@ -67,6 +67,8 @@ void LoadSettings() {
         s.skinStructure = std::clamp(j.value("SkinStructure", s.skinStructure), -1.0f, 2.5f);
         s.autoMask = j.value("AutoMask", s.autoMask);
         s.temporal = j.value("Temporal", s.temporal);
+        s.useDepth = j.value("UseDepth", s.useDepth);
+        s.beforeHud = j.value("BeforeHud", s.beforeHud);
         s.uiCorrection = std::clamp(j.value("UICorrection", s.uiCorrection), 0, 1);
         s.preset = std::clamp(j.value("Preset", s.preset), 0,
                               static_cast<int>(NetworkOptions().size()) - 1);
@@ -88,6 +90,8 @@ void SaveSettings() {
     j["Preset"] = s.preset;
     j["AutoMask"] = s.autoMask;
     j["Temporal"] = s.temporal;
+    j["UseDepth"] = s.useDepth;
+    j["BeforeHud"] = s.beforeHud;
     j["UICorrection"] = s.uiCorrection;
 
     std::error_code ec;

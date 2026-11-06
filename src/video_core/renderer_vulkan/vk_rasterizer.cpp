@@ -1577,7 +1577,7 @@ void Rasterizer::NoteSampledImage(VideoCore::ImageId image_id) {
         }
     }
     auto* const pass = Dlss5::Get();
-    if (!pass || !::Dlss5::GetSettings().enabled) {
+    if (!pass || !::Dlss5::GetSettings().enabled || !::Dlss5::GetSettings().beforeHud) {
         return;
     }
     dlss5_before_hud = true;
@@ -1602,7 +1602,7 @@ bool Rasterizer::TakeDlss5BeforeHud() {
 
 std::optional<Dlss5Depth> Rasterizer::PrepareDlss5Depth(u32 width, u32 height) {
     const auto scene_depth = texture_cache.PeekSceneDepth();
-    if (!scene_depth || height == 0) {
+    if (!scene_depth || height == 0 || !::Dlss5::GetSettings().useDepth) {
         return std::nullopt;
     }
     auto& depth_image = texture_cache.GetImage(scene_depth->image_id);
