@@ -496,7 +496,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
         static_cast<float>(EmulatorSettings.GetRcasAttenuation() / 1000.f);
 
     fsr_pass.Create(device, instance.GetAllocator(), num_images);
-    dlss5_pass = std::make_unique<Dlss5Pass>(instance, draw_scheduler);
+    dlss5_pass = std::make_unique<Dlss5Pass>(instance);
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
     FrameGeneration::SetBackend(
         FrameGeneration::BackendFromSetting(EmulatorSettings.GetFrameGenerationBackend()));

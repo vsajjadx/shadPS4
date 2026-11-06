@@ -13,7 +13,6 @@
 #include "video_core/host_shaders/lemon_fg_generate_comp.h"
 #include "video_core/host_shaders/lemon_fg_luma_comp.h"
 #include "video_core/host_shaders/lemon_fg_median_comp.h"
-#include "video_core/host_shaders/lemon_fg_mvec_comp.h"
 #include "video_core/host_shaders/lemon_fg_project_comp.h"
 #include "video_core/host_shaders/lemon_fg_search_comp.h"
 #include "video_core/host_shaders/lemon_fg_still_comp.h"
@@ -141,7 +140,6 @@ void LemonFgPass::Create(const Instance& instance, Scheduler& scheduler_, Settin
     still_pass = CreatePass(LEMON_FG_STILL_COMP, 2, sizeof(u32) * 5, "lemon_fg_still.comp");
     generate_pass =
         CreatePass(LEMON_FG_GENERATE_COMP, 4, sizeof(u32) * 9, "lemon_fg_generate.comp");
-    mvec_pass = CreatePass(LEMON_FG_MVEC_COMP, 1, sizeof(u32) * 6, "lemon_fg_mvec.comp");
 }
 
 LemonFgPass::Pass LemonFgPass::CreatePass(std::span<const u32> code, u32 sampled_count,
@@ -298,7 +296,6 @@ void LemonFgPass::Recreate(vk::CommandBuffer cmdbuf, u32 width, u32 height,
     }
     CreateTarget(interpolated, FrameFormat, work_usage | vk::ImageUsageFlagBits::eTransferSrc,
                  extent, "output");
-    CreateTarget(motion, vk::Format::eR16G16Sfloat, work_usage, extent, "motion vectors");
 
     std::vector<vk::ImageMemoryBarrier2> to_general;
     const auto add = [&](const Target& target) {
@@ -317,7 +314,6 @@ void LemonFgPass::Recreate(vk::CommandBuffer cmdbuf, u32 width, u32 height,
     std::ranges::for_each(still_masks, add);
     add(offsets);
     add(offsets_filtered);
-    add(motion);
     ImageBarriers(cmdbuf, to_general);
 
     frame_count = 0;
@@ -488,13 +484,16 @@ void LemonFgPass::Interpolate(vk::CommandBuffer cmdbuf, u32 slot, float t) {
         DivCeil(extent.width, 16u), DivCeil(extent.height, 8u));
 }
 
-bool LemonFgPass::Track(vk::CommandBuffer cmdbuf, vk::Image frame, vk::Format frame_format,
-                        u32 width, u32 height, u32& slot) {
+u32 LemonFgPass::Generate(vk::CommandBuffer cmdbuf, vk::Image frame, vk::Format frame_format,
+                          std::span<const vk::Image> outputs, u32 width, u32 height) {
+    if (width == 0 || height == 0 || outputs.empty()) {
+        return 0;
+    }
     if (extent != vk::Extent2D{width, height} || format != frame_format) {
         Recreate(cmdbuf, width, height, frame_format);
     }
 
-    slot = static_cast<u32>(frame_count % 2);
+    const u32 slot = static_cast<u32>(frame_count % 2);
     const std::array to_copy{
         ImageBarrier(frame, Stage::eAllCommands,
                      Access::eColorAttachmentWrite | Access::eShaderWrite | Access::eTransferWrite,
@@ -519,42 +518,10 @@ bool LemonFgPass::Track(vk::CommandBuffer cmdbuf, vk::Image frame, vk::Format fr
     const bool was_reset = std::exchange(reset, false);
     const u64 pair = frame_count++;
     if (was_reset) {
-        return false;
+        return 0;
     }
     SearchMotion(cmdbuf, slot, last_flow + 1 == pair);
     last_flow = pair;
-    return true;
-}
-
-bool LemonFgPass::EstimateMotion(vk::CommandBuffer cmdbuf, vk::Image frame, vk::Format frame_format,
-                                 u32 width, u32 height) {
-    if (width == 0 || height == 0) {
-        return false;
-    }
-    u32 slot{};
-    if (!Track(cmdbuf, frame, frame_format, width, height, slot)) {
-        return false;
-    }
-    const float scale_x =
-        static_cast<float>(extent.width) / static_cast<float>(level_size[0].width);
-    const float scale_y =
-        static_cast<float>(extent.height) / static_cast<float>(level_size[0].height);
-    const std::array<u32, 6> push{extent.width,   extent.height, grid[0].width,
-                                  grid[0].height, Bits(scale_x), Bits(scale_y)};
-    Run(cmdbuf, mvec_pass, std::array{flows[slot].view.get()}, motion, push.data(),
-        DivCeil(extent.width, 8u), DivCeil(extent.height, 8u));
-    return true;
-}
-
-u32 LemonFgPass::Generate(vk::CommandBuffer cmdbuf, vk::Image frame, vk::Format frame_format,
-                          std::span<const vk::Image> outputs, u32 width, u32 height) {
-    if (width == 0 || height == 0 || outputs.empty()) {
-        return 0;
-    }
-    u32 slot{};
-    if (!Track(cmdbuf, frame, frame_format, width, height, slot)) {
-        return 0;
-    }
     if (settings.hud_protection) {
         MaskStillContent(cmdbuf, slot);
     } else {

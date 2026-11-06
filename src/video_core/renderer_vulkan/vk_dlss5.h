@@ -11,7 +11,6 @@
 namespace Vulkan {
 
 class Instance;
-class Scheduler;
 
 /// The game's scene depth, sampled in the general layout.
 struct Dlss5Depth {
@@ -24,7 +23,7 @@ struct Dlss5Depth {
 /// NVIDIA's DLSS 5 neural rendering, run on the final game picture inside the emulator.
 class Dlss5Pass {
 public:
-    Dlss5Pass(const Instance& instance, Scheduler& scheduler);
+    explicit Dlss5Pass(const Instance& instance);
     ~Dlss5Pass();
 
     /// True when NVIDIA's runtime and the neural rendering library came up on this device.

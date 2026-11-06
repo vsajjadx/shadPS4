@@ -45,20 +45,6 @@ public:
     u32 Generate(vk::CommandBuffer cmdbuf, vk::Image frame, vk::Format frame_format,
                  std::span<const vk::Image> outputs, u32 width, u32 height);
 
-    /// Searches the motion from the previous `frame` to this one and writes per-pixel motion
-    /// vectors (offsets in pixels to where each pixel was in the previous frame) into an R16G16
-    /// float image in the general layout. Returns false while there is no previous frame.
-    bool EstimateMotion(vk::CommandBuffer cmdbuf, vk::Image frame, vk::Format frame_format,
-                        u32 width, u32 height);
-
-    vk::Image MotionImage() const {
-        return motion.image;
-    }
-
-    vk::ImageView MotionView() const {
-        return motion.view.get();
-    }
-
     /// The next frame starts a new sequence (scene cut, resize, frame generation toggled).
     void Reset() {
         reset = true;
@@ -84,8 +70,6 @@ private:
     void CreateTarget(Target& target, vk::Format format, vk::ImageUsageFlags usage,
                       vk::Extent2D size, const char* name, bool luma_swizzle = false) const;
     void Recreate(vk::CommandBuffer cmdbuf, u32 width, u32 height, vk::Format frame_format);
-    bool Track(vk::CommandBuffer cmdbuf, vk::Image frame, vk::Format frame_format, u32 width,
-               u32 height, u32& slot);
     void Run(vk::CommandBuffer cmdbuf, const Pass& pass, std::span<const vk::ImageView> sampled,
              const Target& destination, const void* push, u32 groups_x, u32 groups_y) const;
     void BuildPyramid(vk::CommandBuffer cmdbuf, u32 slot);
@@ -106,7 +90,6 @@ private:
     Pass project_pass;
     Pass still_pass;
     Pass generate_pass;
-    Pass mvec_pass;
 
     vk::Extent2D extent{};
     vk::Format format{};
@@ -122,7 +105,6 @@ private:
     Target offsets_filtered;
     std::array<Target, 2> still_masks;
     Target interpolated;
-    Target motion;
 
     u64 frame_count{};
     u64 last_flow{~0ULL};

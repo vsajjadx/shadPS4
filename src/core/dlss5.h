@@ -22,6 +22,8 @@ struct Settings {
     float localStructure = 0.0f;
     float skinStructure = 0.0f;
     int preset = 0;
+    bool autoMask = true;
+    int uiCorrection = 0;
 };
 
 Settings& GetSettings();
