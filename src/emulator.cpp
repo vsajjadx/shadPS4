@@ -623,58 +623,24 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         EmulatorSettings.SetPipelineCacheEnabled(true, true);
         LOG_INFO(Config, "Pipeline cache forced on to precompile shaders at boot");
     }
-    // Games read small GPU-written results back on the CPU (culling and visibility data, exposure,
-    // counters). With readbacks disabled the CPU sees stale memory, so every game runs with at
-    // least relaxed readbacks, which only watch the small buffers the GPU writes.
-    if (EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Disabled) {
-        EmulatorSettings.SetReadbacksMode(GpuReadbacksMode::Relaxed, true);
-        LOG_INFO(Config, "GPU readbacks forced to Relaxed");
+    // The PS4 CPU always sees what the GPU wrote, including images rendered in linear layout, and
+    // games rely on it for lighting, exposure and visibility data. Every game runs with precise
+    // and linear image readbacks so they all see coherent memory.
+    if (EmulatorSettings.GetReadbacksMode() != GpuReadbacksMode::Precise) {
+        EmulatorSettings.SetReadbacksMode(GpuReadbacksMode::Precise, true);
+        LOG_INFO(Config, "GPU readbacks forced to Precise");
+    }
+    if (!EmulatorSettings.IsReadbackLinearImagesEnabled()) {
+        EmulatorSettings.SetReadbackLinearImagesEnabled(true, true);
+        LOG_INFO(Config, "Linear image readbacks forced on");
     }
     // Compiling a new pipeline on the GPU thread freezes the game for tens of milliseconds, so
     // pipelines are built on worker threads for every game. A game-specific config can still turn
-    // it off for a title that needs every draw of a pipeline's first frames.
-    // Driveclub renders lighting probes and exposure data in passes it doesn't repeat, so a draw
-    // skipped while its pipeline compiles leaves the scene dark.
-    const bool needs_every_draw = id == "CUSA00003" || id == "CUSA00093";
-    if (!EmulatorSettings.IsAsyncPipelineCompilation() && !needs_every_draw &&
+    // it off.
+    if (!EmulatorSettings.IsAsyncPipelineCompilation() &&
         !EmulatorSettings.IsAsyncPipelineCompilationGameSpecific()) {
         EmulatorSettings.SetAsyncPipelineCompilation(true, true);
         LOG_INFO(Config, "Asynchronous pipeline compilation forced on");
-    } else if (needs_every_draw && EmulatorSettings.IsAsyncPipelineCompilation()) {
-        EmulatorSettings.SetAsyncPipelineCompilation(false, true);
-        LOG_INFO(Config, "Asynchronous pipeline compilation turned off for this game");
-    }
-    // UFC 4 reads GPU-rendered data back on the CPU, including images the GPU renders in linear
-    // layout. Without precise readbacks every fight is a black arena with only the HUD, and
-    // without linear image readbacks the fighters stay black silhouettes (shadPS4 #4375).
-    // Relaxed readbacks only flush GPU data when the CPU writes, which isn't enough here.
-    if (id == "CUSA14204" || id == "CUSA14209") {
-        if (EmulatorSettings.GetReadbacksMode() != GpuReadbacksMode::Precise) {
-            EmulatorSettings.SetReadbacksMode(GpuReadbacksMode::Precise, true);
-            LOG_INFO(Config, "UFC 4: GPU readbacks forced to Precise");
-        }
-        if (!EmulatorSettings.IsReadbackLinearImagesEnabled()) {
-            EmulatorSettings.SetReadbackLinearImagesEnabled(true, true);
-            LOG_INFO(Config, "UFC 4: linear image readbacks forced on");
-        }
-    }
-    // Driveclub reads GPU-rendered lighting and linear images back on the CPU; without precise
-    // and linear image readbacks the game renders dark.
-    if (id == "CUSA00003" || id == "CUSA00093") {
-        if (EmulatorSettings.GetReadbacksMode() != GpuReadbacksMode::Precise) {
-            EmulatorSettings.SetReadbacksMode(GpuReadbacksMode::Precise, true);
-            LOG_INFO(Config, "Driveclub: GPU readbacks forced to Precise");
-        }
-        if (!EmulatorSettings.IsReadbackLinearImagesEnabled()) {
-            EmulatorSettings.SetReadbackLinearImagesEnabled(true, true);
-            LOG_INFO(Config, "Driveclub: linear image readbacks forced on");
-        }
-    }
-    // inFAMOUS Second Son renders dark unless linear images are read back on the CPU too.
-    if (id == "CUSA00004") {
-        if (!EmulatorSettings.IsReadbackLinearImagesEnabled()) {
-            EmulatorSettings.SetReadbackLinearImagesEnabled(true, true);
-        }
     }
     game_info.title = title;
     game_info.app_ver = app_version;
