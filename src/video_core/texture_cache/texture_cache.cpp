@@ -229,6 +229,15 @@ void TextureCache::SyncAliasedImages(ImageId image_id, const ImageViewInfo& view
             other.info.resources.levels != image.info.resources.levels) {
             return;
         }
+        // Surfaces of one format and pitch at the same address that only differ in height are
+        // separate surfaces the game keeps apart, such as a small and a tall lighting table;
+        // carrying between them overwrote each with the other.
+        if (other.info.guest_address == image_begin &&
+            other.info.pixel_format == image.info.pixel_format &&
+            other.info.size.width == image.info.size.width &&
+            other.info.size.height != image.info.size.height) {
+            return;
+        }
         if (other.info.guest_address != image_begin) {
             const u64 layer_size = layers > 1 && image.info.resources.levels == 1
                                        ? image.info.mips_layout[0].size / layers
