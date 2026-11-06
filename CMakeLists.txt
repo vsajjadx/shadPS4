@@ -1239,6 +1239,8 @@ set(VIDEO_CORE src/video_core/amdgpu/cb_db_extent.h
                src/video_core/renderer_vulkan/vk_pipeline_serialization.h
                src/video_core/renderer_vulkan/vk_platform.cpp
                src/video_core/renderer_vulkan/vk_platform.h
+               src/video_core/renderer_vulkan/vk_dlss5.cpp
+               src/video_core/renderer_vulkan/vk_dlss5.h
                src/video_core/renderer_vulkan/vk_presenter.cpp
                src/video_core/renderer_vulkan/vk_presenter.h
                src/video_core/renderer_vulkan/vk_frame_generation.h
@@ -1404,10 +1406,6 @@ target_link_libraries(shadps4 PRIVATE stb::headers lfreist-hwinfo::hwinfo nlohma
 target_link_libraries(shadps4 PRIVATE Freetype::Freetype)
 target_link_libraries(shadps4 PRIVATE libprotobuf)
 
-if (WIN32)
-    # NeuralScreen DLSS5 control channel (localhost TCP)
-    target_link_libraries(shadps4 PRIVATE ws2_32)
-endif()
 target_link_libraries(shadps4 PRIVATE ZArchive::zarchive)
 target_link_libraries(shadps4 PRIVATE zstd::libzstd)
 target_include_directories(shadps4 PRIVATE "${SHADNET_PROTO_OUT}")
@@ -1538,6 +1536,10 @@ endif()
 add_compile_definitions(BOOST_ASIO_STANDALONE)
 
 target_include_directories(shadps4 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(shadps4 PRIVATE externals/ngx-sdk/include)
+if (WIN32)
+    target_link_libraries(shadps4 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/externals/ngx-sdk/lib/nvsdk_ngx_d.lib)
+endif()
 
 # Shaders sources
 set(HOST_SHADERS_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/src/video_core/host_shaders)

@@ -365,15 +365,6 @@ void WindowSDL::WaitEvent() {
                                              shadNotifications::position::BottomRight);
         break;
     }
-    case SDL_EVENT_TOGGLE_DLSS5_BOOST: {
-        const auto state = Dlss5::ToggleBoost();
-        const std::string message =
-            !state ? "DLSS5 is not available" : "Boost " + std::string(*state ? "on" : "off");
-        LOG_INFO(Frontend, "{}", message);
-        shadNotifications::QueueNotification(message, 2.0f,
-                                             shadNotifications::position::BottomRight);
-        break;
-    }
     case SDL_EVENT_RELOAD_INPUTS:
         Input::ParseInputConfig(std::string(Common::ElfInfo::Instance().GameSerial()));
         break;

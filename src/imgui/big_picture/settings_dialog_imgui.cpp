@@ -85,10 +85,9 @@ void SettingsWindow::LoadSettings(std::string profile) {
     {
         const auto& ns = Dlss5::GetSettings();
         dlss5EnabledSetting = ns.enabled;
-        dlss5BoostSetting = ns.boost;
-        dlss5ResolutionSetting = ns.networkResolutionPercent;
         dlss5StyleSetting = ns.style;
         dlss5IntensitySetting = ns.intensity;
+        dlss5GlobalToneSetting = ns.globalTone;
         dlss5LocalToneSetting = ns.localTone;
         dlss5LocalStructureSetting = ns.localStructure;
         dlss5SkinStructureSetting = ns.skinStructure;
@@ -174,10 +173,9 @@ void SettingsWindow::SaveSettings(std::string profile) {
     {
         auto& ns = Dlss5::GetSettings();
         ns.enabled = dlss5EnabledSetting;
-        ns.boost = dlss5BoostSetting;
-        ns.networkResolutionPercent = dlss5ResolutionSetting;
         ns.style = dlss5StyleSetting;
         ns.intensity = dlss5IntensitySetting;
+        ns.globalTone = dlss5GlobalToneSetting;
         ns.localTone = dlss5LocalToneSetting;
         ns.localStructure = dlss5LocalStructureSetting;
         ns.skinStructure = dlss5SkinStructureSetting;
@@ -802,22 +800,19 @@ void SettingsWindow::DrawSettingsTable(SettingsCategory category) {
 
             AddSettingCombo("Frame Generation", frameGenerationSetting, frameGenerationOptions);
             if (frameGenerationSetting == 2) {
-                AddSettingCombo("Lemon FG Multiplier", lemonFgMultiplierSetting,
+                AddSettingCombo("Multi FG Multiplier", lemonFgMultiplierSetting,
                                 lemonFgMultiplierOptions);
-                AddSettingCheckbox("Lemon FG High Quality", lemonFgHighQualitySetting);
-                AddSettingCheckbox("Lemon FG HUD Protection", lemonFgHudProtectionSetting);
+                AddSettingCheckbox("Multi FG High Quality", lemonFgHighQualitySetting);
+                AddSettingCheckbox("Multi FG HUD Protection", lemonFgHudProtectionSetting);
             }
 
-            AddSettingCheckbox("Enable DLSS5 (RTX 30)", dlss5EnabledSetting);
+            AddSettingCheckbox("Enable DLSS5", dlss5EnabledSetting);
             if (dlss5EnabledSetting) {
-                AddSettingCheckbox("DLSS5 Boost", dlss5BoostSetting);
-                if (dlss5BoostSetting) {
-                    AddSettingSliderInt("DLSS5 Resolution Network Runs At", dlss5ResolutionSetting,
-                                        30, 100);
-                }
                 AddSettingSliderFloat("DLSS5 Intensity", dlss5IntensitySetting, 0.0f, 1.0f, 3);
                 AddSettingCombo("DLSS5 Fine Tuning: Style", dlss5StyleSetting,
                                 Dlss5::StyleOptions());
+                AddSettingSliderFloat("DLSS5 Fine Tuning: Global Tone", dlss5GlobalToneSetting,
+                                      0.0f, 2.0f, 3);
                 AddSettingSliderFloat("DLSS5 Fine Tuning: Local Tone", dlss5LocalToneSetting, 0.0f,
                                       2.0f, 3);
                 AddSettingSliderFloat("DLSS5 Fine Tuning: Local Structure",

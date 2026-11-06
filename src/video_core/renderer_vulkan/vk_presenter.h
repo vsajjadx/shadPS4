@@ -18,6 +18,7 @@
 #include "video_core/renderer_vulkan/vk_frame_generation.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
+#include "video_core/renderer_vulkan/vk_dlss5.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_swapchain.h"
 #include "video_core/texture_cache/texture_cache.h"
@@ -148,6 +149,7 @@ private:
     Frontend::WindowSDL& window;
     Instance instance;
     HostPasses::FsrPass fsr_pass;
+    std::unique_ptr<Dlss5Pass> dlss5_pass;
     HostPasses::FsrPass::Settings fsr_settings{};
     HostPasses::PostProcessingPass::Settings pp_settings{};
     HostPasses::PostProcessingPass pp_pass;

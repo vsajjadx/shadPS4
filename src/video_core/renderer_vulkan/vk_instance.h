@@ -204,6 +204,11 @@ public:
     }
 
     /// Returns true when VK_EXT_provoking_vertex is supported.
+    /// Returns true when the extensions NVIDIA neural rendering needs are enabled.
+    bool IsNeuralRenderingSupported() const {
+        return neural_rendering;
+    }
+
     bool IsProvokingVertexSupported() const {
         return provoking_vertex;
     }
@@ -558,6 +563,7 @@ private:
     bool vertex_input_dynamic_state{};
     bool list_restart{};
     bool provoking_vertex{};
+    bool neural_rendering{};
     bool shader_stencil_export{};
     bool image_load_store_lod{};
     bool amd_gcn_shader{};

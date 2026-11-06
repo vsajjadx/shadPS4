@@ -10,6 +10,7 @@
 #include "common/thread.h"
 #include "core/debug_state.h"
 #include "core/devtools/layer.h"
+#include "core/dlss5.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/system/systemservice.h"
 #include "imgui/friends_layer.h"
@@ -21,6 +22,7 @@
 #include "sdl_window.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/renderdoc.h"
+#include "video_core/renderer_vulkan/vk_dlss5.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
@@ -494,6 +496,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
         static_cast<float>(EmulatorSettings.GetRcasAttenuation() / 1000.f);
 
     fsr_pass.Create(device, instance.GetAllocator(), num_images);
+    dlss5_pass = std::make_unique<Dlss5Pass>(instance);
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
     FrameGeneration::SetBackend(
         FrameGeneration::BackendFromSetting(EmulatorSettings.GetFrameGenerationBackend()));
@@ -859,6 +862,10 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     pp_settings.brightness = std::clamp(EmulatorSettings.GetBrightness(), 25, 400) / 100.0f;
     pp_settings.contrast = std::clamp(EmulatorSettings.GetContrast(), 25, 400) / 100.0f;
     pp_pass.Render(cmdbuf, image_view, image_size, *frame, pp_settings);
+    if (dlss5_pass->IsAvailable() && ::Dlss5::GetSettings().enabled) {
+        dlss5_pass->Render(cmdbuf, frame->image, frame->image_view,
+                           swapchain.GetSurfaceFormat().format, frame->width, frame->height);
+    }
 
     frame->prepared_at = std::chrono::steady_clock::now();
     frame->num_generated = 0;

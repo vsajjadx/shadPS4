@@ -7,24 +7,20 @@
 #include <string>
 #include <vector>
 
-struct SDL_Window;
+#include "common/types.h"
 
-/// DLSS5 neural rendering through the bundled Magpie build (DLSS5-RTX30, RTX 30 series): the
-/// emulator writes a Magpie profile that scales its own window with the DLSSNR -> DLSS_SR chain
-/// and starts or stops Magpie for the DLSS5 toggle.
+/// Settings of DLSS5 neural rendering, which the renderer runs on the game picture.
 namespace Dlss5 {
 
 struct Settings {
     bool enabled = false;
-    /// Runs the network below the window resolution.
-    bool boost = false;
-    int networkResolutionPercent = 50;
     /// NGX style: Standard, Natural or Cinematic.
-    int style = 1;
+    int style = 0;
     float intensity = 1.0f;
-    float localTone = 1.0f;
-    float localStructure = 1.0f;
-    float skinStructure = -1.0f;
+    float globalTone = 1.0f;
+    float localTone = 1.5f;
+    float localStructure = 1.5f;
+    float skinStructure = 1.5f;
 };
 
 Settings& GetSettings();
@@ -33,13 +29,10 @@ void SaveSettings();
 
 const std::vector<std::string>& StyleOptions();
 
-bool IsRunning();
-bool StartForGameWindow(SDL_Window* window);
-void Stop();
-/// Writes the settings to Magpie and restarts it when it runs.
+/// Counts the settings changes, so the renderer rebuilds its pass after one.
+u32 SettingsGeneration();
 void ApplySettings();
 
 std::optional<bool> ToggleDLSS5();
-std::optional<bool> ToggleBoost();
 
 } // namespace Dlss5

@@ -25,6 +25,7 @@
 #include "core/user_settings.h"
 #include "emulator.h"
 #include "imgui/big_picture/big_picture.h"
+#include "video_core/renderer_vulkan/vk_dlss5.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -32,8 +33,10 @@
 #include <sys/sysctl.h>
 #endif
 
+
 int main(int argc, char* argv[]) {
 #ifdef _WIN32
+    Vulkan::Dlss5::PrepareDriver();
     SetConsoleOutputCP(CP_UTF8);
 #endif
 

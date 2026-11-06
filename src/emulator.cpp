@@ -967,8 +967,6 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         });
     }
 
-    // DLSS5 (Magpie) starts scaling the game window right before the game starts.
-    Dlss5::StartForGameWindow(window->GetSDLWindow());
 
     linker->Execute(args);
 
@@ -977,7 +975,6 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         window->WaitEvent();
     }
 
-    Dlss5::Stop();
     std::quick_exit(0);
 }
 
@@ -1048,7 +1045,6 @@ void Emulator::Restart(std::filesystem::path eboot_path,
     args.insert(guest_args, {"--wait-for-pid", std::to_string(Debugger::GetCurrentPid())});
 
     LOG_INFO(Common, "Relaunching the emulator with args: {}", fmt::join(args, " "));
-    Dlss5::Stop();
     Libraries::Np::NpHandler::GetInstance().Shutdown();
     Common::Log::Shutdown();
 

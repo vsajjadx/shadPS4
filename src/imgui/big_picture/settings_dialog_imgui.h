@@ -115,7 +115,7 @@ private:
                                                             "Fullscreen (Borderless)"};
     const std::vector<std::string> audioBackendOptions = {"SDL", "OpenAL"};
     const std::vector<std::string> presentModeOptions = {"Mailbox", "Fifo", "Immediate"};
-    const std::vector<std::string> frameGenerationOptions = {"Off", "FSR", "Lemon FG"};
+    const std::vector<std::string> frameGenerationOptions = {"Off", "FSR", "Multi FG"};
     const std::vector<std::string> lemonFgMultiplierOptions = {"2x", "3x", "4x", "6x"};
     static constexpr std::array<u32, 4> lemonFgMultipliers = {2, 3, 4, 6};
     const std::vector<std::string> hideCursorOptions = {"Never", "Idle", "Always"};
@@ -148,10 +148,9 @@ private:
 
     // DLSS5 settings, kept in their own dlss5.json.
     bool dlss5EnabledSetting;
-    bool dlss5BoostSetting;
-    int dlss5ResolutionSetting;
     int dlss5StyleSetting;
     float dlss5IntensitySetting;
+    float dlss5GlobalToneSetting;
     float dlss5LocalToneSetting;
     float dlss5LocalStructureSetting;
     float dlss5SkinStructureSetting;

@@ -319,8 +319,7 @@ void LemonFgPass::Recreate(vk::CommandBuffer cmdbuf, u32 width, u32 height,
     frame_count = 0;
     last_flow = ~0ULL;
     reset = true;
-    LOG_INFO(Render_Vulkan,
-             "Lemon frame generation ready at {}x{} (motion search {}x{}, HUD protection {})",
+    LOG_INFO(Render_Vulkan, "Multi FG ready at {}x{} (motion search {}x{}, HUD protection {})",
              extent.width, extent.height, level_size[0].width, level_size[0].height,
              settings.hud_protection ? "on" : "off");
 }

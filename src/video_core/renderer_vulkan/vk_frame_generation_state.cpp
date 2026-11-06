@@ -25,7 +25,7 @@ Backend BackendFromSetting([[maybe_unused]] std::string_view name) {
 }
 
 std::string_view BackendName(Backend selected) {
-    return selected == Backend::Fsr ? "FSR 3.1" : "Lemon FG";
+    return selected == Backend::Fsr ? "FSR 3.1" : "Multi FG";
 }
 
 void SetBackend(Backend selected) {

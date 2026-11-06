@@ -292,33 +292,17 @@ jobs:
         name: launcher-win64
         path: bundle
 
-    # DLSS5: the Magpie build of DLSS5-RTX30 (lmxxf/DLSS5-RTX-3080-laptop v0.4.0) beside the
-    # emulator. The emulator writes a Magpie profile for its own window and starts
-    # qtplugins\DLSS5\Magpie.exe for the DLSS5 toggle. Only what Magpie needs to run the
-    # DLSS5-RTX30-PTX mode stays.
-    - name: Embed DLSS5 (Magpie)
+    # DLSS5: the renderer runs NVIDIA's neural rendering itself. Only the RTX 30 build of
+    # nvngx_dlssnr.dll (lmxxf/DLSS5-RTX-3080-laptop v0.4.0) is taken from the release package.
+    - name: Embed DLSS5
       run: |
         curl -fL --retry 3 -o dlss5.zip \
           "https://github.com/vsajjadx/shadPS4/releases/download/014/Magpie-DLSS5-RTX30-0.4.0.zip"
         echo "2a90d6b9c901952a40cfe86475e1727064b174f04b5bf3bbf39c0d1a80b6a901  dlss5.zip" | sha256sum -c -
         mkdir -p bundle/qtplugins/DLSS5
-        unzip -q dlss5.zip -d bundle/qtplugins/DLSS5
+        unzip -q -j dlss5.zip nvngx_dlssnr.dll -d bundle/qtplugins/DLSS5
         rm dlss5.zip
-        cd bundle/qtplugins/DLSS5
-        rm -rf sources
-        rm -f Updater.exe TouchHelper.exe libxess.dll libxess_fg.dll libxell.dll \
-          amd_fidelityfx_loader_dx12.dll amd_fidelityfx_upscaler_dx12.dll \
-          ffx_fsr2_api_dx11_x64.dll ffx_fsr2_api_x64.dll \
-          README.txt README.en.txt FRAME_SYNC_GUIDE.md SHA256SUMS.txt release.json preset2-patch.json \
-          AMD-FSR-SDK-THIRD-PARTY.md AMD-FSR2-DX11-LICENSE.txt INTEL-XESS-LICENSE.txt \
-          INTEL-XESS-THIRD-PARTY.txt HIP-API-LICENSE.txt
-        cd ../../..
-        test -f bundle/qtplugins/DLSS5/Magpie.exe
         test -f bundle/qtplugins/DLSS5/nvngx_dlssnr.dll
-        test -f bundle/qtplugins/DLSS5/nvngx_dlss.dll
-        test -f bundle/qtplugins/DLSS5/config/config.json
-        test -f bundle/qtplugins/DLSS5/effects/DLSSNR/DLSSNR_AI_Filter.hlsl
-        test -f bundle/qtplugins/DLSS5/effects/DLSS/DLSS_SR.hlsl
         echo "DLSS5 embedded: $(du -sh bundle/qtplugins/DLSS5 | cut -f1)"
 
     - name: Upload the package
