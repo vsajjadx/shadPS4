@@ -82,6 +82,7 @@ int GameController::ReadStates(State* states, int states_num) {
         // mixed single- and multi-sample reads require dedicated tests.
         states[0] = m_state;
         states[0].buttonsState = TakeSingleReadButtons();
+        m_seen_pressed |= static_cast<u32>(states[0].buttonsState);
         return 1;
     }
 
@@ -91,6 +92,7 @@ int GameController::ReadStates(State* states, int states_num) {
         if (!state) {
             break;
         }
+        m_seen_pressed |= static_cast<u32>(state->buttonsState);
         states[read_count++] = std::move(*state);
     }
     return read_count;
@@ -100,7 +102,13 @@ void GameController::Button(OrbisPadButtonDataOffset button, bool is_pressed) {
     std::lock_guard lock{m_state_mutex};
     const u32 was_pressed = static_cast<u32>(m_state.buttonsState) & static_cast<u32>(button);
     m_state.OnButton(button, is_pressed);
-    if (!is_pressed && was_pressed) {
+    // A tap is replayed to single-state reads only when no read saw it pressed; a game that also
+    // reads the buffered states would otherwise take it twice.
+    const u32 seen = m_seen_pressed & static_cast<u32>(button);
+    if (is_pressed) {
+        m_seen_pressed &= ~static_cast<u32>(button);
+    }
+    if (!is_pressed && was_pressed && !seen) {
         constexpr u8 MaxQueuedTaps = 8;
         for (u32 i = 0; i < m_unread_taps.size(); i++) {
             if ((was_pressed & (1u << i)) && m_unread_taps[i] < MaxQueuedTaps) {

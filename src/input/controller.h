@@ -130,6 +130,7 @@ private:
     // last reported, so taps shorter than the game's polling interval still reach it.
     std::array<u8, 32> m_unread_taps{};
     Libraries::Pad::OrbisPadButtonDataOffset m_last_reported_buttons{};
+    u32 m_seen_pressed{};
 
     std::mutex m_state_mutex;
     RingBufferQueue<State> m_states_queue;
