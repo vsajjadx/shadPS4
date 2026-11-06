@@ -1004,6 +1004,27 @@ ImageView& TextureCache::FindRenderTarget(ImageId image_id, const ImageDesc& des
     return image.FindView(desc.view_info, false);
 }
 
+void TextureCache::NoteDepthDraw(ImageId image_id, bool reversed) {
+    constexpr size_t MaxTrackedTargets = 16;
+    const auto it = std::ranges::find(depth_draws, image_id, &DepthDraws::image_id);
+    if (it != depth_draws.end()) {
+        ++it->draws;
+        it->reversed_draws += reversed;
+    } else if (depth_draws.size() < MaxTrackedTargets) {
+        depth_draws.push_back({image_id, 1, reversed ? 1u : 0u});
+    }
+}
+
+std::optional<TextureCache::SceneDepth> TextureCache::TakeSceneDepth() {
+    const auto it = std::ranges::max_element(depth_draws, {}, &DepthDraws::draws);
+    std::optional<SceneDepth> result;
+    if (it != depth_draws.end() && slot_images.IsAllocated(it->image_id)) {
+        result = SceneDepth{it->image_id, it->reversed_draws * 2 > it->draws};
+    }
+    depth_draws.clear();
+    return result;
+}
+
 ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc,
                                          bool sync_aliases) {
     if (sync_aliases) {

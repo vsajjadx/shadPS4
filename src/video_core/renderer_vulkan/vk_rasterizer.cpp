@@ -1632,6 +1632,11 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
              regs.depth_control.depth_write_enable) ||
             texture_cache.IsMetaCleared(htile_address, desc.view_info.range.base.layer);
         const auto& image_view = texture_cache.FindDepthTarget(image_id, desc, !is_depth_clear);
+        if (regs.depth_control.depth_enable) {
+            const auto func = regs.depth_control.depth_func;
+            texture_cache.NoteDepthDraw(image_id, func == AmdGpu::CompareFunc::Greater ||
+                                                      func == AmdGpu::CompareFunc::GreaterEqual);
+        }
         auto& image = texture_cache.GetImage(image_id);
 
         const auto slice = image_view.info.range.base.layer;

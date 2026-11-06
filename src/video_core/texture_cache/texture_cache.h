@@ -352,7 +352,25 @@ public:
         }
     }
 
+    struct SceneDepth {
+        ImageId image_id;
+        bool reversed;
+    };
+
+    /// Counts a draw into a depth target, and whether it tests with reversed Z.
+    void NoteDepthDraw(ImageId image_id, bool reversed);
+
+    /// The depth target most drawn into since the last call, which is the scene depth.
+    std::optional<SceneDepth> TakeSceneDepth();
+
 private:
+    struct DepthDraws {
+        ImageId image_id;
+        u32 draws;
+        u32 reversed_draws;
+    };
+    boost::container::small_vector<DepthDraws, 8> depth_draws;
+
     /// Iterate over all page indices in a range
     template <typename Func>
     static void ForEachPage(PAddr addr, size_t size, Func&& func) {

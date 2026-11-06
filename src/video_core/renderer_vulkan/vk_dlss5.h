@@ -13,6 +13,14 @@ namespace Vulkan {
 class Instance;
 class Scheduler;
 
+/// The game's scene depth, sampled in the general layout.
+struct Dlss5Depth {
+    vk::ImageView view;
+    u32 width;
+    u32 height;
+    bool reversed;
+};
+
 /// NVIDIA's DLSS 5 neural rendering, run on the final game picture inside the emulator.
 class Dlss5Pass {
 public:
@@ -24,7 +32,7 @@ public:
 
     /// Replaces the contents of an image in the general layout with the neural rendering result.
     void Render(vk::CommandBuffer cmdbuf, vk::Image image, vk::ImageView view, vk::Format format,
-                u32 width, u32 height);
+                u32 width, u32 height, const Dlss5Depth* depth);
 
     /// Starts again without the history of the previous frames, such as after a scene cut.
     void Reset();
