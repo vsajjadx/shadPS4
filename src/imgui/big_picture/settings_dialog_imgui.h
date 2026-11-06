@@ -149,6 +149,7 @@ private:
     // DLSS5 settings, kept in their own dlss5.json.
     bool dlss5EnabledSetting;
     int dlss5StyleSetting;
+    int dlss5NetworkSetting;
     float dlss5IntensitySetting;
     float dlss5GlobalToneSetting;
     float dlss5LocalToneSetting;

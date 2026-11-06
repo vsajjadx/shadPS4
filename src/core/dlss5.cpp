@@ -24,6 +24,11 @@ const std::vector<std::string>& StyleOptions() {
     return options;
 }
 
+const std::vector<std::string>& NetworkOptions() {
+    static const std::vector<std::string> options = {"Default", "Full Quality", "Fast"};
+    return options;
+}
+
 static Settings g_settings;
 static bool g_loaded = false;
 
@@ -56,6 +61,8 @@ void LoadSettings() {
         s.localTone = std::clamp(j.value("LocalTone", s.localTone), 0.0f, 2.0f);
         s.localStructure = std::clamp(j.value("LocalStructure", s.localStructure), 0.0f, 2.0f);
         s.skinStructure = std::clamp(j.value("SkinStructure", s.skinStructure), -1.0f, 2.5f);
+        s.preset = std::clamp(j.value("Preset", s.preset), 0,
+                              static_cast<int>(NetworkOptions().size()) - 1);
     } catch (const json::exception& e) {
         LOG_ERROR(Loader, "DLSS5 settings could not be read: {}", e.what());
     }
@@ -71,6 +78,7 @@ void SaveSettings() {
     j["LocalTone"] = s.localTone;
     j["LocalStructure"] = s.localStructure;
     j["SkinStructure"] = s.skinStructure;
+    j["Preset"] = s.preset;
 
     std::error_code ec;
     std::filesystem::create_directories(SettingsPath().parent_path(), ec);

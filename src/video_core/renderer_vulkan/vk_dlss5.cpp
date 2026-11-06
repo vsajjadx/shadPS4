@@ -399,7 +399,7 @@ struct Dlss5Pass::Impl {
         parameters->Set("DLSSNR.SkinStructureStrength", settings.skinStructure);
         parameters->Set("DLSSNR.UseAutoMask", 1);
         parameters->Set("DLSSNR.UICorrection", 0);
-        parameters->Set("DLSSNR.Hint.Render.Preset", 0);
+        parameters->Set("DLSSNR.Hint.Render.Preset", settings.preset);
         const auto result = create(device, cmdbuf, NeuralRendering, parameters, &feature);
         if (NVSDK_NGX_FAILED(result)) {
             LOG_WARNING(Render_Vulkan, "DLSS5: the {}x{} feature was not created ({:#x})", width,

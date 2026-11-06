@@ -86,6 +86,7 @@ void SettingsWindow::LoadSettings(std::string profile) {
         const auto& ns = Dlss5::GetSettings();
         dlss5EnabledSetting = ns.enabled;
         dlss5StyleSetting = ns.style;
+        dlss5NetworkSetting = ns.preset;
         dlss5IntensitySetting = ns.intensity;
         dlss5GlobalToneSetting = ns.globalTone;
         dlss5LocalToneSetting = ns.localTone;
@@ -174,6 +175,7 @@ void SettingsWindow::SaveSettings(std::string profile) {
         auto& ns = Dlss5::GetSettings();
         ns.enabled = dlss5EnabledSetting;
         ns.style = dlss5StyleSetting;
+        ns.preset = dlss5NetworkSetting;
         ns.intensity = dlss5IntensitySetting;
         ns.globalTone = dlss5GlobalToneSetting;
         ns.localTone = dlss5LocalToneSetting;
@@ -808,6 +810,7 @@ void SettingsWindow::DrawSettingsTable(SettingsCategory category) {
 
             AddSettingCheckbox("Enable DLSS5", dlss5EnabledSetting);
             if (dlss5EnabledSetting) {
+                AddSettingCombo("DLSS5 Network", dlss5NetworkSetting, Dlss5::NetworkOptions());
                 AddSettingSliderFloat("DLSS5 Intensity", dlss5IntensitySetting, 0.0f, 1.0f, 3);
                 AddSettingCombo("DLSS5 Fine Tuning: Style", dlss5StyleSetting,
                                 Dlss5::StyleOptions());

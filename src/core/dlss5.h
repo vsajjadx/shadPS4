@@ -21,6 +21,7 @@ struct Settings {
     float localTone = 1.5f;
     float localStructure = 1.5f;
     float skinStructure = 1.5f;
+    int preset = 0;
 };
 
 Settings& GetSettings();
@@ -28,6 +29,7 @@ void LoadSettings();
 void SaveSettings();
 
 const std::vector<std::string>& StyleOptions();
+const std::vector<std::string>& NetworkOptions();
 
 /// Counts the settings changes, so the renderer rebuilds its pass after one.
 u32 SettingsGeneration();
