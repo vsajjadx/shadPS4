@@ -58,11 +58,7 @@ void Log(Class log_class, Level level, const char* file, int line, const char* f
 #define LOG_GENERIC(log_class, log_level, ...)                                                     \
     LOG_GENERIC_AT(log_class, log_level, __func__, __VA_ARGS__)
 
-#ifdef NDEBUG
-#define LOG_TRACE(log_class, ...) (void(0))
-#else
 #define LOG_TRACE(log_class, ...) LOG_GENERIC(log_class, Common::Log::Level::Trace, __VA_ARGS__)
-#endif
 
 #define LOG_DEBUG(log_class, ...) LOG_GENERIC(log_class, Common::Log::Level::Debug, __VA_ARGS__)
 #define LOG_INFO(log_class, ...) LOG_GENERIC(log_class, Common::Log::Level::Info, __VA_ARGS__)
