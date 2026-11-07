@@ -1037,12 +1037,36 @@ Value IREmitter::Unpack2_10_10_10(const AmdGpu::NumberFormat number_format, cons
 }
 
 Value IREmitter::Unpack10_11_11(const AmdGpu::NumberFormat number_format, const U32& value) {
-    switch (number_format) {
-    case AmdGpu::NumberFormat::Float:
+    if (number_format == AmdGpu::NumberFormat::Float) {
         return Inst(Opcode::UnpackUfloat10_11_11, value);
-    default:
-        UNREACHABLE_MSG("Unsupported 10_11_11 number format: {}", number_format);
     }
+    static constexpr std::array<std::pair<u32, u32>, 3> fields{{{0, 11}, {11, 11}, {22, 10}}};
+    std::array<Value, 3> components;
+    for (size_t i = 0; i < fields.size(); ++i) {
+        const auto [offset, count] = fields[i];
+        const bool is_signed = number_format == AmdGpu::NumberFormat::Snorm ||
+                               number_format == AmdGpu::NumberFormat::Sint;
+        const U32 bits = BitFieldExtract(value, Imm32(offset), Imm32(count), is_signed);
+        switch (number_format) {
+        case AmdGpu::NumberFormat::Unorm:
+            components[i] = FPMul(F32{ConvertUToF(32, 32, bits)},
+                                  Imm32(1.f / static_cast<float>((1u << count) - 1)));
+            break;
+        case AmdGpu::NumberFormat::Snorm:
+            components[i] =
+                FPMax(FPMul(F32{ConvertSToF(32, 32, bits)},
+                            Imm32(1.f / static_cast<float>((1u << (count - 1)) - 1))),
+                      Imm32(-1.f));
+            break;
+        case AmdGpu::NumberFormat::Uint:
+        case AmdGpu::NumberFormat::Sint:
+            components[i] = BitCast<F32>(bits);
+            break;
+        default:
+            UNREACHABLE_MSG("Unsupported 10_11_11 number format: {}", number_format);
+        }
+    }
+    return CompositeConstruct(components[0], components[1], components[2]);
 }
 
 F32F64 IREmitter::FPMul(const F32F64& a, const F32F64& b) {
