@@ -39,6 +39,39 @@ static bool IsDivergentCondition(const IR::U1& condition) {
         .value_or(false);
 }
 
+// A loop's barriers need every thread of the workgroup to run it the same number of times, so its
+// exits must not depend on anything that can differ between threads or waves: lane and invocation
+// ids, exec and vcc masks, subgroup operations, or memory the threads load or write.
+static bool IsVaryingLoopExit(const IR::U1& condition) {
+    if (condition.IsImmediate()) {
+        return false;
+    }
+    return IR::BreadthFirstSearch(
+               condition.Inst(),
+               [](const IR::Inst* inst) -> std::optional<bool> {
+                   const IR::Opcode opcode = inst->GetOpcode();
+                   if (opcode == IR::Opcode::GetAttributeU32) {
+                       if (inst->Arg(0).Attribute() != IR::Attribute::WorkgroupId) {
+                           return true;
+                       }
+                       return std::nullopt;
+                   }
+                   if (opcode == IR::Opcode::ReadConstBuffer) {
+                       return std::nullopt;
+                   }
+                   const std::string_view name = IR::NameOf(opcode);
+                   for (const std::string_view varying :
+                        {"Lane", "Ballot", "Shuffle", "Quad", "GroupAny", "Shared", "Buffer",
+                         "Image", "Attribute", "Exec", "Vcc", "ThreadBit"}) {
+                       if (name.find(varying) != std::string_view::npos) {
+                           return true;
+                       }
+                   }
+                   return std::nullopt;
+               })
+        .value_or(false);
+}
+
 static std::vector<IR::Block*> FindUniformBlocks(const IR::Program& program) {
     using Type = IR::AbstractSyntaxNode::Type;
 
@@ -57,7 +90,7 @@ static std::vector<IR::Block*> FindUniformBlocks(const IR::Program& program) {
         for (const IR::AbstractSyntaxNode& node : program.syntax_list) {
             switch (node.type) {
             case Type::If:
-                if_stack.push_back(IsDivergentCondition(node.data.if_node.cond));
+                if_stack.push_back(IsVaryingLoopExit(node.data.if_node.cond));
                 divergent_ifs += static_cast<u32>(if_stack.back());
                 break;
             case Type::EndIf:
@@ -72,7 +105,7 @@ static std::vector<IR::Block*> FindUniformBlocks(const IR::Program& program) {
                 break;
             case Type::Break:
                 if (!loop_stack.empty() &&
-                    (divergent_ifs > 0 || IsDivergentCondition(node.data.break_node.cond))) {
+                    (divergent_ifs > 0 || IsVaryingLoopExit(node.data.break_node.cond))) {
                     divergent_loops.push_back(loop_stack.back());
                 }
                 break;
@@ -80,7 +113,7 @@ static std::vector<IR::Block*> FindUniformBlocks(const IR::Program& program) {
                 if (loop_stack.empty() || loop_stack.back() != node.data.repeat.merge) {
                     return {};
                 }
-                if (IsDivergentCondition(node.data.repeat.cond)) {
+                if (IsVaryingLoopExit(node.data.repeat.cond)) {
                     divergent_loops.push_back(loop_stack.back());
                 }
                 loop_stack.pop_back();
