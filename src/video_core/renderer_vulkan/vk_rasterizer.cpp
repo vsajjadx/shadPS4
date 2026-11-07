@@ -406,6 +406,19 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
     }
 
     const auto [buffer, base] = buffer_cache.ObtainBuffer(address + offset, size);
+    if (buffer == &buffer_cache.GetStreamBuffer()) {
+        std::array<u32, 3> groups{};
+        memory->CopySparseMemory(address + offset, reinterpret_cast<u8*>(groups.data()),
+                                 sizeof(groups));
+        const auto& max_groups = instance.GetLimits().maxComputeWorkGroupCount;
+        if (groups[0] > max_groups[0] || groups[1] > max_groups[1] || groups[2] > max_groups[2]) {
+            LOG_ERROR(Render_Vulkan,
+                      "Skipping indirect dispatch with {}x{}x{} groups read from {:#x}", groups[0],
+                      groups[1], groups[2], address + offset);
+            ResetBindings(true);
+            return;
+        }
+    }
     needs_barrier |= runtime.IsBufferAccessed(buffer, base, size);
     bound_buffers.emplace_back(buffer, base, size, vk::AccessFlagBits2::eIndirectCommandRead);
 
