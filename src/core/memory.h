@@ -222,6 +222,22 @@ public:
         return vma.Contains(virtual_addr, 1) && vma.IsMapped();
     }
 
+    /// How much of the range is mapped without a gap from its start. Lock-free like
+    /// IsValidMapping.
+    u64 MappedSizeFrom(VAddr virtual_addr, u64 size) {
+        if (vma_map.empty() || virtual_addr < vma_map.begin()->first) {
+            return 0;
+        }
+        const VAddr end = virtual_addr + size;
+        VAddr addr = virtual_addr;
+        for (auto it = FindVMA(virtual_addr);
+             addr < end && it != vma_map.end() && it->second.base <= addr && it->second.IsMapped();
+             ++it) {
+            addr = it->second.base + it->second.size;
+        }
+        return std::min(addr, end) - virtual_addr;
+    }
+
     /// Calls func(address, size, executable) for each part of the range, split where
     /// the guest's CPU execute permission changes. Lock-free like IsValidMapping.
     template <typename Func>

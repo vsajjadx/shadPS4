@@ -320,7 +320,10 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     const u64 first_block = device_addr >> block_shift;
     const u64 last_block = (device_addr + size - 1) >> block_shift;
     const auto* arena = GetArena(first_block, last_block);
-    EnsureResident(arena, first_block, last_block);
+    // Buffers often claim far more than is mapped behind them; backing unmapped memory would
+    // never be given back.
+    const u64 mapped_size = std::max<u64>(memory->MappedSizeFrom(device_addr, size), 1);
+    EnsureResident(arena, first_block, (device_addr + mapped_size - 1) >> block_shift);
     if (is_written && False(flags & ObtainBufferFlags::FromImages)) {
         texture_cache.MarkAsMaybeGpuDirty(device_addr, size);
     }
