@@ -824,7 +824,8 @@ bool PipelineCache::RefreshGraphicsStages() {
         if (!modules[stage_out_idx]) {
             stage_failed = true;
         }
-        return true;
+        // A program still translating has no info yet, and the stages bound after it read it.
+        return infos[stage_out_idx] != nullptr;
     };
 
     infos.fill(nullptr);
