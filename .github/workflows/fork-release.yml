@@ -5,9 +5,9 @@ on:
     paths: [.github/workflows/fork-release.yml]
 
 env:
-  RUN_ID: "42367629285"
-  TAG: allgames-2026-11-07
-  TARGET: 525006342c21390d4099ac049e96bb359bb32967
+  RUN_ID: "42375743221"
+  TAG: allgames-2026-11-07-2
+  TARGET: fd47df01d4c5d9018aa2e0f7984b9e0e35bec21f
 
 permissions:
   contents: write
@@ -35,10 +35,10 @@ jobs:
           This release fixes the underlying emulation behind crashes and freezes in several games instead of adding per-game workarounds, makes DLSS5 steady in every game, and redesigns the launcher.
 
           ### Game fixes
-          - **NHL 24:** fixed the freeze where the GPU stopped for good. A readback finishing in the background marked memory the GPU had just rewritten as clean, so a later copy fed stale bytes to the game as dispatch sizes (billions of workgroups). Memory use also dropped from over 20 GB to about 4 GB.
+          - **NHL 24:** fixed the freeze where the GPU stopped for good. Buffer copies could take a shortcut through the game's own memory while the GPU had newer data for the same bytes, so stale values reached the game as dispatch sizes (billions of workgroups). Copies of anything the GPU wrote now always use the GPU's data. Memory use also dropped from over 20 GB to about 4 GB. A vertex format some of its shaders use (10_11_11 in normalized and integer forms) now translates, so those draws are no longer skipped.
           - **Marvel's Spider-Man: Miles Morales:** boots on a regular PS4 setup. The emulator reported a 5120x2880 TV to a PS4 that can only output 1080p, and the game took a 4K path that does not exist on that console. The reported output now never exceeds what the console can display: 1080p on PS4, 2160p on PS4 Pro.
           - **Red Dead Redemption 2:** fixed two crashes, one while tessellation shaders were still compiling and one when changing the memory type of a mapping that spans several memory areas.
-          - **EA SPORTS FC 27:** compute shaders that use jump tables (switch statements) now translate instead of being skipped, which fixes scrambled sequences. The picture no longer turns red and overexposed now and then: wave64 operations inside loops are only rewritten when every wave runs the loop the same number of times.
+          - **EA SPORTS FC 27:** compute shaders that use jump tables (switch statements) now translate instead of being skipped, which fixes scrambled sequences. The picture no longer turns red and overexposed (a regression in the previous release is fixed too): wave64 operations inside loops are only rewritten when every wave runs the loop the same number of times.
           - **UFC 4:** fixed a freeze after flips.
 
           ### DLSS5
@@ -55,6 +55,7 @@ jobs:
           - Much faster boot, including when running a PKG directly (FC 27: 46 s down to 11 s).
           - PS4 Pro mode: textures in the Pro's alternate memory layout are read correctly, and Pro-only shader instructions decode.
           - A game's own config file can choose its readback settings.
+          - Linear image readbacks are now really on for every game. A settings bug left them off, so games that read their exposure back on the CPU (EA SPORTS FC 27) showed a washed-out, overbright picture.
           - Crash logs now list code addresses for every game.
 
           ### Notes
