@@ -124,6 +124,7 @@ private:
     void Resolve();
     void DepthStencilCopy(bool is_depth, bool is_stencil);
     void EliminateFastClear();
+    void MarkCmaskDrawn(const AmdGpu::ColorBuffer& col_buf, u32 slice);
 
     void UpdateDynamicState(const GraphicsPipeline* pipeline, bool is_indexed) const;
     void UpdateViewportScissorState() const;

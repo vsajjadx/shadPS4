@@ -190,6 +190,7 @@ void Rasterizer::EliminateFastClear() {
     }
     for (u32 slice = col_buf.view.slice_start; slice <= col_buf.view.slice_max; ++slice) {
         texture_cache.TouchMeta(col_buf.CmaskAddress(), slice, false);
+        MarkCmaskDrawn(col_buf, slice);
     }
     auto& image = texture_cache.GetImage(image_id);
     const auto clear_value = LiverpoolToVK::ColorBufferClearValue(col_buf);
@@ -198,6 +199,17 @@ void Rasterizer::EliminateFastClear() {
                                  col_buf.CmaskAddress()));
     runtime.ClearImage(&image, desc.view_info.range, clear_value);
     ScopeMarkerEnd();
+}
+
+// Games read CMASK to find the tiles a pass rendered to. Fast clears are not run on the guest
+// metadata, so once a cleared target is drawn to its CMASK is marked fully written, as the
+// hardware leaves it after expanding every tile.
+void Rasterizer::MarkCmaskDrawn(const AmdGpu::ColorBuffer& col_buf, u32 slice) {
+    const u32 slice_size = (col_buf.cmask_slice.tile_max + 1) * 128;
+    const VAddr address = col_buf.CmaskAddress() + u64(slice) * slice_size;
+    const auto [buffer, offset] =
+        buffer_cache.ObtainBuffer(address, slice_size, VideoCore::ObtainBufferFlags::IsWritten);
+    runtime.FillBuffer(buffer, offset, slice_size, 0xFFFFFFFFu);
 }
 
 void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
@@ -1741,6 +1753,9 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
 
         const bool is_clear = texture_cache.IsMetaCleared(col_buf.CmaskAddress(), slice);
         texture_cache.TouchMeta(col_buf.CmaskAddress(), slice, false);
+        if (is_clear) {
+            MarkCmaskDrawn(col_buf, slice);
+        }
 
         if (image->binding.is_bound) {
             ASSERT_MSG(!image->binding.force_general,
