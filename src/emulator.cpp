@@ -627,13 +627,13 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     // games rely on it for lighting, exposure and visibility data. Every game runs with precise
     // and linear image readbacks so they all see coherent memory, unless its own config says
     // otherwise.
-    if (!EmulatorSettings.IsReadbacksGameSpecific() &&
+    const bool readbacks_game_specific = EmulatorSettings.IsReadbacksGameSpecific();
+    if (!readbacks_game_specific &&
         EmulatorSettings.GetReadbacksMode() != GpuReadbacksMode::Precise) {
         EmulatorSettings.SetReadbacksMode(GpuReadbacksMode::Precise, true);
         LOG_INFO(Config, "GPU readbacks forced to Precise");
     }
-    if (!EmulatorSettings.IsReadbacksGameSpecific() &&
-        !EmulatorSettings.IsReadbackLinearImagesEnabled()) {
+    if (!readbacks_game_specific && !EmulatorSettings.IsReadbackLinearImagesEnabled()) {
         EmulatorSettings.SetReadbackLinearImagesEnabled(true, true);
         LOG_INFO(Config, "Linear image readbacks forced on");
     }
