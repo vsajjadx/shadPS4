@@ -8,6 +8,7 @@
 #include "common/elf_info.h"
 #include "common/logging/log.h"
 #include "core/emulator_settings.h"
+#include "core/libraries/kernel/process.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/system/userservice.h"
 #include "core/libraries/videoout/driver.h"
@@ -471,10 +472,17 @@ s32 PS4_SYSV_ABI sceVideoOutSetWindowModeMargins(s32 handle, s32 top, s32 bottom
 }
 
 void RegisterLib(Core::Loader::SymbolsResolver* sym) {
-    const u32 scale = std::clamp<u32>(EmulatorSettings.GetResolutionScale(), 25, 400);
+    // The output never goes past what the console can display: 1080p on a PS4, 2160p on a PS4 Pro.
+    const u32 width = EmulatorSettings.GetInternalScreenWidth();
+    const u32 height = EmulatorSettings.GetInternalScreenHeight();
+    const bool pro = Kernel::sceKernelIsNeoMode();
+    const u32 max_width = pro ? 3840 : 1920;
+    const u32 max_height = pro ? 2160 : 1080;
+    u32 scale = std::clamp<u32>(EmulatorSettings.GetResolutionScale(), 25, 400);
+    scale = std::min(
+        {scale, max_width * 100 / std::max(width, 1u), max_height * 100 / std::max(height, 1u)});
     const auto scaled = [scale](u32 size) { return std::max<u32>(size * scale / 100 & ~1u, 2); };
-    driver = std::make_unique<VideoOutDriver>(scaled(EmulatorSettings.GetInternalScreenWidth()),
-                                              scaled(EmulatorSettings.GetInternalScreenHeight()));
+    driver = std::make_unique<VideoOutDriver>(scaled(width), scaled(height));
 
     LIB_FUNCTION("SbU3dwp80lQ", "libSceVideoOut", 1, "libSceVideoOut", sceVideoOutGetFlipStatus);
     LIB_FUNCTION("U46NwOiJpys", "libSceVideoOut", 1, "libSceVideoOut", sceVideoOutSubmitFlip);
