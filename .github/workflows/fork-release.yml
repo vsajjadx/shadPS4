@@ -71,7 +71,6 @@ jobs:
         run: |
           if ! gh release create "${{ env.TAG }}" shadPS4-win64-${{ env.TAG }}.zip \
             --repo ${{ github.repository }} \
-            --target ${{ env.TARGET }} \
             --title "Crash, freeze and DLSS5 fixes for every game (${{ env.TAG }})" \
             --notes-file notes.md \
             --latest 2> err.txt; then
