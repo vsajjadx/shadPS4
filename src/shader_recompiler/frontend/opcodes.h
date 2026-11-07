@@ -203,6 +203,7 @@ enum class OpcodeSMRD : u32 {
     S_BUFFER_LOAD_DWORDX4 = 10,
     S_BUFFER_LOAD_DWORDX8 = 11,
     S_BUFFER_LOAD_DWORDX16 = 12,
+    S_MEMREALTIME = 28,
     S_DCACHE_INV_VOL = 29,
     S_MEMTIME = 30,
     S_DCACHE_INV = 31,
@@ -2042,6 +2043,7 @@ enum class Opcode : u32 {
     S_BUFFER_LOAD_DWORDX4 = 10 + (u32)OpcodeMap::OP_MAP_SMRD,
     S_BUFFER_LOAD_DWORDX8 = 11 + (u32)OpcodeMap::OP_MAP_SMRD,
     S_BUFFER_LOAD_DWORDX16 = 12 + (u32)OpcodeMap::OP_MAP_SMRD,
+    S_MEMREALTIME = 28 + (u32)OpcodeMap::OP_MAP_SMRD,
     S_MEMTIME = 30 + (u32)OpcodeMap::OP_MAP_SMRD,
     S_DCACHE_INV = 31 + (u32)OpcodeMap::OP_MAP_SMRD,
     // DS

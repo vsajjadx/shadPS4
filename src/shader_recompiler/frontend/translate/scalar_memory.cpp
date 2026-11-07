@@ -31,6 +31,7 @@ void Translator::EmitScalarMemory(const GcnInst& inst) {
     case Opcode::S_BUFFER_LOAD_DWORDX16:
         return S_BUFFER_LOAD_DWORD(16, inst);
     case Opcode::S_MEMTIME:
+    case Opcode::S_MEMREALTIME:
         return S_MEMTIME(inst);
     default:
         LogMissingOpcode(inst);
