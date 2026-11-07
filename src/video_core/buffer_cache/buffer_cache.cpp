@@ -263,8 +263,15 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
                              copies = std::move(copies), seq = readback_write_seq] {
         download.Invalidate();
         // The GPU may have written a range again after an asynchronous download of it was
-        // recorded; that range keeps its newer GPU data.
+        // recorded; that range keeps its newer GPU data. Recording the download took the range
+        // out of the GPU modified ranges, so a later GPU write put it back, on any page of the
+        // widened download window.
         const auto written_since = [&](VAddr addr, u64 bytes) {
+            bool written = false;
+            gpu_modified_ranges.ForEachInRange(addr, bytes, [&](VAddr, VAddr) { written = true; });
+            if (written) {
+                return true;
+            }
             for (u64 page = addr >> ReadbackPageBits;
                  page <= (addr + bytes - 1) >> ReadbackPageBits; ++page) {
                 const auto it = readback_page_write_seq.find(page);
