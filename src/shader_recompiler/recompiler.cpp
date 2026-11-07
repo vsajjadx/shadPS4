@@ -79,6 +79,8 @@ IR::Program TranslateProgram(const std::span<const u32>& code, Pools& pools, Inf
         program.ins_list.emplace_back(decoder.decodeInstruction(slice));
     }
 
+    Gcn::LowerJumpTables(program.ins_list, code);
+
     // Clear any previous pooled data.
     pools.ReleaseContents();
 

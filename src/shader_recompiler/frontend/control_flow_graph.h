@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <span>
 #include <string>
+#include <vector>
 #include <boost/container/small_vector.hpp>
 #include <boost/intrusive/set.hpp>
 
@@ -98,5 +99,9 @@ public:
     boost::container::small_vector<Label, 16> labels;
     BlockList blocks;
 };
+
+/// Turns jumps through a table of offsets stored after the program into compares against each
+/// entry, so the control flow graph sees every target.
+void LowerJumpTables(std::vector<GcnInst>& list, std::span<const u32> code);
 
 } // namespace Shader::Gcn

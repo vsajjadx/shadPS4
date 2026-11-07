@@ -8,6 +8,7 @@
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "shader_recompiler/frontend/control_flow_graph.h"
+#include "shader_recompiler/frontend/decode.h"
 #include "shader_recompiler/ir/condition.h"
 
 namespace Shader::Gcn {
@@ -216,6 +217,125 @@ static std::optional<u32> ResolveSetPcTarget(std::span<const GcnInst> list, u32 
         offset += is_add ? part : -part;
     }
     return std::nullopt;
+}
+
+// The closest instruction before `before` that writes scalar register `reg`.
+static std::optional<u32> LastScalarWriter(std::span<const GcnInst> list, u32 before, u32 reg) {
+    for (u32 i = before; i-- > 0;) {
+        const auto& inst = list[i];
+        for (u32 d = 0; d < inst.dst_count; ++d) {
+            const auto& dst = inst.dst[d];
+            if (dst.field == OperandField::ScalarGPR && reg >= dst.code &&
+                reg < dst.code + ScalarDestinationWidth(inst, dst)) {
+                return i;
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+// The address of `S_GETPC_B64 s[n:n+1]; S_ADD_U32 sn, sn, value; S_ADDC_U32 ...` held in sn at
+// `before`, with `value` read from `offset` when it is a register.
+static std::optional<u32> PcRelativeAddress(std::span<const GcnInst> list,
+                                            std::span<const u32> pc_map, u32 before, u32 reg,
+                                            const InstOperand** offset) {
+    const auto add = LastScalarWriter(list, before, reg);
+    if (!add || list[*add].opcode != Opcode::S_ADD_U32) {
+        return std::nullopt;
+    }
+    const InstOperand* source = OtherSource(list[*add], reg);
+    const auto getpc = LastScalarWriter(list, *add, reg);
+    if (!source || !getpc || list[*getpc].opcode != Opcode::S_GETPC_B64 ||
+        list[*getpc].dst[0].code != reg) {
+        return std::nullopt;
+    }
+    *offset = source;
+    return pc_map[*getpc] + list[*getpc].length;
+}
+
+void LowerJumpTables(std::vector<GcnInst>& list, std::span<const u32> code) {
+    std::vector<u32> pc_map(list.size() + 1);
+    for (u32 i = 0; i < list.size(); ++i) {
+        pc_map[i + 1] = pc_map[i] + list[i].length;
+    }
+    const u32 code_size = pc_map.back();
+    const auto is_instruction = [&](u32 pc) { return std::ranges::binary_search(pc_map, pc); };
+    std::vector<u32> dispatch;
+    const auto num_insts = static_cast<u32>(list.size());
+    for (u32 i = 0; i < num_insts; ++i) {
+        const auto& setpc = list[i];
+        if (setpc.opcode != Opcode::S_SETPC_B64 || setpc.src[0].field != OperandField::ScalarGPR ||
+            ResolveSetPcTarget(list, i, pc_map)) {
+            continue;
+        }
+        const InstOperand* entry{};
+        const auto base = PcRelativeAddress(list, pc_map, i, setpc.src[0].code, &entry);
+        if (!base || entry->field != OperandField::ScalarGPR) {
+            continue;
+        }
+        const auto load = LastScalarWriter(list, i, entry->code);
+        if (!load || list[*load].opcode != Opcode::S_LOAD_DWORDX2 ||
+            list[*load].dst[0].code != entry->code) {
+            continue;
+        }
+        const InstOperand* table_offset{};
+        const auto table_base =
+            PcRelativeAddress(list, pc_map, *load, list[*load].src[0].code * 2, &table_offset);
+        const auto table_value = table_offset ? OperandValue(list, *table_offset) : std::nullopt;
+        const auto& index = list[*load].src[1];
+        if (!table_base || !table_value || list[*load].control.smrd.imm ||
+            index.field != OperandField::ScalarGPR) {
+            continue;
+        }
+        const u32 table = *table_base + *table_value;
+        if (table % 4 != 0 || table < code_size) {
+            continue;
+        }
+        std::vector<u32> targets;
+        constexpr u32 MaxEntries = 256;
+        for (u32 k = 0; k < MaxEntries; ++k) {
+            const u32 target = *base + code.data()[table / 4 + k * 2];
+            if (target % 4 != 0 || target >= code_size || !is_instruction(target)) {
+                break;
+            }
+            targets.push_back(target);
+        }
+        if (targets.empty()) {
+            continue;
+        }
+        LOG_INFO(Render_Recompiler, "Jump table at PC {:#x} with {} targets", pc_map[i],
+                 targets.size());
+        const u32 start = code_size + static_cast<u32>(dispatch.size()) * 4;
+        const auto branch = [](u32 op, u32 from, u32 to) {
+            const s32 words = (static_cast<s32>(to) - static_cast<s32>(from) - 4) / 4;
+            return 0xBF800000u | (op << 16) | (static_cast<u32>(words) & 0xFFFF);
+        };
+        constexpr u32 SoppBranch = 2;
+        constexpr u32 SoppBranchScc1 = 5;
+        constexpr u32 SopcCmpEqU32 = 6;
+        constexpr u32 Sop1MovB32 = 3;
+        constexpr u32 Literal = 255;
+        for (u32 k = 0; k < targets.size(); ++k) {
+            dispatch.push_back(0xBF000000u | (SopcCmpEqU32 << 16) | (Literal << 8) | entry->code);
+            dispatch.push_back(k * 8);
+            const u32 pc = code_size + static_cast<u32>(dispatch.size()) * 4;
+            dispatch.push_back(branch(SoppBranchScc1, pc, targets[k]));
+        }
+        const u32 pc = code_size + static_cast<u32>(dispatch.size()) * 4;
+        dispatch.push_back(branch(SoppBranch, pc, targets.front()));
+        const auto decode_one = [](u32 word) {
+            GcnCodeSlice slice(&word, &word + 1);
+            return GcnDecodeContext{}.decodeInstruction(slice);
+        };
+        list[*load] =
+            decode_one(0xBE800000u | (entry->code << 16) | (Sop1MovB32 << 8) | index.code);
+        list[i] = decode_one(branch(SoppBranch, pc_map[i], start));
+    }
+    GcnCodeSlice slice(dispatch.data(), dispatch.data() + dispatch.size());
+    GcnDecodeContext decoder;
+    while (!slice.atEnd()) {
+        list.emplace_back(decoder.decodeInstruction(slice));
+    }
 }
 
 static std::string DescribeInstruction(const GcnInst& inst) {
