@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <unordered_map>
+#include <boost/container/static_vector.hpp>
 
 #include "common/recursive_lock.h"
 #include "common/shared_first_mutex.h"
@@ -237,13 +238,26 @@ private:
     Pipeline::DescriptorWrites set_writes;
     Shader::PushData push_data;
 
-    void NoteSceneDraw(VideoCore::ImageId depth_id);
-    void NoteSampledImage(VideoCore::ImageId image_id);
+    void NoteSceneDraw(VideoCore::ImageId depth_id, bool reversed);
+    void NoteSampledImage(VideoCore::ImageId image_id, bool written);
+    void FollowMultisampledScene();
 
     bool attachment_feedback_loop{};
     bool needs_barrier{};
+    struct SceneTarget {
+        VAddr address;
+        u32 draws;
+        u64 area;
+        bool hdr;
+    };
+    boost::container::static_vector<SceneTarget, 16> scene_targets;
     VideoCore::ImageId dlss5_scene_color{};
+    VideoCore::ImageId dlss5_scene_depth{};
+    bool dlss5_scene_reversed{};
     VAddr dlss5_scene_address{};
+    VAddr dlss5_sampled_address{};
+    VideoCore::ImageId dlss5_pass_output{};
+    bool dlss5_pass_reads_scene{};
     bool dlss5_scene_drawn{};
     bool dlss5_before_hud{};
     bool binding_compute{};

@@ -156,6 +156,8 @@ struct Dlss5Pass::Impl {
     NVSDK_NGX_Handle* feature{};
     u32 width{};
     u32 height{};
+    u32 last_width{};
+    u32 last_height{};
     bool reset{true};
     bool invalidated{};
     u32 generation{};
@@ -411,7 +413,7 @@ struct Dlss5Pass::Impl {
         }
     }
 
-    void Copy(vk::CommandBuffer cmdbuf, vk::Image src, vk::Image dst) const {
+    static void Copy(vk::CommandBuffer cmdbuf, vk::Image src, vk::Image dst, u32 w, u32 h) {
         const vk::ImageSubresourceLayers layers = {
             .aspectMask = vk::ImageAspectFlagBits::eColor,
             .mipLevel = 0,
@@ -421,7 +423,7 @@ struct Dlss5Pass::Impl {
         const vk::ImageCopy region = {
             .srcSubresource = layers,
             .dstSubresource = layers,
-            .extent = {width, height, 1},
+            .extent = {w, h, 1},
         };
         cmdbuf.copyImage(src, vk::ImageLayout::eGeneral, dst, vk::ImageLayout::eGeneral, region);
     }
@@ -585,20 +587,22 @@ struct Dlss5Pass::Impl {
             generation = current;
             invalidated = true;
         }
-        const u32 work_width = w;
-        const u32 work_height = h;
-        if (invalidated || work_width != width || work_height != height || !feature) {
+        // Games with dynamic resolution change the size often; the feature keeps the largest size
+        // and works on the part in use.
+        if (invalidated || w > width || h > height || !feature) {
             invalidated = false;
-            Recreate(cmdbuf, work_width, work_height);
+            Recreate(cmdbuf, std::max(w, width), std::max(h, height));
             return;
         }
-        const bool has_motion =
-            motion_supported && ::Dlss5::GetSettings().useMotion &&
-            motion_search.EstimateMotion(cmdbuf, image, format, w, h);
+        const bool same_size = w == last_width && h == last_height;
+        last_width = w;
+        last_height = h;
+        const bool has_motion = motion_supported && same_size && ::Dlss5::GetSettings().useMotion &&
+                                motion_search.EstimateMotion(cmdbuf, image, format, w, h);
         FullBarrier(cmdbuf);
         if (scene_depth && depth_pass.pipeline) {
             Dispatch(cmdbuf, depth_pass, scene_depth->view, depth.view,
-                     {width, height, scene_depth->width, scene_depth->height});
+                     {w, h, scene_depth->width, scene_depth->height});
         } else {
             const vk::ClearColorValue far_depth{
                 std::array{reversed ? 0.0f : 1.0f, 0.0f, 0.0f, 0.0f}};
@@ -606,11 +610,11 @@ struct Dlss5Pass::Impl {
         }
         FullBarrier(cmdbuf);
         if (srgb.image) {
-            Copy(cmdbuf, image, srgb.image);
+            Copy(cmdbuf, image, srgb.image, w, h);
             FullBarrier(cmdbuf);
-            Blit(cmdbuf, srgb.image, w, h, color[0].image, width, height);
+            Blit(cmdbuf, srgb.image, w, h, color[0].image, w, h);
         } else {
-            Blit(cmdbuf, image, w, h, color[0].image, width, height);
+            Blit(cmdbuf, image, w, h, color[0].image, w, h);
         }
         FullBarrier(cmdbuf);
 
@@ -620,17 +624,17 @@ struct Dlss5Pass::Impl {
         const WorkImage estimated_motion{.image = motion_search.MotionImage(),
                                          .view = motion_search.MotionView(),
                                          .format = vk::Format::eR16G16Sfloat};
-        auto motion_resource =
-            Resource(has_motion ? estimated_motion : motion, width, height, false);
+        auto motion_resource = has_motion ? Resource(estimated_motion, w, h, false)
+                                          : Resource(motion, width, height, false);
         parameters->Set("DLSSNR.Color", static_cast<void*>(&color_resource));
         parameters->Set("DLSSNR.Output", static_cast<void*>(&output_resource));
         parameters->Set("DLSSNR.Depth", static_cast<void*>(&depth_resource));
         parameters->Set("DLSSNR.MVec", static_cast<void*>(&motion_resource));
         parameters->Set("DLSSNR.Reset", reset || !::Dlss5::GetSettings().temporal ? 1 : 0);
-        SetSubrect("Color", width, height);
-        SetSubrect("Output", width, height);
-        SetSubrect("Depth", width, height);
-        SetSubrect("MVec", width, height);
+        SetSubrect("Color", w, h);
+        SetSubrect("Output", w, h);
+        SetSubrect("Depth", w, h);
+        SetSubrect("MVec", w, h);
         parameters->Set("DLSSNR.MVecScaleX", 1.0f);
         parameters->Set("DLSSNR.MVecScaleY", 1.0f);
         const auto result = evaluate(cmdbuf, feature, parameters, nullptr);
@@ -646,15 +650,15 @@ struct Dlss5Pass::Impl {
             return;
         }
         if (clamp_pass.pipeline) {
-            Dispatch(cmdbuf, clamp_pass, color[0].view, color[1].view, {width, height, 0, 0});
+            Dispatch(cmdbuf, clamp_pass, color[0].view, color[1].view, {w, h, 0, 0});
             FullBarrier(cmdbuf);
         }
         if (srgb.image) {
-            Blit(cmdbuf, color[1].image, width, height, srgb.image, w, h);
+            Blit(cmdbuf, color[1].image, w, h, srgb.image, w, h);
             FullBarrier(cmdbuf);
-            Copy(cmdbuf, srgb.image, image);
+            Copy(cmdbuf, srgb.image, image, w, h);
         } else {
-            Blit(cmdbuf, color[1].image, width, height, image, w, h);
+            Blit(cmdbuf, color[1].image, w, h, image, w, h);
         }
         FullBarrier(cmdbuf);
     }

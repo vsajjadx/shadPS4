@@ -368,6 +368,11 @@ public:
         depth_draws.clear();
     }
 
+    bool IsRegistered(ImageId image_id) const {
+        return slot_images.IsAllocated(image_id) &&
+               True(slot_images[image_id].flags & ImageFlagBits::Registered);
+    }
+
 private:
     struct DepthDraws {
         ImageId image_id;

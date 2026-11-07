@@ -151,6 +151,7 @@ private:
     HostPasses::FsrPass fsr_pass;
     std::unique_ptr<Dlss5Pass> dlss5_pass;
     u32 frames_without_dlss5_scene{120};
+    bool dlss5_on_scene{};
     HostPasses::FsrPass::Settings fsr_settings{};
     HostPasses::PostProcessingPass::Settings pp_settings{};
     HostPasses::PostProcessingPass pp_pass;

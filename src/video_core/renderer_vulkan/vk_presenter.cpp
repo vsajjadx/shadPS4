@@ -872,6 +872,12 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
         ++frames_without_dlss5_scene;
     }
     ::Dlss5::ReloadIfChanged();
+    const bool on_scene = frames_without_dlss5_scene < SceneModeFrames;
+    if (on_scene != dlss5_on_scene && ::Dlss5::GetSettings().enabled) {
+        dlss5_on_scene = on_scene;
+        LOG_INFO(Render_Vulkan, "DLSS5: running on {}",
+                 on_scene ? "the scene before the HUD" : "the final picture");
+    }
     if (frames_without_dlss5_scene >= SceneModeFrames && dlss5_pass->IsAvailable() &&
         ::Dlss5::GetSettings().enabled) {
         const auto dlss5_depth = rasterizer->PrepareDlss5Depth(image_size.width, image_size.height);
