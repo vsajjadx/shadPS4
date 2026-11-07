@@ -11,38 +11,31 @@
 
 namespace Shader::Optimization {
 
-// The barriers the lowering inserts need every thread of the workgroup to reach them the same
-// number of times, so control flow around them must not depend on anything that can differ
-// between threads or waves: lane and invocation ids, exec and vcc masks, subgroup operations and
-// memory the threads load or write.
 static bool IsDivergentCondition(const IR::U1& condition) {
     if (condition.IsImmediate()) {
         return false;
     }
     const IR::Inst* const condition_inst = condition.Inst();
-    return IR::BreadthFirstSearch(
-               condition_inst,
-               [](const IR::Inst* inst) -> std::optional<bool> {
-                   const IR::Opcode opcode = inst->GetOpcode();
-                   if (opcode == IR::Opcode::GetAttributeU32) {
-                       if (inst->Arg(0).Attribute() != IR::Attribute::WorkgroupId) {
-                           return true;
-                       }
-                       return std::nullopt;
-                   }
-                   if (opcode == IR::Opcode::ReadConstBuffer) {
-                       return std::nullopt;
-                   }
-                   const std::string_view name = IR::NameOf(opcode);
-                   for (const std::string_view varying :
-                        {"Lane", "Ballot", "Shuffle", "Quad", "GroupAny", "Shared", "Buffer",
-                         "Image", "Attribute", "Exec", "Vcc", "ThreadBit"}) {
-                       if (name.find(varying) != std::string_view::npos) {
-                           return true;
-                       }
-                   }
-                   return std::nullopt;
-               })
+    return IR::BreadthFirstSearch(condition_inst,
+                                  [](const IR::Inst* inst) -> std::optional<bool> {
+                                      switch (inst->GetOpcode()) {
+                                      case IR::Opcode::LaneId:
+                                          return true;
+                                      case IR::Opcode::GetAttributeU32:
+                                          switch (inst->Arg(0).Attribute()) {
+                                          case IR::Attribute::LocalInvocationId:
+                                          case IR::Attribute::LocalInvocationIndex:
+                                          case IR::Attribute::GlobalInvocationId:
+                                              return true;
+                                          default:
+                                              break;
+                                          }
+                                          break;
+                                      default:
+                                          break;
+                                      }
+                                      return std::nullopt;
+                                  })
         .value_or(false);
 }
 
