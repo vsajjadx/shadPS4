@@ -5,9 +5,9 @@ on:
     paths: [.github/workflows/fork-release.yml]
 
 env:
-  RUN_ID: "42375743221"
-  TAG: allgames-2026-11-07-2
-  TARGET: fd47df01d4c5d9018aa2e0f7984b9e0e35bec21f
+  RUN_ID: "42380802585"
+  TAG: allgames-2026-11-07-3
+  TARGET: 14e9c3d16f3837ce70c7944e62ac60c62b148eee
 
 permissions:
   contents: write
@@ -56,6 +56,7 @@ jobs:
           - PS4 Pro mode: textures in the Pro's alternate memory layout are read correctly, and Pro-only shader instructions decode.
           - A game's own config file can choose its readback settings.
           - Linear image readbacks are now really on for every game. A settings bug left them off, so games that read their exposure back on the CPU (EA SPORTS FC 27) showed a washed-out, overbright picture.
+          - Color targets now report the tiles they were drawn to (CMASK), as the PS4 GPU does. Games that read it to blend their HUD only where something was drawn (EA SPORTS FC 27) showed text and panels cut into dark boxes, and the shot power circle was incomplete.
           - Crash logs now list code addresses for every game.
 
           ### Notes
