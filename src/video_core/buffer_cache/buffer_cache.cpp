@@ -8,7 +8,6 @@
 
 #include "common/alignment.h"
 #include "core/debug_state.h"
-#include "core/emulator_settings.h"
 #include "core/memory.h"
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/buffer_cache/buffer.h"
@@ -683,31 +682,11 @@ bool BufferCache::SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 
     // readbacks, while the costly large ones stay unwatched. (After the theorder1886-port's
     // read-watched GPU-written buffers, mateussmeneses/theorder1886-port 3654b062.)
     const bool watch_reads = size <= ReadWatchMaxBytes;
-    // With precise readbacks a CPU write to GPU written memory first downloads it, so bytes the
-    // GPU wrote after the CPU last did hold the newest data. Commands recorded since then (a
-    // shader writing indirect arguments) must not be overwritten by the CPU's older copy.
-    const bool keep_gpu_writes = EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Precise;
-    const auto add_upload = [&](u64 addr, u64 size) {
-        copies.emplace_back(total_size_bytes, addr, size);
-        total_size_bytes += size;
-    };
-    memory_tracker->ForEachUploadRange(
-        device_addr, size, is_written, watch_reads, [&](u64 addr, u64 size) {
-            if (!keep_gpu_writes) {
-                add_upload(addr, size);
-                return;
-            }
-            VAddr next = addr;
-            gpu_modified_ranges.ForEachInRange(addr, size, [&](VAddr start, VAddr end) {
-                if (start > next) {
-                    add_upload(next, start - next);
-                }
-                next = std::max(next, end);
-            });
-            if (next < addr + size) {
-                add_upload(next, addr + size - next);
-            }
-        });
+    memory_tracker->ForEachUploadRange(device_addr, size, is_written, watch_reads,
+                                       [&](u64 addr, u64 size) {
+                                           copies.emplace_back(total_size_bytes, addr, size);
+                                           total_size_bytes += size;
+                                       });
     if (total_size_bytes > MaxUploadPartBytes) {
         // A staging buffer the size of a gigabyte upload can fail to allocate when other
         // programs hold video memory, which ended the game. Upload such ranges a part at a time.
