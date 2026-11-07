@@ -24,6 +24,8 @@
 #include "emulator.h"
 
 #ifdef _WIN32
+#include <csignal>
+#include <cstdlib>
 #include <windows.h>
 static constexpr DWORD MS_VC_EXCEPTION = 0x406D1388;
 static constexpr DWORD MSVC_CPP_EXCEPTION = 0xE06D7363;
@@ -189,7 +191,8 @@ void WriteCrashDump(void* exception_pointers) {
     static constexpr int DumpType = 0x00000001 /* MiniDumpWithDataSegs */ |
                                     0x00000040 /* MiniDumpWithIndirectlyReferencedMemory */ |
                                     0x00000020 /* MiniDumpWithUnloadedModules */ |
-                                    0x00001000 /* MiniDumpWithThreadInfo */;
+                                    0x00001000 /* MiniDumpWithThreadInfo */ |
+                                    0x00000800 /* MiniDumpWithFullMemoryInfo */;
     // Written from a helper thread, as dbghelp recommends: dumping the faulting thread from its
     // own exception handler can hang. Give up after a while rather than keep the game frozen.
     struct DumpJob {
@@ -368,6 +371,63 @@ static void LogCppException(const EXCEPTION_POINTERS& exception) {
     LogBacktrace("C++ exception", *exception.ContextRecord);
 }
 
+
+/// Exception codes that always end the process. The red-zone patching mode used to report only
+/// access violations and illegal instructions, so any of these left no log tail and no dump.
+static bool IsAlwaysFatalCode(DWORD code) noexcept {
+    switch (code) {
+    case 0xC00000FD: // STATUS_STACK_OVERFLOW
+    case 0xC0000409: // STATUS_STACK_BUFFER_OVERRUN (fast fail)
+    case 0xC0000374: // STATUS_HEAP_CORRUPTION
+    case 0xC0000602: // STATUS_FAIL_FAST_EXCEPTION
+    case 0xC0000025: // STATUS_NONCONTINUABLE_EXCEPTION
+    case 0xC0000026: // STATUS_INVALID_DISPOSITION
+        return true;
+    default:
+        return false;
+    }
+}
+
+/// Logs a critical line (which drains and flushes the log queue and file) and writes the dump
+/// for a crash that has no EXCEPTION_POINTERS of its own: abort(), a CRT invalid parameter or
+/// a pure virtual call. The current thread's context is captured so the dump points at the caller.
+static void DumpForCurrentThread(const char* reason) noexcept {
+    LOG_CRITICAL(Debug, "Fatal error: {}", reason);
+    CONTEXT context{};
+    RtlCaptureContext(&context);
+    EXCEPTION_RECORD record{};
+    record.ExceptionCode = 0xE0534F31; // custom: fatal error without an exception
+    record.ExceptionAddress = reinterpret_cast<PVOID>(context.Rip);
+    EXCEPTION_POINTERS pointers{&record, &context};
+    WriteCrashDump(&pointers);
+}
+
+static LONG WINAPI LastChanceFilter(EXCEPTION_POINTERS* pExp) noexcept {
+    DWORD code = 0;
+    const void* address = nullptr;
+    if (pExp != nullptr && pExp->ExceptionRecord != nullptr) {
+        code = pExp->ExceptionRecord->ExceptionCode;
+        address = pExp->ExceptionRecord->ExceptionAddress;
+    }
+    LOG_CRITICAL(Debug, "Unhandled exception (last chance) code {:#x} at {}", code,
+                 fmt::ptr(address));
+    WriteCrashDump(pExp);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+static void AbortSignalHandler(int) noexcept {
+    DumpForCurrentThread("abort() / std::terminate");
+}
+
+static void InvalidParameterHandler(const wchar_t*, const wchar_t*, const wchar_t*, unsigned int,
+                                    uintptr_t) noexcept {
+    DumpForCurrentThread("CRT invalid parameter");
+}
+
+static void PureCallHandler() noexcept {
+    DumpForCurrentThread("pure virtual function call");
+}
+
 static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
     using namespace Libraries::Kernel;
     const auto* signals = Signals::Instance();
@@ -493,8 +553,13 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
     }
 
     const bool report_unhandled =
-        use_static_windows_guest_red_zone_protection ? static_protection_exception : true;
+        (use_static_windows_guest_red_zone_protection ? static_protection_exception : true) ||
+        IsAlwaysFatalCode(code);
     if (report_unhandled) {
+        if (code == 0xC00000FD) {
+            // Little stack is left, write the dump (from its own thread) before anything else.
+            WriteCrashDump(pExp);
+        }
         LOG_CRITICAL(Debug, "Unhandled Exception code {:#x} at {}", code, address);
         if (pExp != nullptr && pExp->ExceptionRecord != nullptr && pExp->ContextRecord != nullptr) {
             // Extended crash diagnostics: access type, fault address, registers, code bytes and
@@ -814,6 +879,12 @@ SignalDispatch::SignalDispatch() {
 #if defined(_WIN32)
     ASSERT_MSG(handle = AddVectoredExceptionHandler(0, SignalHandler),
                "Failed to register exception handler.");
+    // Catch what the vectored handler does not see: truly unhandled exceptions, abort() and
+    // std::terminate, CRT invalid parameter and pure virtual calls.
+    SetUnhandledExceptionFilter(LastChanceFilter);
+    std::signal(SIGABRT, AbortSignalHandler);
+    _set_invalid_parameter_handler(InvalidParameterHandler);
+    _set_purecall_handler(PureCallHandler);
 #else
     struct sigaction action {};
     action.sa_sigaction = SignalHandler;
