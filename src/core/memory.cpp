@@ -897,13 +897,16 @@ s32 MemoryManager::PoolDecommit(VAddr virtual_addr, u64 size) {
                 u64 size_in_dma =
                     std::min<u64>(size_to_free, phys_handle->second.size - dma_offset);
 
-                // Create a new dmem area reflecting the pooled region
-                const auto new_dmem_handle = CarvePhysArea(dmem_map, phys_addr, size_in_dma);
-                auto& new_dmem_area = new_dmem_handle->second;
-                new_dmem_area.dma_type = PhysicalMemoryType::Pooled;
+                // Create new dmem areas reflecting the pooled region. The range can cover
+                // several dmem areas, carve each part of it.
+                ForEachCarvedPhysPart(
+                    dmem_map, phys_addr, size_in_dma,
+                    [&](PAddr, u64, PhysHandle new_dmem_handle) {
+                        new_dmem_handle->second.dma_type = PhysicalMemoryType::Pooled;
 
-                // Coalesce with nearby direct memory areas.
-                MergeAdjacent(dmem_map, new_dmem_handle);
+                        // Coalesce with nearby direct memory areas.
+                        MergeAdjacent(dmem_map, new_dmem_handle);
+                    });
 
                 // Increment loop
                 size_to_free -= size_in_dma;
@@ -982,20 +985,25 @@ u64 MemoryManager::UnmapBytesFromEntry(VAddr virtual_addr, VirtualMemoryArea vma
 
             // Create a new dmem area reflecting the pooled region
             if (vma_type == VMAType::Direct) {
-                const auto new_dmem_handle = CarvePhysArea(dmem_map, phys_addr, size_in_dma);
-                auto& new_dmem_area = new_dmem_handle->second;
-                new_dmem_area.dma_type = PhysicalMemoryType::Allocated;
+                // The range can cover several dmem areas, carve each part of it.
+                ForEachCarvedPhysPart(
+                    dmem_map, phys_addr, size_in_dma,
+                    [&](PAddr, u64, PhysHandle new_dmem_handle) {
+                        new_dmem_handle->second.dma_type = PhysicalMemoryType::Allocated;
 
-                // Coalesce with nearby direct memory areas.
-                MergeAdjacent(dmem_map, new_dmem_handle);
+                        // Coalesce with nearby direct memory areas.
+                        MergeAdjacent(dmem_map, new_dmem_handle);
+                    });
             } else if (vma_type == VMAType::Flexible) {
-                // Update fmem_map
-                const auto new_fmem_handle = CarvePhysArea(fmem_map, phys_addr, size_in_dma);
-                auto& new_fmem_area = new_fmem_handle->second;
-                new_fmem_area.dma_type = PhysicalMemoryType::Free;
+                // Update fmem_map, the range can cover several flexible areas.
+                ForEachCarvedPhysPart(
+                    fmem_map, phys_addr, size_in_dma,
+                    [&](PAddr, u64, PhysHandle new_fmem_handle) {
+                        new_fmem_handle->second.dma_type = PhysicalMemoryType::Free;
 
-                // Coalesce with nearby flexible memory areas.
-                MergeAdjacent(fmem_map, new_fmem_handle);
+                        // Coalesce with nearby flexible memory areas.
+                        MergeAdjacent(fmem_map, new_fmem_handle);
+                    });
 
                 // Zero out the old memory data
                 const auto unmap_hardware_address = impl.BackingBase() + phys_addr;

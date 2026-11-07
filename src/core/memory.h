@@ -3,10 +3,13 @@
 
 #pragma once
 
+#include <algorithm>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <string>
 #include <string_view>
+#include "common/assert.h"
 #include "common/enum.h"
 #include "common/shared_first_mutex.h"
 #include "common/singleton.h"
@@ -412,6 +415,21 @@ private:
     VMAHandle CarveVMA(VAddr virtual_addr, u64 size);
 
     PhysHandle CarvePhysArea(PhysMap& map, PAddr addr, u64 size);
+
+    /// Carves [addr, addr + size) out of map one tracked area at a time and calls
+    /// func(part_addr, part_size, handle) for each part. A range recorded in a VMA can span
+    /// several tracked areas (their types can differ), so it can't be carved in one piece.
+    template <typename F>
+    void ForEachCarvedPhysPart(PhysMap& map, PAddr addr, u64 size, F&& func) {
+        while (size > 0) {
+            const auto area = std::prev(map.upper_bound(addr));
+            const u64 part = std::min<u64>(size, area->second.GetEnd() - addr);
+            ASSERT_MSG(part > 0, "Physical range is not covered by the map");
+            func(addr, part, CarvePhysArea(map, addr, part));
+            addr += part;
+            size -= part;
+        }
+    }
 
     VMAHandle Split(VMAHandle vma_handle, u64 offset_in_vma);
 
