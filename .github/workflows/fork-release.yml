@@ -5,9 +5,9 @@ on:
     paths: [.github/workflows/fork-release.yml]
 
 env:
-  RUN_ID: "41337194147"
-  TAG: dlss5-2026-11-01b
-  TARGET: a50102d2ab9523cfbac29cdfa3cc1ab0c5cffaf6
+  RUN_ID: "42367629285"
+  TAG: allgames-2026-11-07
+  TARGET: 525006342c21390d4099ac049e96bb359bb32967
 
 permissions:
   contents: write
@@ -30,35 +30,36 @@ jobs:
       - name: Write release notes
         run: |
           cat > notes.md <<'EOF'
-          ## DLSS5 arrives
+          ## Every game, one emulator: crash, freeze and DLSS5 fixes
 
-          Three new ways to make your games look sharper and feel smoother, each a single key press away. Everything lives in **Settings → Graphics**, and everything is off until you turn it on.
+          This release fixes the underlying emulation behind crashes and freezes in several games instead of adding per-game workarounds, makes DLSS5 steady in every game, and redesigns the launcher.
 
-          ### Hotkeys in game
-          | Key | What it does |
-          | :---: | :--- |
-          | `1` | **Frame Generation**: more frames, smoother motion |
-          | `2` | **DLSS5**: sharper, cleaner image |
-          | `3` | **Boost**: extra performance when you need it |
+          ### Game fixes
+          - **NHL 24:** fixed the freeze where the GPU stopped for good. A readback finishing in the background marked memory the GPU had just rewritten as clean, so a later copy fed stale bytes to the game as dispatch sizes (billions of workgroups). Memory use also dropped from over 20 GB to about 4 GB.
+          - **Marvel's Spider-Man: Miles Morales:** boots on a regular PS4 setup. The emulator reported a 5120x2880 TV to a PS4 that can only output 1080p, and the game took a 4K path that does not exist on that console. The reported output now never exceeds what the console can display: 1080p on PS4, 2160p on PS4 Pro.
+          - **Red Dead Redemption 2:** fixed two crashes, one while tessellation shaders were still compiling and one when changing the memory type of a mapping that spans several memory areas.
+          - **EA SPORTS FC 27:** compute shaders that use jump tables (switch statements) now translate instead of being skipped, which fixes scrambled sequences. The picture no longer turns red and overexposed now and then: wave64 operations inside loops are only rewritten when every wave runs the loop the same number of times.
+          - **UFC 4:** fixed a freeze after flips.
 
-          Each key switches its feature on or off, and a small notice tells you the new state.
+          ### DLSS5
+          - Runs on the game's scene before post-processing and the HUD, so text and menus stay crisp, with no halos around players or text.
+          - Finds the scene reliably in every game, including games that render with MSAA (UFC 4) and dynamic resolution (FC 27). This removes the flicker and the frame-rate drop in fullscreen.
+          - Choose the network in Settings: Default, Full Quality or Fast. Settings changes apply while the game runs.
 
-          ### Which settings should I use?
-          - **Any card:** switch on only what you like. DLSS5 is the one for image quality, Frame Generation the one for fluid motion.
-          - **RTX 20 and 30 series:** we recommend turning on **Boost**, **Frame Generation** and **Auto Quality** together. Auto Quality picks the render resolution for you, so you get a smooth, steady experience without tuning anything.
-          - All of these options are in **Settings → Graphics**. The DLSS5 group sits under Graphics Device, and Auto Quality is in the Graphics tab of the launcher.
+          ### Launcher
+          - Redesigned settings with a sidebar, search and shorter descriptions, and a refreshed main window.
+          - The log section lists every log class and level, so logs can be turned on or off without a new build.
+          - The Null GPU option was removed.
 
-          ### Also in this release
-          - **The Order: 1886:** the black bands and scrambled blocks that could appear over the title screen come from images sharing memory with a different layout. The emulator now carries a render result between such images only when their layout really matches. This is a fix based on the log and the code, so tell us how it looks on your machine.
-          - **Auto Quality:** ticking it in the launcher now turns DLSS5 Boost on for you (it only works with Boost), instead of staying greyed out until Boost was ticked.
-          - **Defaults:** DLSS5 options start off, brightness and contrast start at 100.
-          - **Alt+Enter** switches the window to borderless fullscreen when the game runs in a window.
-          - **Frame counter:** the FPS counter shows the rate you actually see while frame generation runs.
+          ### Other improvements
+          - Much faster boot, including when running a PKG directly (FC 27: 46 s down to 11 s).
+          - PS4 Pro mode: textures in the Pro's alternate memory layout are read correctly, and Pro-only shader instructions decode.
+          - A game's own config file can choose its readback settings.
+          - Crash logs now list code addresses for every game.
 
           ### Notes
-          - Requirements: Windows 64-bit and a GPU with Vulkan 1.3.
+          - Requirements: Windows 64-bit and a GPU with Vulkan 1.3. DLSS5 needs an NVIDIA RTX card.
           - Extract the zip and run `shadPS4QtLauncher.exe` (or `shadPS4.exe` directly). Existing saves and settings stay untouched.
-
           EOF
           sed -i 's/^          //' notes.md
 
@@ -69,7 +70,7 @@ jobs:
           if ! gh release create "${{ env.TAG }}" shadPS4-win64-${{ env.TAG }}.zip \
             --repo ${{ github.repository }} \
             --target ${{ env.TARGET }} \
-            --title "DLSS5 arrives: frame generation, Boost and Auto Quality, one key each (${{ env.TAG }})" \
+            --title "Crash, freeze and DLSS5 fixes for every game (${{ env.TAG }})" \
             --notes-file notes.md \
             --latest 2> err.txt; then
             gh api repos/${{ github.repository }}/commits/${{ github.sha }}/comments -f body="release failed: $(tail -c 1500 err.txt)"
