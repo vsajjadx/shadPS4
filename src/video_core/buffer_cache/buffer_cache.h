@@ -131,6 +131,10 @@ public:
     /// Return true when a region is modified from the GPU
     [[nodiscard]] bool IsRegionGpuModified(VAddr addr, size_t size);
 
+    /// Whether the GPU wrote any byte of the range since it was last downloaded. Finer than the
+    /// pages IsRegionGpuModified looks at, which a readback may already have unmarked.
+    [[nodiscard]] bool IsRangeGpuWritten(VAddr addr, size_t size) const;
+
     /// Mark region as modified from the GPU
     void MarkRegionAsGpuModified(VAddr addr, size_t size);
 

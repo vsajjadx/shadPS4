@@ -263,15 +263,8 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
                              copies = std::move(copies), seq = readback_write_seq] {
         download.Invalidate();
         // The GPU may have written a range again after an asynchronous download of it was
-        // recorded; that range keeps its newer GPU data. Recording the download took the range
-        // out of the GPU modified ranges, so a later GPU write put it back, on any page of the
-        // widened download window.
+        // recorded; that range keeps its newer GPU data.
         const auto written_since = [&](VAddr addr, u64 bytes) {
-            bool written = false;
-            gpu_modified_ranges.ForEachInRange(addr, bytes, [&](VAddr, VAddr) { written = true; });
-            if (written) {
-                return true;
-            }
             for (u64 page = addr >> ReadbackPageBits;
                  page <= (addr + bytes - 1) >> ReadbackPageBits; ++page) {
                 const auto it = readback_page_write_seq.find(page);
@@ -318,7 +311,7 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     const bool skip_stream_buffer = True(flags & ObtainBufferFlags::IgnoreStreamBuffer);
     // For read-only buffers use device local stream buffer to reduce renderpass breaks.
     if (!is_written && !skip_stream_buffer && size <= STREAM_THRESHOLD &&
-        !IsRegionGpuModified(device_addr, size)) {
+        !IsRegionGpuModified(device_addr, size) && !IsRangeGpuWritten(device_addr, size)) {
         const auto [data, offset] = stream_buffer.Map(size, instance.UniformMinAlignment());
         memory->CopySparseMemory(device_addr, data, size);
         stream_buffer.Commit();
@@ -359,6 +352,12 @@ bool BufferCache::IsRegionCpuModified(VAddr addr, size_t size) {
 
 bool BufferCache::IsRegionGpuModified(VAddr addr, size_t size) {
     return memory_tracker->IsRegionGpuModified(addr, size);
+}
+
+bool BufferCache::IsRangeGpuWritten(VAddr addr, size_t size) const {
+    bool written = false;
+    gpu_modified_ranges.ForEachInRange(addr, size, [&](VAddr, VAddr) { written = true; });
+    return written;
 }
 
 void BufferCache::MarkRegionAsGpuModified(VAddr addr, size_t size) {

@@ -1936,8 +1936,13 @@ void Rasterizer::FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gds
 }
 
 void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, bool src_gds) {
-    if (!dst_gds && !buffer_cache.IsRegionGpuModified(dst, num_bytes)) {
+    if (!dst_gds && !buffer_cache.IsRegionGpuModified(dst, num_bytes) &&
+        !buffer_cache.IsRangeGpuWritten(dst, num_bytes)) {
+        // An asynchronous readback can leave pages unmarked while the GPU wrote them again
+        // (shaders writing indirect arguments that are then copied), so the written ranges are
+        // checked too before copying in guest memory.
         if (!src_gds && !buffer_cache.IsRegionGpuModified(src, num_bytes) &&
+            !buffer_cache.IsRangeGpuWritten(src, num_bytes) &&
             !texture_cache.FindImageFromRange(src, num_bytes)) {
             // Both buffers were not transferred to GPU yet. Can safely copy in host memory.
             std::memcpy(std::bit_cast<void*>(dst), std::bit_cast<void*>(src), num_bytes);
