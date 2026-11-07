@@ -553,8 +553,13 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
                         break;
                     }
                     const u64 v = *reinterpret_cast<const u64*>(slot_addr);
-                    if (v >= 0x5790000ull && v < 0xa3e8000ull) {
-                        frames += fmt::format("{:#x}(+{:#x}) ", v, v - 0x5790000ull);
+                    MEMORY_BASIC_INFORMATION cbi{};
+                    constexpr DWORD Executable = PAGE_EXECUTE | PAGE_EXECUTE_READ |
+                                                 PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+                    if (v >= 0x10000ull && v < 0x10000000000ull &&
+                        VirtualQuery(reinterpret_cast<void*>(v), &cbi, sizeof(cbi)) != 0 &&
+                        cbi.State == MEM_COMMIT && (cbi.Protect & Executable)) {
+                        frames += fmt::format("{:#x} ", v);
                         found++;
                     }
                 }
