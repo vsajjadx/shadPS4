@@ -131,8 +131,6 @@ static std::vector<IR::Block*> FindUniformBlocks(const IR::Program& program) {
     std::vector<ConditionalScope> conditionals;
     std::vector<ConditionalScope> loops;
     u32 divergence_depth{};
-    // Once some threads may have left the program, the rest no longer run in step with them.
-    bool threads_left{};
     for (const IR::AbstractSyntaxNode& node : program.syntax_list) {
         switch (node.type) {
         case Type::If: {
@@ -160,13 +158,9 @@ static std::vector<IR::Block*> FindUniformBlocks(const IR::Program& program) {
             loops.pop_back();
             break;
         case Type::Block:
-            if (divergence_depth == 0 && !threads_left) {
+            if (divergence_depth == 0) {
                 blocks.push_back(node.data.block);
             }
-            break;
-        case Type::Return:
-        case Type::Unreachable:
-            threads_left |= divergence_depth > 0;
             break;
         default:
             break;
