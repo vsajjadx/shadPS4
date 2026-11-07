@@ -625,12 +625,15 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     }
     // The PS4 CPU always sees what the GPU wrote, including images rendered in linear layout, and
     // games rely on it for lighting, exposure and visibility data. Every game runs with precise
-    // and linear image readbacks so they all see coherent memory.
-    if (EmulatorSettings.GetReadbacksMode() != GpuReadbacksMode::Precise) {
+    // and linear image readbacks so they all see coherent memory, unless its own config says
+    // otherwise.
+    if (!EmulatorSettings.IsReadbacksGameSpecific() &&
+        EmulatorSettings.GetReadbacksMode() != GpuReadbacksMode::Precise) {
         EmulatorSettings.SetReadbacksMode(GpuReadbacksMode::Precise, true);
         LOG_INFO(Config, "GPU readbacks forced to Precise");
     }
-    if (!EmulatorSettings.IsReadbackLinearImagesEnabled()) {
+    if (!EmulatorSettings.IsReadbacksGameSpecific() &&
+        !EmulatorSettings.IsReadbackLinearImagesEnabled()) {
         EmulatorSettings.SetReadbackLinearImagesEnabled(true, true);
         LOG_INFO(Config, "Linear image readbacks forced on");
     }

@@ -838,6 +838,10 @@ public:
     SETTING_FORWARD(m_gpu, Contrast, contrast)
     SETTING_FORWARD(m_gpu, ReadbacksMode, readbacks_mode)
     SETTING_FORWARD_BOOL(m_gpu, ReadbackLinearImagesEnabled, readback_linear_images_enabled)
+    bool IsReadbacksGameSpecific() const {
+        return m_gpu.readbacks_mode.game_specific_value.has_value() ||
+               m_gpu.readback_linear_images_enabled.game_specific_value.has_value();
+    }
     SETTING_FORWARD_BOOL(m_gpu, DirectMemoryAccessEnabled, direct_memory_access_enabled)
     SETTING_FORWARD_BOOL_READONLY(m_gpu, PatchShaders, patch_shaders)
     SETTING_FORWARD_BOOL(m_gpu, UserfaultfdTracking, userfaultfd)
