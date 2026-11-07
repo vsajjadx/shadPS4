@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include "common/elf_info.h"
 #include "common/logging/classes.h"
 #include "shader_recompiler/info.h"
 #include "shader_recompiler/ir/basic_block.h"
@@ -12,31 +11,38 @@
 
 namespace Shader::Optimization {
 
+// The barriers the lowering inserts need every thread of the workgroup to reach them the same
+// number of times, so control flow around them must not depend on anything that can differ
+// between threads or waves: lane and invocation ids, exec and vcc masks, subgroup operations and
+// memory the threads load or write.
 static bool IsDivergentCondition(const IR::U1& condition) {
     if (condition.IsImmediate()) {
         return false;
     }
     const IR::Inst* const condition_inst = condition.Inst();
-    return IR::BreadthFirstSearch(condition_inst,
-                                  [](const IR::Inst* inst) -> std::optional<bool> {
-                                      switch (inst->GetOpcode()) {
-                                      case IR::Opcode::LaneId:
-                                          return true;
-                                      case IR::Opcode::GetAttributeU32:
-                                          switch (inst->Arg(0).Attribute()) {
-                                          case IR::Attribute::LocalInvocationId:
-                                          case IR::Attribute::LocalInvocationIndex:
-                                          case IR::Attribute::GlobalInvocationId:
-                                              return true;
-                                          default:
-                                              break;
-                                          }
-                                          break;
-                                      default:
-                                          break;
-                                      }
-                                      return std::nullopt;
-                                  })
+    return IR::BreadthFirstSearch(
+               condition_inst,
+               [](const IR::Inst* inst) -> std::optional<bool> {
+                   const IR::Opcode opcode = inst->GetOpcode();
+                   if (opcode == IR::Opcode::GetAttributeU32) {
+                       if (inst->Arg(0).Attribute() != IR::Attribute::WorkgroupId) {
+                           return true;
+                       }
+                       return std::nullopt;
+                   }
+                   if (opcode == IR::Opcode::ReadConstBuffer) {
+                       return std::nullopt;
+                   }
+                   const std::string_view name = IR::NameOf(opcode);
+                   for (const std::string_view varying :
+                        {"Lane", "Ballot", "Shuffle", "Quad", "GroupAny", "Shared", "Buffer",
+                         "Image", "Attribute", "Exec", "Vcc", "ThreadBit"}) {
+                       if (name.find(varying) != std::string_view::npos) {
+                           return true;
+                       }
+                   }
+                   return std::nullopt;
+               })
         .value_or(false);
 }
 
@@ -48,22 +54,32 @@ static std::vector<IR::Block*> FindUniformBlocks(const IR::Program& program) {
         bool divergent;
     };
 
-    // nhlport: a loop whose every exit condition (Break / Repeat) is uniform runs the same
-    // number of iterations on all threads of the workgroup, so blocks inside it may still host
-    // the barriers the wave64 lowering inserts. Only loops with a divergent exit make their body
-    // non-uniform. NHL 24's HiZ reduction shader loops over a constant-buffer count and combines
-    // the two wave halves with ReadLane 32 inside that loop; without this the lowering was
-    // skipped and the depth pyramid (and with it GPU occlusion culling) was garbage.
+    // A loop whose every exit condition is uniform runs the same number of iterations on all
+    // threads of the workgroup, so its body may still host the barriers.
     std::vector<const IR::Block*> divergent_loops;
     {
         std::vector<const IR::Block*> loop_stack;
+        std::vector<bool> if_stack;
+        u32 divergent_ifs{};
         for (const IR::AbstractSyntaxNode& node : program.syntax_list) {
             switch (node.type) {
+            case Type::If:
+                if_stack.push_back(IsDivergentCondition(node.data.if_node.cond));
+                divergent_ifs += static_cast<u32>(if_stack.back());
+                break;
+            case Type::EndIf:
+                if (if_stack.empty()) {
+                    return {};
+                }
+                divergent_ifs -= static_cast<u32>(if_stack.back());
+                if_stack.pop_back();
+                break;
             case Type::Loop:
                 loop_stack.push_back(node.data.loop.merge);
                 break;
             case Type::Break:
-                if (!loop_stack.empty() && IsDivergentCondition(node.data.break_node.cond)) {
+                if (!loop_stack.empty() &&
+                    (divergent_ifs > 0 || IsDivergentCondition(node.data.break_node.cond))) {
                     divergent_loops.push_back(loop_stack.back());
                 }
                 break;
@@ -89,6 +105,8 @@ static std::vector<IR::Block*> FindUniformBlocks(const IR::Program& program) {
     std::vector<ConditionalScope> conditionals;
     std::vector<ConditionalScope> loops;
     u32 divergence_depth{};
+    // Once some threads may have left the program, the rest no longer run in step with them.
+    bool threads_left{};
     for (const IR::AbstractSyntaxNode& node : program.syntax_list) {
         switch (node.type) {
         case Type::If: {
@@ -103,12 +121,7 @@ static std::vector<IR::Block*> FindUniformBlocks(const IR::Program& program) {
             conditionals.pop_back();
             break;
         case Type::Loop: {
-            // Only NHL 24 is known to need uniform loop bodies; other games keep treating every
-            // loop body as divergent, as before.
-            static const bool relax_uniform_loops =
-                Common::ElfInfo::Instance().GameSerial() == "CUSA37933";
-            const bool divergent = !relax_uniform_loops ||
-                                   std::ranges::contains(divergent_loops, node.data.loop.merge);
+            const bool divergent = std::ranges::contains(divergent_loops, node.data.loop.merge);
             loops.push_back({node.data.loop.merge, divergent});
             divergence_depth += static_cast<u32>(divergent);
             break;
@@ -121,9 +134,13 @@ static std::vector<IR::Block*> FindUniformBlocks(const IR::Program& program) {
             loops.pop_back();
             break;
         case Type::Block:
-            if (divergence_depth == 0) {
+            if (divergence_depth == 0 && !threads_left) {
                 blocks.push_back(node.data.block);
             }
+            break;
+        case Type::Return:
+        case Type::Unreachable:
+            threads_left |= divergence_depth > 0;
             break;
         default:
             break;
@@ -217,7 +234,8 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
                 ir.IAdd(ir.Imm32(scratch_base), ir.ShiftLeftLogical(subgroup_id, ir.Imm32(2u)));
             ir.WriteShared(32, mask_low, offset);
             ir.Barrier();
-            const IR::U64 mask = IR::U64{ir.LoadShared(64, false, offset)};
+            const IR::U64 mask =
+                IR::U64{ir.LoadShared(64, false, ir.BitwiseAnd(offset, ir.Imm32(~7u)))};
             ir.Barrier();
             inst->ReplaceUsesWithAndRemove(mask);
         } else if (inst->GetOpcode() == IR::Opcode::ReadLane) {
