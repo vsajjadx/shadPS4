@@ -498,6 +498,17 @@ public:
     /// Logs the cause of a lost device as reported by the driver.
     void LogDeviceFault() const;
 
+    /// True when VK_NV_device_diagnostic_checkpoints is enabled (NVIDIA).
+    bool HasCheckpoints() const {
+        return diagnostic_checkpoints;
+    }
+
+    /// Registers a command (draw/dispatch) and returns the id to pass to vkCmdSetCheckpointNV.
+    u64 NoteCheckpoint(const char* kind, u64 hash_a, u64 hash_b, u32 x, u32 y, u32 z) const;
+
+    /// Logs the last GPU checkpoints reached; call while the GPU appears stuck.
+    void LogHangCheckpoints() const;
+
     /// Returns the total memory budget available to the device.
     [[nodiscard]] u64 GetTotalMemoryBudget() const {
         return total_memory_budget;
@@ -583,6 +594,7 @@ private:
     bool supports_memory_budget{};
     bool pageable_device_local_memory{};
     bool device_fault{};
+    bool diagnostic_checkpoints{};
     bool supports_block_texel_view{};
     u64 total_memory_budget{};
     std::vector<size_t> valid_heaps;

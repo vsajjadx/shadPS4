@@ -14,6 +14,11 @@
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
+#include "video_core/renderer_vulkan/vk_scheduler.h"
+
+#include <array>
+#include <atomic>
+#include <mutex>
 
 #include <vk_mem_alloc.h>
 
@@ -384,6 +389,8 @@ bool Instance::CreateDevice() {
                 .get<vk::PhysicalDeviceFaultFeaturesEXT>()
                 .deviceFault;
     }
+    diagnostic_checkpoints = add_extension(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
+    LOG_INFO(Render_Vulkan, "- deviceDiagnosticCheckpoints: {}", diagnostic_checkpoints);
     shader_clock = add_extension(VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
     if (shader_clock) {
         shader_clock_features = feature_chain.get<vk::PhysicalDeviceShaderClockFeaturesKHR>();
@@ -892,6 +899,82 @@ void Instance::LogDeviceFault() const {
         const auto& info = vendor_infos[i];
         LOG_CRITICAL(Render_Vulkan, "- vendor fault {:#x} (data {:#x}): {}", info.vendorFaultCode,
                      info.vendorFaultData, info.description.data());
+    }
+}
+
+namespace {
+// Ring of recently recorded commands, indexed by checkpoint id. Diagnostic only.
+struct CheckpointEntry {
+    std::atomic<u64> serial{0};
+    const char* kind{};
+    u64 hash_a{};
+    u64 hash_b{};
+    u32 x{}, y{}, z{};
+};
+constexpr u64 CheckpointRingSize = 16384;
+std::array<CheckpointEntry, CheckpointRingSize> checkpoint_ring;
+std::atomic<u64> next_checkpoint{1};
+
+void DescribeCheckpoint(u64 id, const char* tag) {
+    if (id == 0) {
+        return;
+    }
+    const auto& e = checkpoint_ring[id % CheckpointRingSize];
+    if (e.serial.load(std::memory_order_acquire) != id) {
+        LOG_ERROR(Render_Vulkan, "  {} command #{}: (entry overwritten)", tag, id);
+        return;
+    }
+    LOG_ERROR(Render_Vulkan, "  {} command #{}: {} shader(s) {:#x} {:#x} dim {}x{}x{}", tag, id,
+              e.kind, e.hash_a, e.hash_b, e.x, e.y, e.z);
+}
+} // namespace
+
+u64 Instance::NoteCheckpoint(const char* kind, u64 hash_a, u64 hash_b, u32 x, u32 y,
+                             u32 z) const {
+    const u64 id = next_checkpoint.fetch_add(1, std::memory_order_relaxed);
+    auto& e = checkpoint_ring[id % CheckpointRingSize];
+    e.kind = kind;
+    e.hash_a = hash_a;
+    e.hash_b = hash_b;
+    e.x = x;
+    e.y = y;
+    e.z = z;
+    e.serial.store(id, std::memory_order_release);
+    return id;
+}
+
+void Instance::LogHangCheckpoints() const {
+    if (!diagnostic_checkpoints) {
+        return;
+    }
+    // vkGetQueueCheckpointDataNV needs the queue externally synchronized. The process is already
+    // stalled, so fall back to an unlocked query instead of risking never logging anything.
+    std::unique_lock lk{Scheduler::submit_mutex, std::try_to_lock};
+    const auto dump = [&](vk::Queue queue, const char* name) {
+        if (!queue) {
+            return;
+        }
+        u32 count = 0;
+        queue.getCheckpointDataNV(&count, nullptr);
+        std::vector<vk::CheckpointDataNV> data(count);
+        if (count != 0) {
+            queue.getCheckpointDataNV(&count, data.data());
+            data.resize(count);
+        }
+        LOG_ERROR(Render_Vulkan,
+                  "GPU HANG CHECKPOINTS ({} queue, lock {}): {} entries. The hung command is the "
+                  "one listed as 'next' (the first command that did not finish).",
+                  name, lk.owns_lock() ? "held" : "not held", data.size());
+        for (const auto& d : data) {
+            const u64 id = reinterpret_cast<u64>(d.pCheckpointMarker);
+            LOG_ERROR(Render_Vulkan, " stage {}:", vk::to_string(d.stage));
+            DescribeCheckpoint(id, "  last reached");
+            DescribeCheckpoint(id + 1, "  next        ");
+        }
+    };
+    dump(graphics_queue, "graphics");
+    if (present_queue != graphics_queue) {
+        dump(present_queue, "present");
     }
 }
 

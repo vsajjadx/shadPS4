@@ -80,6 +80,9 @@ void Semaphore::Wait(u64 tick) {
                    vk::to_string(result));
         waited_s += 2;
         Refresh();
+        if (waited_s == 4 || (waited_s > 4 && waited_s % 30 == 0)) {
+            instance.LogHangCheckpoints();
+        }
         LOG_WARNING(Render_Vulkan,
                     "Waited {}s for GPU tick {} (gpu tick {}, next submit tick {}, thread {}){}",
                     waited_s, tick, KnownGpuTick(), CurrentTick(), Common::GetCurrentThreadName(),
