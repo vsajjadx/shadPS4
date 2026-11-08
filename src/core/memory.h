@@ -242,21 +242,25 @@ public:
     }
 
     /// Calls func(address, size, executable) for each part of the range, split where
-    /// the guest's CPU execute permission changes. Lock-free like IsValidMapping.
+    /// the guest's CPU execute permission changes. Thread stacks are never reported: host
+    /// code runs on them, and a write-protected stack page cannot even dispatch the fault
+    /// that would unprotect it. Lock-free like IsValidMapping.
     template <typename Func>
     void ForEachExecRange(VAddr virtual_addr, u64 size, Func&& func) {
         const VAddr end = virtual_addr + size;
         VAddr run_start = virtual_addr;
-        bool run_exec = false;
+        int run_kind = 0; // 0 plain, 1 executable, 2 stack (skipped)
         bool have_run = false;
         auto it = vma_map.empty() || virtual_addr < vma_map.begin()->first ? vma_map.begin()
                                                                            : FindVMA(virtual_addr);
         for (VAddr addr = virtual_addr; addr < end;) {
-            bool exec = false;
+            int kind = 0;
             VAddr next = end;
             if (it != vma_map.end() && it->second.base <= addr) {
                 const auto& vma = it->second;
-                exec = vma.IsMapped() && True(vma.prot & MemoryProt::CpuExec);
+                kind = vma.type == VMAType::Stack                                   ? 2
+                       : (vma.IsMapped() && True(vma.prot & MemoryProt::CpuExec)) ? 1
+                                                                                  : 0;
                 next = std::min<VAddr>(end, vma.base + vma.size);
                 ++it;
             } else if (it != vma_map.end()) {
@@ -265,16 +269,18 @@ public:
             if (next <= addr) {
                 next = end;
             }
-            if (have_run && exec != run_exec) {
-                func(run_start, addr - run_start, run_exec);
+            if (have_run && kind != run_kind) {
+                if (run_kind != 2) {
+                    func(run_start, addr - run_start, run_kind == 1);
+                }
                 run_start = addr;
             }
-            run_exec = exec;
+            run_kind = kind;
             have_run = true;
             addr = next;
         }
-        if (have_run) {
-            func(run_start, end - run_start, run_exec);
+        if (have_run && run_kind != 2) {
+            func(run_start, end - run_start, run_kind == 1);
         }
     }
 
