@@ -40,6 +40,10 @@ public:
 
     bool Open(const std::filesystem::path& path, std::string& error);
 
+    // Reads only the PKG header and returns its content id, without decrypting or indexing the
+    // image. Returns false if the file is not a PKG.
+    static bool PeekContentId(const std::filesystem::path& path, std::string& content_id);
+
     u32 Lookup(std::string_view path) const;
     const Node& GetNode(u32 node) const {
         return nodes[node];

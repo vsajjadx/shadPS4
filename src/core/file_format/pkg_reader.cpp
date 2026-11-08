@@ -251,6 +251,18 @@ bool PkgReader::DeriveKeys(const std::vector<Entry>& entries, bool use_rsa, Keys
     return true;
 }
 
+bool PkgReader::PeekContentId(const std::filesystem::path& path, std::string& content_id) {
+    std::ifstream pkg(path, std::ios::binary);
+    std::array<u8, 0x64> header{};
+    if (!pkg.read(reinterpret_cast<char*>(header.data()), header.size()) ||
+        BE32(header.data()) != 0x7F434E54) {
+        return false;
+    }
+    content_id.assign(reinterpret_cast<const char*>(header.data() + 0x40), 0x24);
+    content_id.resize(std::strlen(content_id.c_str()));
+    return true;
+}
+
 bool PkgReader::Open(const std::filesystem::path& path, std::string& error) {
     file.open(path, std::ios::binary);
     if (!file.is_open()) {

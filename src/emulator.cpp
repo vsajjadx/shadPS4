@@ -64,6 +64,7 @@
 #include <unistd.h>
 #endif
 #include <core/file_format/npbind.h>
+#include "core/file_format/pkg_reader.h"
 
 Frontend::WindowSDL* g_window = nullptr;
 
@@ -509,6 +510,16 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
                 if (candidate_path.lexically_normal() != archive_path.lexically_normal() &&
                     entry->is_regular_file(type_error) && !type_error &&
                     FileSys::HasPkgExtension(candidate_path)) {
+                    // Opening a PKG decrypts and indexes its whole file table. Skip the packages
+                    // of other titles by their header, otherwise a folder holding many PKGs
+                    // stalls the start of the game for a long time.
+                    std::string candidate_content_id;
+                    if (!Pkg::PkgReader::PeekContentId(candidate_path, candidate_content_id) ||
+                        (candidate_content_id.size() >= 16 &&
+                         candidate_content_id.substr(7, 9) != base_pkg->title_id)) {
+                        entry.increment(scan_error);
+                        continue;
+                    }
                     const auto candidate_backend = FileSys::OpenGameBackend(candidate_path);
                     if (const auto candidate = ReadPkgMetadata(candidate_backend); candidate &&
                         candidate->title_id == base_pkg->title_id) {
