@@ -542,6 +542,13 @@ bool PkgReader::ParsePfsTree(const std::vector<u8>& pfsc, const Keys&) {
              inode_total, inode_counter, nodes.size(), diag_dirs, nodes.size() - diag_dirs,
              diag_blocks_done, sector_map.size() > 0 ? sector_map.size() - 1 : 0, pfsc.size(),
              diag_stop, diag_end_reached);
+    // Diagnostics only: list the directories with their child counts (a PKG holds few of them).
+    size_t diag_listed = 0;
+    for (const auto& n : nodes) {
+        if (n.is_directory && diag_listed++ < 64) {
+            LOG_INFO(Kernel_Fs, "PKG dir: '{}' children={}", n.path, n.children.size());
+        }
+    }
     return found_root;
 }
 
