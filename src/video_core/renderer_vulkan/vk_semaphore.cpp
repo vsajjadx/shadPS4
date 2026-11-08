@@ -12,6 +12,9 @@
 namespace Vulkan {
 
 constexpr u64 WAIT_TIMEOUT = 2'000'000'000ULL;
+// A GPU submission that is still not done after this long will not finish: it is a hang the
+// driver did not reset (no device loss is ever reported), and waiting on only freezes the game.
+constexpr u32 GPU_HANG_ABORT_S = 30;
 
 Semaphore::Semaphore(const Instance& instance_) : instance{instance_} {
     const vk::StructureChain semaphore_chain = {
@@ -84,6 +87,13 @@ void Semaphore::Wait(u64 tick) {
                     "Waited {}s for GPU tick {} (gpu tick {}, next submit tick {}, thread {}){}",
                     waited_s, tick, KnownGpuTick(), CurrentTick(), Common::GetCurrentThreadName(),
                     tick >= CurrentTick() ? ": tick was never submitted" : "");
+        if (waited_s >= GPU_HANG_ABORT_S) {
+            // Fail like a lost device would, so the fault is logged and the crash handler writes
+            // its dump.
+            instance.LogDeviceFault();
+            UNREACHABLE_MSG("GPU hang: waited {}s for GPU tick {} (gpu tick {}, next submit tick {})",
+                            waited_s, tick, KnownGpuTick(), CurrentTick());
+        }
     }
     Refresh();
 }
