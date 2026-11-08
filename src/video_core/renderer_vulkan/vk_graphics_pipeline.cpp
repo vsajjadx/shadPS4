@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
@@ -160,6 +160,8 @@ void GraphicsPipeline::Build() {
     if (!instance.IsDepthClipEnableSupported()) {
         raster_chain.unlink<vk::PipelineRasterizationDepthClipStateCreateInfoEXT>();
     }
+
+    sdata.multisampling.pSampleMask = &key.sample_mask;
 
     const vk::PipelineViewportDepthClipControlCreateInfoEXT clip_control = {
         .negativeOneToOne = key.clip_space == AmdGpu::ClipSpace::MinusWToW,

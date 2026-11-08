@@ -68,7 +68,6 @@ public:
     void Translate(IR::Block* block, u32 pc, IR::Condition cond,
                    std::span<const GcnInst> inst_list);
     void TranslateInstruction(const GcnInst& inst);
-    void AnalyzeMovRel(std::span<const GcnInst> inst_list);
 
     // Instruction categories
     void EmitPrologue(IR::Block* first_block);
@@ -337,6 +336,7 @@ public:
     // DS
     template <typename T = IR::U32>
     void DS_OP(const GcnInst& inst, AtomicOp op, bool rtn);
+    void DS_OP_F32(const GcnInst& inst, AtomicOp op);
     void DS_WRITE(int bit_size, bool is_signed, bool is_pair, bool stride64, const GcnInst& inst);
     void DS_READ(int bit_size, bool is_signed, bool is_pair, bool stride64, const GcnInst& inst);
     void DS_SWIZZLE_B32(const GcnInst& inst);
@@ -384,12 +384,13 @@ private:
     IR::U32 GetCarryIn(const GcnInst& inst);
     void SetCarryOut(const GcnInst& inst, const IR::U1& carry);
     IR::F32 LegacyMul(const IR::F32& a, const IR::F32& b);
-    u32 GetMovRelEndVgpr(u32 base_vgprno) const;
-    IR::U32 VMovRelSHelper(u32 src_vgprno, const IR::U32 m0);
-    void VMovRelDHelper(u32 dst_vgprno, const IR::U32 src_val, const IR::U32 m0);
 
     void ExportRenderTarget(const GcnInst& inst);
     void ExportDepth(const GcnInst& inst);
+    IR::U32 AlphaToMaskLevel(const IR::F32& alpha);
+    IR::U32 AlphaToMaskLevel(const IR::U32& packed, AmdGpu::ShaderExportFormat format);
+    void ExportAlphaToMask(const IR::U32& level);
+    IR::U32 ReplicateSampleMask(const IR::U32& mask, u32 log2_samples);
     void LogMissingOpcode(const GcnInst& inst);
 
     IR::VectorReg GetScratchVgpr(u32 offset);
@@ -402,9 +403,9 @@ private:
     u32 next_vgpr_num;
     std::unordered_map<u32, IR::VectorReg> vgpr_map;
     std::array<IR::Attribute, MaxInterpVgpr> vgpr_to_interp{};
-    std::vector<u32> movrel_cluster_starts;
     FetchShaderData fetch_data{};
     bool opcode_missing = false;
+    bool valid_mask_exported = false;
     u32 pc{};
 };
 
