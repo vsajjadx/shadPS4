@@ -491,8 +491,11 @@ void PipelineCache::SaveDriverCache() {
 // again the next frame. One-off passes (light probes, exposure, full-screen effects), indirect
 // draws and light frames such as loading screens are built at once instead.
 // (After HayatoG/iss_pc BP07 and deadinside/bloodborne_pc 10baf9d.)
-constexpr float MinFrameDraws = 300.0f;
-constexpr u32 MinStreakFrames = 8;
+constexpr float MinFrameDraws = 100.0f;
+// Scenes with fewer draws than this (loading screens, videos) never skip compute passes; they use
+// the stall budget below only from this many draws up.
+constexpr float MinBudgetDraws = 40.0f;
+constexpr u32 MinStreakFrames = 3;
 constexpr size_t MaxTrackedStreaks = 4096;
 
 // The GPU thread may spend this long building pipelines and shaders itself in each window. Once
@@ -500,8 +503,10 @@ constexpr size_t MaxTrackedStreaks = 4096;
 // videos have few draws, so the draw count alone never gets them there), and the picture keeps
 // moving instead of stopping for every new pipeline.
 constexpr std::chrono::milliseconds SyncStallWindow{500};
-constexpr std::chrono::milliseconds SyncStallBudget{40};
+constexpr std::chrono::milliseconds SyncStallBudget{8};
 constexpr std::chrono::microseconds SyncStallMinCall{1000};
+// A build on the GPU thread this long is logged, so stutter can be traced to its pipeline.
+constexpr std::chrono::microseconds SlowBuildLog{5000};
 
 template <typename F>
 struct ScopeExit {
@@ -519,6 +524,20 @@ bool PipelineCache::SyncStallBudgetSpent() {
         sync_stall_spent = {};
     }
     return sync_stall_spent >= SyncStallBudget;
+}
+
+void PipelineCache::NoteGpuThreadStall(std::chrono::steady_clock::time_point start, bool async,
+                                       const char* what) {
+    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - start);
+    if (!async && elapsed >= SyncStallMinCall) {
+        sync_stall_spent += elapsed;
+    }
+    if (elapsed >= SlowBuildLog) {
+        LOG_WARNING(Render_Vulkan, "GPU thread stalled {:.1f} ms in {} ({})",
+                    static_cast<double>(elapsed.count()) / 1000.0, what,
+                    async ? "async" : "sync");
+    }
 }
 
 bool PipelineCache::IsDrawSkippable() {
@@ -554,7 +573,8 @@ bool PipelineCache::IsDispatchSkippable() {
     // rather than holding the picture: new effects keep showing up with new shaders and new
     // outputs, so no streak tells them apart from passes run once. Loading screens, with few
     // draws, still build every pass at once.
-    return DebugState.GetDrawCallsAvg() >= MinFrameDraws;
+    const float avg_draws = DebugState.GetDrawCallsAvg();
+    return avg_draws >= MinFrameDraws || (avg_draws >= MinBudgetDraws && SyncStallBudgetSpent());
 }
 
 template <typename PipelineType>
@@ -594,15 +614,8 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
     draw_skippable = EmulatorSettings.IsAsyncPipelineCompilation() && IsDrawSkippable();
     // Whatever this call builds on the GPU thread counts against the stall budget.
     const auto call_start = std::chrono::steady_clock::now();
-    const ScopeExit stall_accounting{[&] {
-        if (!draw_skippable) {
-            const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
-                std::chrono::steady_clock::now() - call_start);
-            if (elapsed >= SyncStallMinCall) {
-                sync_stall_spent += elapsed;
-            }
-        }
-    }};
+    const ScopeExit stall_accounting{
+        [&] { NoteGpuThreadStall(call_start, draw_skippable, "graphics pipeline"); }};
     if (!RefreshGraphicsKey()) {
         return nullptr;
     }
@@ -655,10 +668,14 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
 }
 
 const ComputePipeline* PipelineCache::GetComputePipeline() {
-    if (!RefreshComputeKey()) {
+    const bool skippable = EmulatorSettings.IsAsyncPipelineCompilation() && IsDispatchSkippable();
+    const auto call_start = std::chrono::steady_clock::now();
+    const ScopeExit stall_accounting{
+        [&] { NoteGpuThreadStall(call_start, skippable, "compute pipeline"); }};
+    // The shader is translated on a worker too when the dispatch can wait for it.
+    if (!RefreshComputeKey(skippable)) {
         return nullptr;
     }
-    const bool skippable = EmulatorSettings.IsAsyncPipelineCompilation() && IsDispatchSkippable();
     const auto [it, is_new] = compute_pipelines.try_emplace(compute_key);
     if (is_new) {
         const auto pipeline_hash = std::hash<ComputePipelineKey>{}(compute_key);
@@ -968,12 +985,15 @@ bool PipelineCache::RefreshGraphicsStages() {
     return true;
 }
 
-bool PipelineCache::RefreshComputeKey() {
+bool PipelineCache::RefreshComputeKey(bool async) {
+    if (EmulatorSettings.IsAsyncPipelineCompilation()) {
+        CollectTranslations();
+    }
     Shader::Backend::Bindings binding{};
     const auto& cs_pgm = liverpool->GetCsRegs();
     const auto cs_params = AmdGpu::GetParams(cs_pgm);
     std::tie(infos[0], modules[0], compute_key.value) =
-        GetProgram(HwStage::Compute, SwStage::Compute, cs_params, binding);
+        GetProgram(HwStage::Compute, SwStage::Compute, cs_params, binding, async);
     return modules[0] != nullptr;
 }
 

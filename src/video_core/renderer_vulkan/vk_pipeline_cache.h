@@ -143,10 +143,12 @@ public:
 private:
     bool RefreshGraphicsKey();
     bool RefreshGraphicsStages();
-    bool RefreshComputeKey();
+    bool RefreshComputeKey(bool async = false);
     bool IsDrawSkippable();
     bool IsDispatchSkippable();
     bool SyncStallBudgetSpent();
+    void NoteGpuThreadStall(std::chrono::steady_clock::time_point start, bool async,
+                            const char* what);
     template <typename PipelineType>
     bool AwaitPipeline(PipelineType* pipeline, bool skippable);
 
