@@ -492,9 +492,9 @@ void PipelineCache::SaveDriverCache() {
 // draws and light frames such as loading screens are built at once instead.
 // (After HayatoG/iss_pc BP07 and deadinside/bloodborne_pc 10baf9d.)
 constexpr float MinFrameDraws = 50.0f;
-// Scenes with fewer draws than this (loading screens, videos) never skip compute passes; they use
-// the stall budget below only from this many draws up.
-constexpr float MinBudgetDraws = 25.0f;
+// Compute passes are only skipped in scenes this busy (the original limit). Skipping them in
+// lighter scenes left NHL 24 with stale indirect dispatch arguments, which hung the GPU.
+constexpr float MinComputeDraws = 300.0f;
 constexpr u32 MinStreakFrames = 3;
 constexpr size_t MaxTrackedStreaks = 4096;
 
@@ -573,8 +573,7 @@ bool PipelineCache::IsDispatchSkippable() {
     // rather than holding the picture: new effects keep showing up with new shaders and new
     // outputs, so no streak tells them apart from passes run once. Loading screens, with few
     // draws, still build every pass at once.
-    const float avg_draws = DebugState.GetDrawCallsAvg();
-    return avg_draws >= MinFrameDraws || (avg_draws >= MinBudgetDraws && SyncStallBudgetSpent());
+    return DebugState.GetDrawCallsAvg() >= MinComputeDraws;
 }
 
 template <typename PipelineType>
