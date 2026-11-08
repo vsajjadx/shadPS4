@@ -17,6 +17,7 @@
 #include "common/logging/log.h"
 #include "common/memory_patcher.h"
 #include "common/path_util.h"
+#include "core/crash_monitor.h"
 #include "core/debugger.h"
 #include "core/emulator_settings.h"
 #include "core/emulator_state.h"
@@ -36,6 +37,11 @@
 
 int main(int argc, char* argv[]) {
 #ifdef _WIN32
+    // This process may be the crash monitor child of a running emulator: run only that.
+    int monitor_exit_code = 0;
+    if (Core::CrashMonitor::TryRun(monitor_exit_code)) {
+        return monitor_exit_code;
+    }
     Vulkan::Dlss5::PrepareDriver();
     SetConsoleOutputCP(CP_UTF8);
 #endif
@@ -263,6 +269,9 @@ int main(int argc, char* argv[]) {
     }
 
     auto* emulator = Common::Singleton<Core::Emulator>::Instance();
+    // Out-of-process crash monitor: writes a dump and the exit code when the emulator dies in
+    // ways its own handlers cannot see (fast fail, heap corruption, being killed).
+    Core::CrashMonitor::Spawn(Common::FS::GetUserPath(Common::FS::PathType::LogDir));
     emulator->executableName = argv[0];
     emulator->waitForDebuggerBeforeRun = waitForDebugger;
     emulator->Run(ebootPath, gameArgs, overrideRoot, mounts, env_vars, append_log);

@@ -162,11 +162,15 @@ void WriteCrashDump(void* exception_pointers) {
     if (written.test_and_set()) {
         return;
     }
+    // MINIDUMP_EXCEPTION_INFORMATION is declared with pack(4) in dbghelp.h: the pointer sits at
+    // offset 4, not 8. A naturally aligned copy makes dbghelp read a garbage pointer.
+#pragma pack(push, 4)
     struct DumpExceptionInfo {
         DWORD thread_id;
         EXCEPTION_POINTERS* pointers;
         BOOL client_pointers;
     };
+#pragma pack(pop)
     using MiniDumpWriteDumpFn = BOOL(WINAPI*)(HANDLE, DWORD, HANDLE, int, void*, void*, void*);
     const HMODULE dbghelp = LoadLibraryW(L"dbghelp.dll");
     const auto write_dump =

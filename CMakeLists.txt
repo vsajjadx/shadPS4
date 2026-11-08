@@ -1046,6 +1046,8 @@ set(CORE src/core/aerolib/stubs.cpp
          src/core/module.cpp
          src/core/module.h
          src/core/platform.h
+         src/core/crash_monitor.cpp
+         src/core/crash_monitor.h
          src/core/signals.cpp
          src/core/signals.h
          src/core/guest_fault_recovery.cpp
