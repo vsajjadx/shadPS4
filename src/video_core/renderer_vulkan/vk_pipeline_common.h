@@ -55,6 +55,13 @@ public:
         return *stages[u32(stage)];
     }
 
+    /// Shader hash of a stage, or 0 when the pipeline has no such stage (e.g. a depth-only draw
+    /// has no fragment shader). Unlike GetStage this never dereferences a missing stage.
+    u64 GetStageHash(Shader::SwStage stage) const noexcept {
+        const Shader::Info* info = stages[u32(stage)];
+        return info ? info->pgm_hash : 0;
+    }
+
     bool IsCompute() const {
         return is_compute;
     }

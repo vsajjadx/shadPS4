@@ -258,7 +258,8 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline->Handle());
     if (instance.HasCheckpoints()) {
         cmdbuf.setCheckpointNV(reinterpret_cast<const void*>(instance.NoteCheckpoint(
-            "draw", vs_info.pgm_hash, pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash,
+            "draw", pipeline->GetStageHash(Shader::SwStage::Vertex),
+            pipeline->GetStageHash(Shader::SwStage::Fragment),
             regs.num_indices, regs.num_instances.NumInstances(), 0)));
     }
 
@@ -335,8 +336,8 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline->Handle());
     if (instance.HasCheckpoints()) {
         cmdbuf.setCheckpointNV(reinterpret_cast<const void*>(instance.NoteCheckpoint(
-            "draw-indirect", pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash,
-            pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash, max_count, 0, 0)));
+            "draw-indirect", pipeline->GetStageHash(Shader::SwStage::Vertex),
+            pipeline->GetStageHash(Shader::SwStage::Fragment), max_count, 0, 0)));
     }
 
     if (is_indexed) {
@@ -405,7 +406,7 @@ void Rasterizer::DispatchDirect() {
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline->Handle());
         if (instance.HasCheckpoints()) {
             cmdbuf.setCheckpointNV(reinterpret_cast<const void*>(instance.NoteCheckpoint(
-                "dispatch", cs.pgm_hash, 0, cs_program.dim_x, cs_program.dim_y, cs_program.dim_z)));
+                "dispatch", pipeline->GetStageHash(Shader::SwStage::Compute), 0, cs_program.dim_x, cs_program.dim_y, cs_program.dim_z)));
         }
         cmdbuf.dispatch(cs_program.dim_x, cs_program.dim_y, cs_program.dim_z);
         DebugState.IncDispatch();
@@ -463,8 +464,7 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline->Handle());
     if (instance.HasCheckpoints()) {
         cmdbuf.setCheckpointNV(reinterpret_cast<const void*>(instance.NoteCheckpoint(
-            "dispatch-indirect", pipeline->GetStage(Shader::SwStage::Compute).pgm_hash, 0, 0, 0,
-            0)));
+            "dispatch-indirect", pipeline->GetStageHash(Shader::SwStage::Compute), 0, 0, 0, 0)));
     }
     cmdbuf.dispatchIndirect(buffer->Handle(), base);
     DebugState.IncDispatch();
