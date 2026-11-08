@@ -146,6 +146,7 @@ private:
     bool RefreshComputeKey();
     bool IsDrawSkippable();
     bool IsDispatchSkippable();
+    bool SyncStallBudgetSpent();
     template <typename PipelineType>
     bool AwaitPipeline(PipelineType* pipeline, bool skippable);
 
@@ -233,6 +234,8 @@ private:
     tsl::robin_map<u64, std::deque<std::shared_ptr<PendingTranslation>>> pending_translations;
     std::chrono::steady_clock::time_point pending_wait_window_start{};
     std::chrono::microseconds pending_wait_spent{};
+    std::chrono::steady_clock::time_point sync_stall_window_start{};
+    std::chrono::microseconds sync_stall_spent{};
     // Declared last so the workers finish before the pipelines they build are destroyed.
     PipelineCompileWorkers compile_workers;
 };

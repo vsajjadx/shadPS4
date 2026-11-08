@@ -495,6 +495,32 @@ constexpr float MinFrameDraws = 300.0f;
 constexpr u32 MinStreakFrames = 8;
 constexpr size_t MaxTrackedStreaks = 4096;
 
+// The GPU thread may spend this long building pipelines and shaders itself in each window. Once
+// the budget is gone, repeated passes are built on the workers like in a busy scene (menus and
+// videos have few draws, so the draw count alone never gets them there), and the picture keeps
+// moving instead of stopping for every new pipeline.
+constexpr std::chrono::milliseconds SyncStallWindow{500};
+constexpr std::chrono::milliseconds SyncStallBudget{40};
+constexpr std::chrono::microseconds SyncStallMinCall{1000};
+
+template <typename F>
+struct ScopeExit {
+    explicit ScopeExit(F&& func_) : func{std::move(func_)} {}
+    ~ScopeExit() {
+        func();
+    }
+    F func;
+};
+
+bool PipelineCache::SyncStallBudgetSpent() {
+    const auto now = std::chrono::steady_clock::now();
+    if (now - sync_stall_window_start > SyncStallWindow) {
+        sync_stall_window_start = now;
+        sync_stall_spent = {};
+    }
+    return sync_stall_spent >= SyncStallBudget;
+}
+
 bool PipelineCache::IsDrawSkippable() {
     constexpr u32 MinIndices = 12;
 
@@ -519,7 +545,8 @@ bool PipelineCache::IsDrawSkippable() {
     streak.last_frame = frame;
 
     return !draw_indirect_params.is_indirect && regs.num_indices > MinIndices &&
-           DebugState.GetDrawCallsAvg() >= MinFrameDraws && streak.frames >= MinStreakFrames;
+           streak.frames >= MinStreakFrames &&
+           (DebugState.GetDrawCallsAvg() >= MinFrameDraws || SyncStallBudgetSpent());
 }
 
 bool PipelineCache::IsDispatchSkippable() {
@@ -565,6 +592,17 @@ bool PipelineCache::AwaitPipeline(PipelineType* pipeline, bool skippable) {
 const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectParams params) {
     draw_indirect_params = params;
     draw_skippable = EmulatorSettings.IsAsyncPipelineCompilation() && IsDrawSkippable();
+    // Whatever this call builds on the GPU thread counts against the stall budget.
+    const auto call_start = std::chrono::steady_clock::now();
+    const ScopeExit stall_accounting{[&] {
+        if (!draw_skippable) {
+            const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - call_start);
+            if (elapsed >= SyncStallMinCall) {
+                sync_stall_spent += elapsed;
+            }
+        }
+    }};
     if (!RefreshGraphicsKey()) {
         return nullptr;
     }
