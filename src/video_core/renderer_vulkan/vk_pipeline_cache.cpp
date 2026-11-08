@@ -670,10 +670,20 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
 const ComputePipeline* PipelineCache::GetComputePipeline() {
     const bool skippable = EmulatorSettings.IsAsyncPipelineCompilation() && IsDispatchSkippable();
     const auto call_start = std::chrono::steady_clock::now();
-    const ScopeExit stall_accounting{
-        [&] { NoteGpuThreadStall(call_start, skippable, "compute pipeline"); }};
+    std::chrono::microseconds key_time{};
+    std::chrono::microseconds await_time{};
+    const ScopeExit stall_accounting{[&] {
+        NoteGpuThreadStall(call_start, skippable, "compute pipeline");
+        if (key_time + await_time >= SlowBuildLog) {
+            LOG_WARNING(Render_Vulkan, "  compute phases: shader lookup {} us, pipeline wait {} us",
+                        key_time.count(), await_time.count());
+        }
+    }};
     // The shader is translated on a worker too when the dispatch can wait for it.
-    if (!RefreshComputeKey(skippable)) {
+    const bool key_ok = RefreshComputeKey(skippable);
+    key_time = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - call_start);
+    if (!key_ok) {
         return nullptr;
     }
     const auto [it, is_new] = compute_pipelines.try_emplace(compute_key);
@@ -698,7 +708,11 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
         }
     }
     ComputePipeline* pipeline = it->second.get();
-    if (!AwaitPipeline(pipeline, skippable) && (num_pending_draws_skipped++ % 256) == 0) {
+    const auto await_start = std::chrono::steady_clock::now();
+    const bool compute_ready = AwaitPipeline(pipeline, skippable);
+    await_time = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - await_start);
+    if (!compute_ready && (num_pending_draws_skipped++ % 256) == 0) {
         LOG_INFO(Render_Vulkan, "Skipping dispatches while pipelines compile ({} so far)",
                  num_pending_draws_skipped);
     }
