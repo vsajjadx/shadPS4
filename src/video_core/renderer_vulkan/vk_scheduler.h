@@ -770,6 +770,10 @@ public:
         Record([=](vk::CommandBuffer cmd) { cmd.dispatch(x, y, z); });
     }
 
+    void setCheckpointNV(const void* marker) const {
+        Record([=](vk::CommandBuffer cmd) { cmd.setCheckpointNV(marker); });
+    }
+
     void dispatchIndirect(vk::Buffer buffer, vk::DeviceSize offset) const {
         Record([=](vk::CommandBuffer cmd) { cmd.dispatchIndirect(buffer, offset); });
     }
