@@ -17,6 +17,7 @@
 #include <miniz.h>
 #endif
 
+#include "common/logging/log.h"
 #include "core/file_format/pkg_keys.h"
 #include "core/file_format/pkg_reader.h"
 #include "core/file_format/pkg_type.h"
@@ -412,6 +413,9 @@ bool PkgReader::ParsePfsTree(const std::vector<u8>& pfsc, const Keys&) {
     }
 
     std::vector<u8> block(BlockSize);
+    size_t diag_blocks_done = 0;
+    const char* diag_stop = "all blocks";
+    bool diag_end_reached = false;
     s32 entry_size = 0;
     u32 inode_total = 0;
     s32 inode_counter = 0;
@@ -425,8 +429,10 @@ bool PkgReader::ParsePfsTree(const std::vector<u8>& pfsc, const Keys&) {
         const u64 sector_offset = sector_map[i];
         const u64 sector_size = sector_map[i + 1] - sector_offset;
         if (sector_offset + sector_size > pfsc.size() || sector_size > BlockSize) {
+            diag_stop = "sector outside decrypted cache";
             break;
         }
+        ++diag_blocks_done;
         if (sector_size == BlockSize) {
             std::memcpy(block.data(), pfsc.data() + sector_offset, BlockSize);
         } else if (!Inflate(pfsc.data() + sector_offset, sector_size, block.data(), BlockSize)) {
@@ -521,9 +527,21 @@ bool PkgReader::ParsePfsTree(const std::vector<u8>& pfsc, const Keys&) {
             }
         }
         if (end_reached) {
+            diag_end_reached = true;
+            diag_stop = "last inode reached";
             break;
         }
     }
+    size_t diag_dirs = 0;
+    for (const auto& n : nodes) {
+        diag_dirs += n.is_directory ? 1 : 0;
+    }
+    LOG_INFO(Kernel_Fs,
+             "PKG tree: inodes={} inode_counter={} nodes={} dirs={} files={} blocks_parsed={}/{} "
+             "cache_bytes={} stop='{}' end_reached={}",
+             inode_total, inode_counter, nodes.size(), diag_dirs, nodes.size() - diag_dirs,
+             diag_blocks_done, sector_map.size() > 0 ? sector_map.size() - 1 : 0, pfsc.size(),
+             diag_stop, diag_end_reached);
     return found_root;
 }
 

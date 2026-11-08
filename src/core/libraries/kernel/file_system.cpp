@@ -347,6 +347,25 @@ s32 PS4_SYSV_ABI open(const char* raw_path, s32 flags, u16 mode) {
         h->DeleteHandle(handle);
         *__Error() = POSIX_ENOENT;
         LOG_ERROR(Kernel_Fs, "Opening path {} failed, file does not exist", raw_path);
+        if (path.starts_with("/app0/")) {
+            // Diagnostics only: show whether the parent folder exists and what it holds.
+            const auto parent = fs::path(path).parent_path().generic_string();
+            const bool parent_exists = mnt->Exists(parent);
+            LOG_ERROR(Kernel_Fs, "  parent {} exists: {}", parent, parent_exists);
+            if (parent_exists && mnt->IsDirectory(parent)) {
+                if (auto dir = mnt->OpenDir(parent)) {
+                    Core::FileSys::DirEntry entry;
+                    u32 count = 0;
+                    while (dir->Next(entry)) {
+                        if (count++ < 8) {
+                            LOG_ERROR(Kernel_Fs, "  parent entry: {} ({})", entry.name,
+                                      entry.is_directory ? "dir" : "file");
+                        }
+                    }
+                    LOG_ERROR(Kernel_Fs, "  parent holds {} entries", count);
+                }
+            }
+        }
         return -1;
     }
 
