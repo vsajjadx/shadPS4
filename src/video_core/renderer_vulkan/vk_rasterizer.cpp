@@ -4,6 +4,7 @@
 #include <unordered_set>
 #include <xxhash.h>
 
+#include "common/elf_info.h"
 #include "common/debug.h"
 #include "common/hack_features.h"
 #include "core/debug_state.h"
@@ -960,9 +961,19 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
                                 vsharp.num_records);
                 }
             }
-            const u64 size = vsharp.base_address == 0 || impossible
-                                 ? 0
-                                 : ClampBufferRange(vsharp.base_address, vsharp.GetSize());
+            u64 size = vsharp.base_address == 0 || impossible
+                           ? 0
+                           : ClampBufferRange(vsharp.base_address, vsharp.GetSize());
+            // EXPERIMENT (inFAMOUS First Light only): many draws bind a read-only V# of about
+            // 2 GB, clamped to 541 MB, and the buffer cache syncs that whole range for every
+            // bind. Bind a smaller window for such read-only buffers. Other games are untouched.
+            static const bool first_light = Common::ElfInfo::Instance().GameSerial() == "CUSA00897";
+            constexpr u64 HugeBindThreshold = 1ull << 30;
+            constexpr u64 HugeBindWindow = 32ull << 20;
+            if (first_light && !desc.is_written && size > HugeBindWindow &&
+                vsharp.GetSize() >= HugeBindThreshold) {
+                size = HugeBindWindow;
+            }
             if (size == 0) {
                 buffer_infos.emplace_back(VK_NULL_HANDLE, 0, VK_WHOLE_SIZE);
             } else {
