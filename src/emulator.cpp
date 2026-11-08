@@ -628,7 +628,7 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     auto& game_info = Common::ElfInfo::Instance();
     game_info.initialized = true;
     game_info.game_serial = id;
-    Common::HackFeatures::Init(id);
+    Common::HackFeatures::Init(id, title);
     // Compile every shader seen in earlier sessions before the game starts, for every game.
     if (!EmulatorSettings.IsPipelineCacheEnabled()) {
         EmulatorSettings.SetPipelineCacheEnabled(true, true);
