@@ -176,6 +176,18 @@ bool PkgReader::ReadRaw(u64 offset, void* dst, u64 size) {
     return got > 0 || size == 0;
 }
 
+namespace {
+std::string LowerAscii(std::string_view text) {
+    std::string out{text};
+    for (char& c : out) {
+        if (c >= 'A' && c <= 'Z') {
+            c = static_cast<char>(c - 'A' + 'a');
+        }
+    }
+    return out;
+}
+} // namespace
+
 u32 PkgReader::AddNode(std::string_view path, bool is_directory) {
     if (const auto it = path_to_node.find(std::string{path}); it != path_to_node.end()) {
         auto& existing = nodes[it->second];
@@ -200,6 +212,7 @@ u32 PkgReader::AddNode(std::string_view path, bool is_directory) {
     node.is_directory = is_directory;
     nodes[parent].children.push_back(index);
     path_to_node.emplace(node.path, index);
+    lower_path_to_node.emplace(LowerAscii(node.path), index);
     return index;
 }
 
@@ -214,7 +227,11 @@ u32 PkgReader::Lookup(std::string_view path) const {
         return 0;
     }
     const auto it = path_to_node.find(std::string{path});
-    return it == path_to_node.end() ? InvalidNode : it->second;
+    if (it != path_to_node.end()) {
+        return it->second;
+    }
+    const auto lower = lower_path_to_node.find(LowerAscii(path));
+    return lower == lower_path_to_node.end() ? InvalidNode : lower->second;
 }
 
 bool PkgReader::DeriveKeys(const std::vector<Entry>& entries, bool use_rsa, Keys& keys) {
@@ -322,9 +339,11 @@ bool PkgReader::Open(const std::filesystem::path& path, std::string& error) {
         keys = {};
         nodes.clear();
         path_to_node.clear();
+        lower_path_to_node.clear();
         pfs_files.clear();
         nodes.emplace_back().is_directory = true;
         path_to_node.emplace("", 0);
+        lower_path_to_node.emplace("", 0);
         if (!DeriveKeys(entries, use_rsa, keys)) {
             continue;
         }

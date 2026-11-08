@@ -114,6 +114,9 @@ private:
 
     std::vector<Node> nodes;
     std::unordered_map<std::string, u32> path_to_node;
+    // ASCII-lowercased path -> node, first one wins. The PS4 file system is case-insensitive, and
+    // some PKGs spell folders differently from what the game opens (e.g. "GPU" vs "gpu").
+    std::unordered_map<std::string, u32> lower_path_to_node;
 
     std::mutex cache_mutex;
     std::list<u32> cache_order;
