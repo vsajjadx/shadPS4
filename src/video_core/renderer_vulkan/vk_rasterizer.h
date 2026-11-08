@@ -119,6 +119,8 @@ public:
 #endif
 
 private:
+    /// Size of a buffer range after clamping to mapped VMAs and to the GPU mapping.
+    u64 ClampBufferRange(VAddr addr, u64 size);
     void PrepareRenderState(const GraphicsPipeline* pipeline);
     RenderState BeginRendering(const GraphicsPipeline* pipeline);
     void Resolve();

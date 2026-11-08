@@ -616,7 +616,7 @@ void Rasterizer::BindVertexBuffers(const GraphicsPipeline* pipeline) {
 
     // Map buffers for merged ranges
     for (auto& range : ranges_merged) {
-        const u64 size = memory->ClampRangeSize(range.base_address, range.GetSize());
+        const u64 size = ClampBufferRange(range.base_address, range.GetSize());
         std::tie(range.buffer, range.offset) = buffer_cache.ObtainBuffer(range.base_address, size);
         needs_barrier |= runtime.IsBufferAccessed(range.buffer, range.offset, size);
         bound_buffers.emplace_back(range.buffer, range.offset, size,
@@ -672,7 +672,7 @@ void Rasterizer::BindIndexBuffer(u32 index_offset, bool is_indirect) {
         is_indirect ? regs.max_index_size : std::min(regs.num_indices, regs.max_index_size);
     const u64 requested_size = u64(num_indices) * index_size;
     const u64 mapped_size =
-        base_address != 0 ? memory->ClampRangeSize(index_address, requested_size) : 0;
+        base_address != 0 ? ClampBufferRange(index_address, requested_size) : 0;
     u32 index_buffer_size = static_cast<u32>(Common::AlignDown(mapped_size, index_size));
     vk::Buffer index_buffer{};
     u64 buffer_offset{};
@@ -962,7 +962,7 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
             }
             const u64 size = vsharp.base_address == 0 || impossible
                                  ? 0
-                                 : memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize());
+                                 : ClampBufferRange(vsharp.base_address, vsharp.GetSize());
             if (size == 0) {
                 buffer_infos.emplace_back(VK_NULL_HANDLE, 0, VK_WHOLE_SIZE);
             } else {
@@ -2013,6 +2013,33 @@ bool Rasterizer::ReadMemory(VAddr addr, u64 size, bool assume_locks) {
     }
     buffer_cache.ReadMemory(addr, size, false, false, assume_locks);
     return true;
+}
+
+u64 Rasterizer::ClampBufferRange(VAddr addr, u64 size) {
+    static constexpr u64 MinSizeToClamp = 1ull << 30;
+    // Clamp to the mapped VMAs first, as before.
+    u64 clamped = Core::Memory::Instance()->ClampRangeSize(addr, size);
+    if (size < MinSizeToClamp || clamped == 0) {
+        return clamped;
+    }
+    // The VMAs a huge range spills into can be CPU-only memory next to the GPU mapping, such as
+    // thread stacks. Tracking write-protects every page of a buffer range, but a fault on a
+    // page that is not GPU mapped is never handled (InvalidateMemory returns false), so the next
+    // write to such a page, even from host code on a stack, crashed with an access violation
+    // (seen on a stack page next to a 2 GB bogus buffer range). Stop at the end of the GPU
+    // mapping that contains the start of the range.
+    Common::RecursiveSharedLock lock{mapped_ranges_mutex};
+    const auto it = mapped_ranges.find(addr);
+    if (it == mapped_ranges.end()) {
+        return clamped;
+    }
+    const u64 mapped_size = it->upper() - addr;
+    if (mapped_size < clamped) {
+        LOG_DEBUG(Render, "Clamped buffer range at {:#x} from {:#x} to GPU mapped size {:#x}", addr,
+                  clamped, mapped_size);
+        clamped = mapped_size;
+    }
+    return clamped;
 }
 
 bool Rasterizer::IsMapped(VAddr addr, u64 size) {
