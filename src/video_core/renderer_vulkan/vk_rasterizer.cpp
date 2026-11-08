@@ -227,6 +227,12 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     if (!pipeline) {
         return;
     }
+    {
+        const auto& hashes = pipeline->GetGraphicsKey().stage_hashes;
+        TraceGpuWork(scheduler.CurrentTick(), false,
+                     hashes[static_cast<u32>(Shader::SwStage::Vertex)],
+                     hashes[static_cast<u32>(Shader::SwStage::Fragment)]);
+    }
 
     PrepareRenderState(pipeline);
     if (!BindResources(pipeline)) {
@@ -288,6 +294,12 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     const GraphicsPipeline* pipeline = pipeline_cache.GetGraphicsPipeline(params);
     if (!pipeline) {
         return;
+    }
+    {
+        const auto& hashes = pipeline->GetGraphicsKey().stage_hashes;
+        TraceGpuWork(scheduler.CurrentTick(), false,
+                     hashes[static_cast<u32>(Shader::SwStage::Vertex)],
+                     hashes[static_cast<u32>(Shader::SwStage::Fragment)]);
     }
 
     PrepareRenderState(pipeline);
@@ -369,6 +381,7 @@ void Rasterizer::DispatchDirect() {
     if (ExecuteShaderHLE(cs, liverpool->regs, cs_program, *this)) {
         return;
     }
+    TraceGpuWork(scheduler.CurrentTick(), true, cs.pgm_hash, 0);
     if (!pipeline->IsReady()) {
         return;
     }
@@ -413,6 +426,8 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
     if (!pipeline || !pipeline->IsReady()) {
         return;
     }
+    TraceGpuWork(scheduler.CurrentTick(), true,
+                 pipeline->GetStage(Shader::SwStage::Compute).pgm_hash, 0);
 
     if (!BindResources(pipeline)) {
         return;

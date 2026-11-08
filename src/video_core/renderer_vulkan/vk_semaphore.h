@@ -15,6 +15,11 @@ namespace Vulkan {
 class Instance;
 class Scheduler;
 
+/// Remembers which draws and dispatches went into each GPU submission, so that a hang names the
+/// shaders of the submission that never finished. Cheap enough to stay on all the time.
+void TraceGpuWork(u64 tick, bool compute, u64 primary_hash, u64 secondary_hash);
+void LogGpuWorkSince(u64 first_tick);
+
 class Semaphore {
 public:
     explicit Semaphore(const Instance& instance_);
