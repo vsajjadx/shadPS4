@@ -491,10 +491,10 @@ void PipelineCache::SaveDriverCache() {
 // again the next frame. One-off passes (light probes, exposure, full-screen effects), indirect
 // draws and light frames such as loading screens are built at once instead.
 // (After HayatoG/iss_pc BP07 and deadinside/bloodborne_pc 10baf9d.)
-constexpr float MinFrameDraws = 100.0f;
+constexpr float MinFrameDraws = 50.0f;
 // Scenes with fewer draws than this (loading screens, videos) never skip compute passes; they use
 // the stall budget below only from this many draws up.
-constexpr float MinBudgetDraws = 40.0f;
+constexpr float MinBudgetDraws = 25.0f;
 constexpr u32 MinStreakFrames = 3;
 constexpr size_t MaxTrackedStreaks = 4096;
 
