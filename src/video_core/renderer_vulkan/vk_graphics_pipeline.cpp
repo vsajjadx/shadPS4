@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
@@ -161,10 +161,6 @@ void GraphicsPipeline::Build() {
         raster_chain.unlink<vk::PipelineRasterizationDepthClipStateCreateInfoEXT>();
     }
 
-    // The sample mask is a pointer into this pipeline's key, so it is set on a local copy here
-    // (build_data is const and may come from the pipeline cache, where pointers are not stored).
-    vk::PipelineMultisampleStateCreateInfo multisampling = sdata.multisampling;
-    multisampling.pSampleMask = &key.sample_mask;
 
     const vk::PipelineViewportDepthClipControlCreateInfoEXT clip_control = {
         .negativeOneToOne = key.clip_space == AmdGpu::ClipSpace::MinusWToW,
@@ -426,7 +422,7 @@ void GraphicsPipeline::Build() {
         .pTessellationState = &tessellation_state,
         .pViewportState = &viewport_info,
         .pRasterizationState = &raster_chain.get(),
-        .pMultisampleState = &multisampling,
+        .pMultisampleState = &sdata.multisampling,
         .pDepthStencilState =
             !instance.IsExtendedDynamicState3Supported() ? &depth_stencil_info : nullptr,
         .pColorBlendState = &color_blending,
