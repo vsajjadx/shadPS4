@@ -9,12 +9,21 @@
 
 namespace Common {
 
+// Applies the The Order: 1886 workarounds to every game. Set to false to go back to enabling them
+// only for The Order: 1886 releases.
+constexpr bool kApplyToAllGames = true;
+
 bool HackFeatures::isTheOrder1886 = false;
 bool HackFeatures::initialized = false;
 
 void HackFeatures::Init(std::string_view game_serial, std::string_view game_title) {
     ASSERT_MSG(!initialized, "HackFeatures::Init called more than once");
     initialized = true;
+
+    if (kApplyToAllGames) {
+        isTheOrder1886 = true;
+        return;
+    }
 
     // Every regional/language release of The Order: 1886 needs these hacks. Known serials are
     // listed, and any other release is recognized by its title.
