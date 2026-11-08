@@ -13,10 +13,10 @@ void HackFeatures::Init(std::string_view game_serial) {
     ASSERT_MSG(!initialized, "HackFeatures::Init called more than once");
     initialized = true;
 
-    // CUSA00035 / CUSA00076 / CUSA00100 are different regional/language
+    // CUSA00035 / CUSA00076 / CUSA00100 / CUSA00785 are different regional/language
     // releases of The Order: 1886.
     if (game_serial == "CUSA00035" || game_serial == "CUSA00076" ||
-        game_serial == "CUSA00100") {
+        game_serial == "CUSA00100" || game_serial == "CUSA00785") {
         isTheOrder1886 = true;
     }
 }
