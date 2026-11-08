@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <string>
+#include <string_view>
 
 #include "common/assert.h"
 #include "common/hack_features.h"
