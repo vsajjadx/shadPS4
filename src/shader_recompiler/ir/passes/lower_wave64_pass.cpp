@@ -205,12 +205,14 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
 
     std::vector<IR::Inst*> worklist;
     // SHADPS4_WAVE64_FORCE_LOWER=1: lower wave ops even inside control flow judged non uniform.
-    static const bool force_lower = std::getenv("SHADPS4_WAVE64_FORCE_LOWER") != nullptr;
+    // ReadLane is forced by default in this diagnostic build; Ballot only with the variable.
+    static const bool force_ballot = std::getenv("SHADPS4_WAVE64_FORCE_LOWER") != nullptr;
     const auto uniform_blocks = FindUniformBlocks(program);
     for (IR::Block* block : program.blocks) {
-        const bool is_uniform = force_lower || std::ranges::contains(uniform_blocks, block);
+        const bool is_uniform = std::ranges::contains(uniform_blocks, block);
         const auto push_worklist = [&](IR::Inst& inst) {
-            if (is_uniform) {
+            const bool force = inst.GetOpcode() == IR::Opcode::ReadLane || force_ballot;
+            if (is_uniform || force) {
                 worklist.push_back(&inst);
             } else {
                 LOG_WARNING(Render_Recompiler,
