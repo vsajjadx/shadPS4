@@ -9,6 +9,8 @@
 #include "shader_recompiler/ir/program.h"
 #include "shader_recompiler/profile.h"
 
+#include <cstdlib>
+
 namespace Shader::Optimization {
 
 static bool IsDivergentCondition(const IR::U1& condition) {
@@ -202,15 +204,19 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
     }
 
     std::vector<IR::Inst*> worklist;
+    // SHADPS4_WAVE64_FORCE_LOWER=1: lower wave ops even inside control flow judged non uniform.
+    static const bool force_lower = std::getenv("SHADPS4_WAVE64_FORCE_LOWER") != nullptr;
     const auto uniform_blocks = FindUniformBlocks(program);
     for (IR::Block* block : program.blocks) {
-        const bool is_uniform = std::ranges::contains(uniform_blocks, block);
+        const bool is_uniform = force_lower || std::ranges::contains(uniform_blocks, block);
         const auto push_worklist = [&](IR::Inst& inst) {
             if (is_uniform) {
                 worklist.push_back(&inst);
             } else {
-                LOG_WARNING(Render_Recompiler, "{} instruction in non uniform control flow",
-                            inst.GetOpcode());
+                LOG_WARNING(Render_Recompiler,
+                            "{} instruction in non uniform control flow (cs shader {:#x}, "
+                            "workgroup {}x{}x{})",
+                            inst.GetOpcode(), program.info.pgm_hash, size_x, size_y, size_z);
             }
         };
         for (IR::Inst& inst : block->Instructions()) {
