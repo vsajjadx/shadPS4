@@ -447,14 +447,7 @@ private:
     [[nodiscard]] ImageId TakeParkedImage(const ImageInfo& info);
 
     /// Removes image from the cache and schedules it for deletion.
-    void FreeImage(ImageId image_id) {
-        {
-            std::scoped_lock lk{slot_images[image_id].mutex};
-            UntrackImage(image_id);
-        }
-        UnregisterImage(image_id);
-        DeleteImage(image_id);
-    }
+    void FreeImage(ImageId image_id);
 
     void GarbageCollectImages();
     void GarbageCollectSamplers();

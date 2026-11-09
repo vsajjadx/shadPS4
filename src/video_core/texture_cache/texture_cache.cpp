@@ -557,7 +557,28 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
     return cache_image_id;
 }
 
+void TextureCache::FreeImage(ImageId image_id) {
+    if (False(slot_images[image_id].flags & ImageFlagBits::Registered)) {
+        // The image already left the cache (parked, or queued for deletion by its owner), so
+        // unregistering it again would abort the emulator. Whoever unregistered it deletes it.
+        LOG_WARNING(Render_Vulkan, "Ignoring free of an already unregistered image at {:#x}",
+                    slot_images[image_id].info.guest_address);
+        return;
+    }
+    {
+        std::scoped_lock lk{slot_images[image_id].mutex};
+        UntrackImage(image_id);
+    }
+    UnregisterImage(image_id);
+    DeleteImage(image_id);
+}
+
 void TextureCache::ParkImage(ImageId image_id) {
+    if (False(slot_images[image_id].flags & ImageFlagBits::Registered)) {
+        LOG_WARNING(Render_Vulkan, "Ignoring park of an already unregistered image at {:#x}",
+                    slot_images[image_id].info.guest_address);
+        return;
+    }
     {
         std::scoped_lock lk{slot_images[image_id].mutex};
         UntrackImage(image_id);
@@ -1257,8 +1278,11 @@ void TextureCache::RegisterImage(ImageId image_id) {
 void TextureCache::UnregisterImage(ImageId image_id) {
     ++image_set_generation;
     Image& image = slot_images[image_id];
-    ASSERT_MSG(True(image.flags & ImageFlagBits::Registered),
-               "Trying to unregister an already unregistered image");
+    if (False(image.flags & ImageFlagBits::Registered)) {
+        LOG_WARNING(Render_Vulkan, "Trying to unregister an already unregistered image at {:#x}",
+                    image.info.guest_address);
+        return;
+    }
     image.flags &= ~ImageFlagBits::Registered;
     image.memory_usage_counter = nullptr;
     if (on_unregister) {
