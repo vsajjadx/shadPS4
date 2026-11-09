@@ -5,7 +5,7 @@ name: Build and Release
 
 on:
   push:
-    branches: [main, fix/runtime-log-stalls]
+    branches: [main, fix/runtime-log-stalls, fix/nhl-runtime-correctness]
     paths-ignore:
       - "documents/**"
       - "**/*.md"

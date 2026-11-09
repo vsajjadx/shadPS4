@@ -12,6 +12,7 @@ namespace Common {
 class HackFeatures {
 public:
     static bool isTheOrder1886;
+    static bool isNhl24;
 
     /// Must be called exactly once during emulator startup, after param.sfo is parsed.
     static void Init(std::string_view game_serial, std::string_view game_title = {});

@@ -31,8 +31,13 @@ void UpdateSinks();
 void UpdateLogLevels(std::string_view log_filter);
 void UpdateLogFlushLevel(std::string_view log_flush_level);
 
+// Called before formatting and before evaluating macro arguments. Bounding the async
+// queue alone cannot bound the CPU cost of millions of trace/debug calls.
+[[nodiscard]] bool AdmitVerboseLog(Class log_class);
+
 [[nodiscard]] inline bool ShouldLog(Class log_class, Level level) {
-    return level >= g_class_levels[static_cast<std::size_t>(log_class)];
+    return level >= g_class_levels[static_cast<std::size_t>(log_class)] &&
+           (level >= Level::Info || AdmitVerboseLog(log_class));
 }
 
 void VLog(Class log_class, Level level, const char* file, int line, const char* func,

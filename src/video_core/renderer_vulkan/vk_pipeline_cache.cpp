@@ -538,6 +538,12 @@ void PipelineCache::NoteGpuThreadStall(std::chrono::steady_clock::time_point sta
 }
 
 bool PipelineCache::IsDrawSkippable() {
+    // NHL's repeated render targets include persistent lighting/exposure passes.
+    // A target streak and an index count do not prove a draw has no future consumers.
+    // Preserve guest work, including on a cold cache; warm-up amortizes compilation.
+    if (Common::HackFeatures::isNhl24) {
+        return false;
+    }
     constexpr u32 MinIndices = 12;
 
     const auto& regs = liverpool->regs;
@@ -1228,7 +1234,11 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
 
     vk::ShaderModule module{};
 
-    auto it = std::ranges::find(program->modules, spec, &Program::Module::spec);
+    // Cached/queued permutations may leave holes. An unpopulated slot's default
+    // specialization must never match a live shader request.
+    auto it = std::ranges::find_if(program->modules, [&](const Program::Module& candidate) {
+        return candidate.module && candidate.spec == spec;
+    });
     if (it == program->modules.end() && Common::HackFeatures::isTheOrder1886 &&
         program->modules.size() >= Program::MaxPermutations / 2) {
         // The Order: 1886 uber-shaders (e.g. VS 0xad441fb1/0x8c8a4817/0xa8792bbb) sample up to

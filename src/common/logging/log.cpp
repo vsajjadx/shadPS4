@@ -30,6 +30,7 @@ using spdlog_stdout = spdlog::sinks::stdout_color_sink_mt;
 #include "common/logging/log.h"
 #include "common/logging/log_file_sink.h"
 #include "common/logging/runtime_log_sink.h"
+#include "common/logging/verbose_log_budget.h"
 #include "common/path_util.h"
 #include "common/thread.h"
 #include "common/types.h"
@@ -42,6 +43,17 @@ static std::shared_ptr<LogFileSink> g_shad_file_sink;
 static std::array<std::unique_ptr<spdlog::logger>, NUM_LOG_CLASSES> ALL_LOGGERS{};
 
 std::array<Level, NUM_LOG_CLASSES> g_class_levels{};
+static std::array<VerboseLogBudget, NUM_LOG_CLASSES> g_verbose_budgets{};
+static bool g_unlimited_verbose_logging{};
+
+bool AdmitVerboseLog(Class log_class) {
+    if (g_unlimited_verbose_logging) {
+        return true;
+    }
+    const auto second = std::chrono::duration_cast<std::chrono::seconds>(
+                            std::chrono::steady_clock::now().time_since_epoch()).count();
+    return g_verbose_budgets[static_cast<size_t>(log_class)].Allow(static_cast<u64>(second));
+}
 
 static spdlog::level ToSpdlog(Level l) {
     return static_cast<spdlog::level>(l);
@@ -109,6 +121,9 @@ static auto UpdateColorLevels(T sink) {
 }
 
 void Setup(std::string_view shadps4_filename) {
+    // Explicit developer opt-out; do not reinterpret or overwrite persisted log filters.
+    const char* full_log = std::getenv("SHADPS4_FULL_RUNTIME_LOG");
+    g_unlimited_verbose_logging = full_log && std::string_view{full_log} == "1";
     static std::once_flag already_registered;
 
     std::call_once(already_registered, []() {
@@ -157,9 +172,22 @@ void Switch(std::string_view game_filename, bool append_log) {
     g_shad_file_sink->session_file_helper_.open(
         (GetUserPath(Common::FS::PathType::LogDir) / game_filename).string(),
         !(append_log || EmulatorSettings.IsLogAppend()));
+    if (!g_unlimited_verbose_logging) {
+        LOG_INFO(Log, "Trace/Debug limited to {} messages per class per second before formatting; "
+                      "Info/Warning/Error/Critical are not rate-limited. "
+                      "Set SHADPS4_FULL_RUNTIME_LOG=1 for complete developer traces.",
+                 VerboseLogBudget::Limit);
+    }
 }
 
 void Shutdown() {
+    u64 suppressed{};
+    for (const auto& budget : g_verbose_budgets) {
+        suppressed += budget.Suppressed();
+    }
+    if (suppressed != 0) {
+        LOG_INFO(Log, "Suppressed {} excess Trace/Debug messages before formatting", suppressed);
+    }
     for (auto& logger : ALL_LOGGERS) {
         logger.reset();
     }
@@ -181,16 +209,18 @@ void Flush() {
 void UpdateSinks() {
     std::initializer_list<spdlog::sink_ptr> sinks{g_console_sink, g_shad_file_sink};
 
+    // Duplicate filtering compares formatted messages under a mutex. Run it on the
+    // logging worker, not under a single shared lock on every guest CPU/GPU producer.
+    std::vector<spdlog::sink_ptr> backends{sinks};
+    if (EmulatorSettings.IsLogSkipDuplicate()) {
+        backends = {std::make_shared<spdlog::sinks::dup_filter_sink_mt>(
+            std::chrono::milliseconds(EmulatorSettings.GetLogMaxSkipDuration()), sinks)};
+    }
     const spdlog::sink_ptr output = std::make_shared<RuntimeLogSink>(
-        std::vector<spdlog::sink_ptr>{sinks}, EmulatorSettings.IsLogSync());
-
-    std::initializer_list<spdlog::sink_ptr> direct{output};
-    std::initializer_list<spdlog::sink_ptr> dup_filter{
-        std::make_shared<spdlog::sinks::dup_filter_sink_mt>(
-            std::chrono::milliseconds(EmulatorSettings.GetLogMaxSkipDuration()), direct)};
+        std::move(backends), EmulatorSettings.IsLogSync());
 
     for (auto& logger : ALL_LOGGERS) {
-        logger->sinks() = EmulatorSettings.IsLogSkipDuplicate() ? dup_filter : direct;
+        logger->sinks() = {output};
     }
 }
 

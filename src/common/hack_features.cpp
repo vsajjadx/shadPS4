@@ -11,21 +11,22 @@
 
 namespace Common {
 
-// Applies the The Order: 1886 workarounds to every game. Set to false to go back to enabling them
-// only for The Order: 1886 releases.
-constexpr bool kApplyToAllGames = true;
-
 bool HackFeatures::isTheOrder1886 = false;
+bool HackFeatures::isNhl24 = false;
 bool HackFeatures::initialized = false;
 
 void HackFeatures::Init(std::string_view game_serial, std::string_view game_title) {
     ASSERT_MSG(!initialized, "HackFeatures::Init called more than once");
     initialized = true;
 
-    if (kApplyToAllGames) {
-        isTheOrder1886 = true;
-        return;
-    }
+    // Classify before any title-specific early return. Never apply another game's
+    // null-descriptor, resource-discovery or approximate-permutation workarounds globally.
+    std::string title{game_title};
+    std::ranges::transform(title, title.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    isNhl24 = game_serial == "CUSA37933" ||
+              (title.find("nhl") != std::string::npos &&
+               title.find("24") != std::string::npos);
 
     // Every regional/language release of The Order: 1886 needs these hacks. Known serials are
     // listed, and any other release is recognized by its title.
@@ -34,9 +35,6 @@ void HackFeatures::Init(std::string_view game_serial, std::string_view game_titl
         isTheOrder1886 = true;
         return;
     }
-    std::string title{game_title};
-    std::ranges::transform(title, title.begin(),
-                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     if (title.find("the order: 1886") != std::string::npos ||
         title.find("the order 1886") != std::string::npos) {
         isTheOrder1886 = true;
