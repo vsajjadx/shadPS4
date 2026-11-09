@@ -98,15 +98,10 @@ TextureCache::~TextureCache() = default;
 
 void TextureCache::ProcessDownloadImages() {
     std::unique_lock lk{download_images_mutex};
-    if (download_images.empty()) {
-        return;
-    }
     for (const ImageId image_id : download_images) {
-        DownloadImageMemory(image_id);
+        DownloadImageMemory(image_id, DownloadMemoryFlags::Sync);
     }
     download_images.clear();
-    scheduler.Finish();
-    scheduler.PopPendingOperations();
 }
 
 boost::container::small_vector<vk::BufferImageCopy, 8> TextureCache::GuestCopies(
