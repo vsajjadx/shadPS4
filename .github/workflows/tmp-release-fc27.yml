@@ -1,0 +1,29 @@
+name: Temp release FC27
+on:
+  push:
+    branches: [tmp/release-fc27]
+permissions:
+  contents: write
+  actions: read
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Download artifacts from source run
+        run: |
+          mkdir -p main launcher out
+          gh run download 42647200840 -n shadPS4-AntiCrash-win64-launcher-hotfix-a93a3f9b -D main
+          gh run download 42647200840 -n launcher-win64 -D launcher
+          (cd main && zip -qr ../out/shadPS4-win64-fix-fc27-nhl24-geometry-hung.zip .)
+          (cd launcher && zip -qr ../out/launcher-win64.zip .)
+          ls -la out
+      - name: Create release
+        run: |
+          gh release create fix-fc27-nhl24-geometry-hung \
+            --target a93a3f9b83c368023a3e9279090865d313e40368 \
+            --title "FIX FC27 - NHL 24 GEOMETRY & HUNG" \
+            --notes "Build from Actions run 42647200840 (commit a93a3f9b, branch fix/launcher-process-freeze)." \
+            out/shadPS4-win64-fix-fc27-nhl24-geometry-hung.zip out/launcher-win64.zip
