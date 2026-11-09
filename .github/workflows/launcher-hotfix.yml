@@ -1,0 +1,176 @@
+# SPDX-FileCopyrightText: 2026 shadPS4 Emulator Project
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+name: Windows launcher hotfix
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_run_id:
+        description: Successful Windows bundle run with the unchanged emulator
+        required: true
+        default: '42637569553'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: launcher-hotfix-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  BUILD_TYPE: Release
+  QT_LAUNCHER_REV: 5fed6002e09c3ff507ef5e6afb9016a16c1f63ad
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      fullhash: ${{ steps.verify.outputs.fullhash }}
+      shorthash: ${{ steps.verify.outputs.shorthash }}
+      artifact: ${{ steps.verify.outputs.artifact }}
+      emulator_sha: ${{ steps.verify.outputs.emulator_sha }}
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+    - name: Verify unchanged emulator and successful base bundle
+      id: verify
+      env:
+        GH_TOKEN: ${{ github.token }}
+        BASE_RUN: ${{ inputs.base_run_id }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        [[ "$BASE_RUN" =~ ^[0-9]+$ ]]
+        gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BASE_RUN" > base-run.json
+        test "$(jq -r .conclusion base-run.json)" = success
+        base_sha=$(jq -r .head_sha base-run.json)
+        [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]]
+        git cat-file -e "$base_sha^{commit}" || git fetch origin "$base_sha"
+        git diff --exit-code "$base_sha" HEAD -- . ':!.github' ':!documents' ':!*.md'
+        artifact=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BASE_RUN/artifacts" \
+          --jq '[.artifacts[] | select(.expired == false and (.name | startswith("shadPS4-AntiCrash-win64-")))] | if length == 1 then .[0].name else error("Expected one unexpired Windows bundle") end')
+        echo "fullhash=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        echo "shorthash=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+        echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+        echo "emulator_sha=$base_sha" >> "$GITHUB_OUTPUT"
+        echo "Using unchanged emulator from $base_sha ($BASE_RUN)" >> "$GITHUB_STEP_SUMMARY"
+
+  windows-launcher:
+    runs-on: windows-2025
+    needs: prepare
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Check out the Qt launcher fork
+      shell: bash
+      run: |
+        echo "FORK_TIME=$(git log -1 --format=%ct)" >> $GITHUB_ENV
+        git clone --filter=blob:none --branch fork https://github.com/vsajjadx/shadps4-qtlauncher qtlauncher
+        cd qtlauncher
+        git checkout --detach "${{ env.QT_LAUNCHER_REV }}"
+        git submodule update --init --recursive --depth 1 || git submodule update --init --recursive
+
+    - name: Setup Qt
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: 6.10.0
+        host: windows
+        target: desktop
+        arch: win64_msvc2022_64
+        archives: qtbase qttools
+        modules: qtmultimedia
+
+    - name: Cache CMake Build
+      uses: hendrikmuhs/ccache-action@v1.2.21
+      env:
+          cache-name: ${{ runner.os }}-launcher-cache-cmake-build
+      with:
+        append-timestamp: false
+        key: ${{ env.cache-name }}-${{ hashFiles('launcher/**') }}
+
+    - name: Build and run launcher IPC regressions
+      working-directory: qtlauncher
+      shell: pwsh
+      run: |
+        cmake -S tests/ipc -B build-ipc -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang-cl
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        cmake --build build-ipc --parallel 2
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        ctest --test-dir build-ipc --output-on-failure -V
+        exit $LASTEXITCODE
+
+    - name: Configure CMake
+      working-directory: qtlauncher
+      run: cmake --fresh -G Ninja -B build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DENABLE_UPDATER=ON -DFORK_BUNDLE_REV=${{ needs.prepare.outputs.fullhash }} -DFORK_BUNDLE_REPO=${{ github.repository }} -DFORK_BUNDLE_TIME=${{ env.FORK_TIME }} -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+    - name: Build
+      working-directory: qtlauncher
+      shell: pwsh
+      run: |
+        cmake --build build --config ${{env.BUILD_TYPE}} --parallel $env:NUMBER_OF_PROCESSORS -- -k 0 2>&1 | Tee-Object -FilePath build.log
+        exit $LASTEXITCODE
+
+    - name: Report compile errors
+      if: failure()
+      shell: pwsh
+      run: |
+        $errs = Select-String -Path qtlauncher/build.log -Pattern ' error[: ]|FAILED:|undefined|fatal error' | Select-Object -First 25 | ForEach-Object { $_.Line.Trim().Replace('%','%25') }
+        $msg = ($errs -join '%0A')
+        Write-Output "::error title=compile-errors::$msg"
+
+    - name: Deploy
+      working-directory: qtlauncher
+      run: |
+        mkdir upload
+        mkdir upload/qtplugins
+        move build/shadPS4QtLauncher.exe upload
+        cp dist/qt.conf upload/qt.conf
+        windeployqt --plugindir upload/qtplugins --no-compiler-runtime --no-system-d3d-compiler --no-system-dxc-compiler --dir upload upload/shadPS4QtLauncher.exe
+
+    - name: Upload launcher
+      uses: actions/upload-artifact@v7
+      with:
+        name: launcher-win64
+        path: qtlauncher/upload/
+        retention-days: 14
+
+  windows-bundle:
+    runs-on: ubuntu-24.04
+    needs: [prepare, windows-launcher]
+    steps:
+    - name: Download verified base Windows bundle
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ needs.prepare.outputs.artifact }}
+        run-id: ${{ inputs.base_run_id }}
+        github-token: ${{ github.token }}
+        path: bundle
+    - name: Replace launcher and deployed Qt dependencies
+      uses: actions/download-artifact@v8
+      with:
+        name: launcher-win64
+        path: bundle
+    - name: Record package provenance and hashes
+      env:
+        BUNDLE_SHA: ${{ needs.prepare.outputs.fullhash }}
+        EMULATOR_SHA: ${{ needs.prepare.outputs.emulator_sha }}
+        BASE_RUN: ${{ inputs.base_run_id }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        test -s bundle/shadPS4.exe
+        test -s bundle/shadPS4QtLauncher.exe
+        printf 'bundle_commit=%s\nemulator_commit=%s\nemulator_run=%s\nlauncher_commit=%s\n' \
+          "$BUNDLE_SHA" "$EMULATOR_SHA" "$BASE_RUN" "$QT_LAUNCHER_REV" > bundle/launcher-hotfix-build.txt
+        (cd bundle && sha256sum shadPS4.exe shadPS4QtLauncher.exe > launcher-hotfix-sha256.txt)
+        cat bundle/launcher-hotfix-build.txt >> "$GITHUB_STEP_SUMMARY"
+        cat bundle/launcher-hotfix-sha256.txt >> "$GITHUB_STEP_SUMMARY"
+    - name: Upload tested Windows hotfix package
+      uses: actions/upload-artifact@v7
+      with:
+        name: shadPS4-AntiCrash-win64-launcher-hotfix-${{ needs.prepare.outputs.shorthash }}
+        path: bundle/
+        retention-days: 14

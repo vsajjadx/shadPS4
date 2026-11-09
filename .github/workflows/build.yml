@@ -23,6 +23,7 @@ concurrency:
 
 env:
   BUILD_TYPE: Release
+  QT_LAUNCHER_REV: 5fed6002e09c3ff507ef5e6afb9016a16c1f63ad
 
 jobs:
   reuse:
@@ -219,6 +220,7 @@ jobs:
         echo "FORK_TIME=$(git log -1 --format=%ct)" >> $GITHUB_ENV
         git clone --filter=blob:none --branch fork https://github.com/vsajjadx/shadps4-qtlauncher qtlauncher
         cd qtlauncher
+        git checkout --detach "${{ env.QT_LAUNCHER_REV }}"
         git submodule update --init --recursive --depth 1 || git submodule update --init --recursive
 
     - name: Setup Qt
@@ -238,6 +240,17 @@ jobs:
       with:
         append-timestamp: false
         key: ${{ env.cache-name }}-${{ hashFiles('launcher/**') }}
+
+    - name: Build and run launcher IPC regressions
+      working-directory: qtlauncher
+      shell: pwsh
+      run: |
+        cmake -S tests/ipc -B build-ipc -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang-cl
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        cmake --build build-ipc --parallel 2
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        ctest --test-dir build-ipc --output-on-failure -V
+        exit $LASTEXITCODE
 
     - name: Configure CMake
       working-directory: qtlauncher
