@@ -4,6 +4,7 @@
 #pragma once
 
 #include <atomic>
+#include "common/build_completion.h"
 #include "video_core/renderer_vulkan/vk_common.h"
 #include "video_core/renderer_vulkan/vk_pipeline_common.h"
 
@@ -59,7 +60,11 @@ public:
     void TryBuild();
 
     [[nodiscard]] bool IsReady() const noexcept {
-        return ready.load(std::memory_order_acquire);
+        return ready.IsReady();
+    }
+
+    void WaitUntilReady() const noexcept {
+        ready.Wait();
     }
 
 private:
@@ -69,7 +74,7 @@ private:
     vk::ShaderModule stage_module{};
     vk::PipelineCache pipeline_cache_handle{};
     std::atomic<bool> build_started{false};
-    std::atomic<bool> ready{false};
+    Common::BuildCompletion ready;
 };
 
 } // namespace Vulkan

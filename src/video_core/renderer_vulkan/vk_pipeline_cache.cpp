@@ -66,7 +66,7 @@ struct PipelineCache::PendingTranslation {
     std::optional<Shader::StageSpecialization> spec;
     ModuleBuild build;
     std::atomic_bool taken{};
-    std::atomic_bool done{};
+    Common::BuildCompletion done;
 };
 
 PipelineCompileWorkers::PipelineCompileWorkers(u32 num_threads) {
@@ -583,9 +583,7 @@ bool PipelineCache::AwaitPipeline(PipelineType* pipeline, bool skippable) {
     if (!pipeline->IsReady() && !skippable) {
         // A queued pipeline is built here rather than after every compile ahead of it.
         pipeline->TryBuild();
-        while (!pipeline->IsReady()) {
-            std::this_thread::yield();
-        }
+        pipeline->WaitUntilReady();
     }
     if (!pipeline->IsReady()) {
         // Most pipelines build in a few milliseconds (driver cache hits). Give a pending one a
@@ -1006,9 +1004,20 @@ bool PipelineCache::RefreshComputeKey(bool async) {
     }
     Shader::Backend::Bindings binding{};
     const auto& cs_pgm = liverpool->GetCsRegs();
+    const auto params_start = std::chrono::steady_clock::now();
     const auto cs_params = AmdGpu::GetParams(cs_pgm);
+    const auto params_end = std::chrono::steady_clock::now();
     std::tie(infos[0], modules[0], compute_key.value) =
         GetProgram(HwStage::Compute, SwStage::Compute, cs_params, binding, async);
+    const auto lookup_end = std::chrono::steady_clock::now();
+    if (lookup_end - params_start >= SlowBuildLog) {
+        LOG_WARNING(
+            Render_Vulkan, "Compute shader {:#x}: binary metadata {} us, program lookup {} us",
+            cs_params.hash,
+            std::chrono::duration_cast<std::chrono::microseconds>(params_end - params_start)
+                .count(),
+            std::chrono::duration_cast<std::chrono::microseconds>(lookup_end - params_end).count());
+    }
     return modules[0] != nullptr;
 }
 
@@ -1119,7 +1128,7 @@ void PipelineCache::RunTranslation(PendingTranslation& translation, Shader::Pool
         translation.spec.emplace(*translation.info, translation.runtime_info, profile,
                                  translation.start_binding);
     }
-    translation.done.store(true, std::memory_order_release);
+    translation.done.Complete();
 }
 
 size_t PipelineCache::NewPermutationIndex(u64 hash, size_t num_modules) {
@@ -1140,9 +1149,7 @@ void PipelineCache::WaitTranslations(u64 hash) {
     for (const auto& translation : it->second) {
         // A translation still queued is done here rather than after everything queued before it.
         RunTranslation(*translation, pools);
-        while (!translation->done.load(std::memory_order_acquire)) {
-            std::this_thread::yield();
-        }
+        translation->done.Wait();
     }
     CollectTranslations();
 }
@@ -1151,7 +1158,7 @@ void PipelineCache::CollectTranslations() {
     for (auto it = pending_translations.begin(); it != pending_translations.end();) {
         auto& queue = it.value();
         // Permutations of a program are added in the order their indices were handed out.
-        while (!queue.empty() && queue.front()->done.load(std::memory_order_acquire)) {
+        while (!queue.empty() && queue.front()->done.IsReady()) {
             auto& translation = *queue.front();
             const u64 hash = it->first;
             const auto module = FinishModule(*translation.info, translation.code,

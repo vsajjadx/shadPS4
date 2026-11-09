@@ -34,3 +34,7 @@ add_test(NAME title_other_game COMMAND runtime_correctness_test title CUSA57220 
 add_test(NAME title_unknown COMMAND runtime_correctness_test title UNKNOWN "" 0 0)
 add_test(NAME title_order_serial COMMAND runtime_correctness_test title CUSA00035 "" 1 0)
 add_test(NAME title_order_regional COMMAND runtime_correctness_test title UNKNOWN "The Order: 1886" 1 0)
+
+add_test(NAME runtime_verbose_policy COMMAND runtime_correctness_test runtime-policy)
+add_test(NAME build_completion_publication COMMAND runtime_correctness_test completion)
+set_tests_properties(build_completion_publication PROPERTIES TIMEOUT 10)

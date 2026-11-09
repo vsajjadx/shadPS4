@@ -121,7 +121,7 @@ void ComputePipeline::Build() {
                vk::to_string(pipeline_result));
     pipeline = std::move(pipe);
     SetObjectName(instance.GetDevice(), *pipeline, "Compute Pipeline {}", GetDebugString());
-    ready.store(true, std::memory_order_release);
+    ready.Complete();
 }
 
 ComputePipeline::~ComputePipeline() = default;

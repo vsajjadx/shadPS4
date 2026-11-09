@@ -45,6 +45,8 @@ static std::array<std::unique_ptr<spdlog::logger>, NUM_LOG_CLASSES> ALL_LOGGERS{
 std::array<Level, NUM_LOG_CLASSES> g_class_levels{};
 static std::array<VerboseLogBudget, NUM_LOG_CLASSES> g_verbose_budgets{};
 static bool g_unlimited_verbose_logging{};
+static bool g_verbose_runtime_logging{};
+static bool g_runtime_logging{};
 
 bool AdmitVerboseLog(Class log_class) {
     if (g_unlimited_verbose_logging) {
@@ -124,6 +126,9 @@ void Setup(std::string_view shadps4_filename) {
     // Explicit developer opt-out; do not reinterpret or overwrite persisted log filters.
     const char* full_log = std::getenv("SHADPS4_FULL_RUNTIME_LOG");
     g_unlimited_verbose_logging = full_log && std::string_view{full_log} == "1";
+    const char* verbose_log = std::getenv("SHADPS4_VERBOSE_RUNTIME_LOG");
+    g_verbose_runtime_logging =
+        g_unlimited_verbose_logging || (verbose_log && std::string_view{verbose_log} == "1");
     static std::once_flag already_registered;
 
     std::call_once(already_registered, []() {
@@ -164,6 +169,7 @@ void Setup(std::string_view shadps4_filename) {
 }
 
 void Switch(std::string_view game_filename, bool append_log) {
+    g_runtime_logging = true;
     UpdateSinks();
     UpdateLogLevels(EmulatorSettings.GetLogFilter());
     UpdateLogFlushLevel(EmulatorSettings.GetLogFlushLevel());
@@ -172,7 +178,11 @@ void Switch(std::string_view game_filename, bool append_log) {
     g_shad_file_sink->session_file_helper_.open(
         (GetUserPath(Common::FS::PathType::LogDir) / game_filename).string(),
         !(append_log || EmulatorSettings.IsLogAppend()));
-    if (!g_unlimited_verbose_logging) {
+    if (!g_verbose_runtime_logging) {
+        LOG_INFO(Log, "Runtime Trace/Debug disabled before argument evaluation; saved filters are "
+                      "unchanged. Set SHADPS4_VERBOSE_RUNTIME_LOG=1 for budgeted diagnostics or "
+                      "SHADPS4_FULL_RUNTIME_LOG=1 for complete developer traces.");
+    } else if (!g_unlimited_verbose_logging) {
         LOG_INFO(Log, "Trace/Debug limited to {} messages per class per second before formatting; "
                       "Info/Warning/Error/Critical are not rate-limited. "
                       "Set SHADPS4_FULL_RUNTIME_LOG=1 for complete developer traces.",
@@ -254,8 +264,12 @@ void UpdateLogLevels(std::string_view log_filter) {
         auto& logger = ALL_LOGGERS[i];
         if (EmulatorSettings.IsLogEnable()) {
             const auto level_it = log_level_per_class.find(std::string(NameOf(log_class)));
-            const auto log_level =
+            auto log_level =
                 level_it != log_level_per_class.end() ? level_it->second : default_log_level;
+            if (g_runtime_logging) {
+                log_level =
+                    ToSpdlog(RuntimeLogLevel(FromSpdlog(log_level), g_verbose_runtime_logging));
+            }
             logger->set_level(log_level);
             g_class_levels[i] = FromSpdlog(log_level);
         } else {

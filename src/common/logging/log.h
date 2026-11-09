@@ -22,6 +22,10 @@ enum class Level : std::uint8_t {
 };
 extern std::array<Level, NUM_LOG_CLASSES> g_class_levels;
 
+[[nodiscard]] constexpr Level RuntimeLogLevel(Level requested, bool verbose) {
+    return !verbose && requested < Level::Info ? Level::Info : requested;
+}
+
 void Setup(std::string_view shadps4_filename);
 void Switch(std::string_view game_filename, bool append_log);
 void Shutdown();

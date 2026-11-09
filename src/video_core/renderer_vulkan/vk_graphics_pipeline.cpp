@@ -445,7 +445,7 @@ void GraphicsPipeline::Build() {
     build_data.tcs.clear();
     build_data.tes.clear();
     build_data.fragment.clear();
-    ready.store(true, std::memory_order_release);
+    ready.Complete();
 }
 
 GraphicsPipeline::~GraphicsPipeline() = default;

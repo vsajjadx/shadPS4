@@ -6,6 +6,7 @@
 #include <atomic>
 #include <boost/container/static_vector.hpp>
 #include <xxhash.h>
+#include "common/build_completion.h"
 
 #include "shader_recompiler/frontend/fetch_shader.h"
 #include "video_core/amdgpu/regs_color.h"
@@ -101,7 +102,11 @@ public:
     void TryBuild();
 
     [[nodiscard]] bool IsReady() const noexcept {
-        return ready.load(std::memory_order_acquire);
+        return ready.IsReady();
+    }
+
+    void WaitUntilReady() const noexcept {
+        ready.Wait();
     }
 
     const Shader::Gcn::FetchShaderData& GetFetchShader() const noexcept {
@@ -130,7 +135,7 @@ private:
     std::array<vk::ShaderModule, MaxShaderStages> stage_modules{};
     vk::PipelineCache pipeline_cache_handle{};
     std::atomic<bool> build_started{false};
-    std::atomic<bool> ready{false};
+    Common::BuildCompletion ready;
 };
 
 struct ClipDistanceShaderKey {

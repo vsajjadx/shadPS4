@@ -9,6 +9,7 @@
 #include <thread>
 #include <vector>
 
+#include "common/build_completion.h"
 #include "common/hack_features.h"
 #include "common/logging/log.h"
 #include "common/logging/verbose_log_budget.h"
@@ -72,6 +73,54 @@ int main(int argc, char** argv) {
             Require(admitted == budget.Limit, "concurrent producers exceeded shared budget");
             Require(budget.Suppressed() == 160000 - budget.Limit,
                     "concurrent suppression count is inconsistent");
+        } else if (mode == "runtime-policy") {
+            using namespace Common::Log;
+            for (unsigned i = 0; i <= static_cast<unsigned>(Level::Off); ++i) {
+                const auto requested = static_cast<Level>(i);
+                Require(RuntimeLogLevel(requested, true) == requested,
+                        "developer mode changed an explicit logging threshold");
+                const auto expected = requested < Level::Info ? Level::Info : requested;
+                Require(RuntimeLogLevel(requested, false) == expected,
+                        "runtime policy dropped important logs or admitted verbose logs");
+            }
+            g_class_levels.fill(RuntimeLogLevel(Level::Trace, false));
+            unsigned evaluated{};
+            for (unsigned i = 0; i < 1000000; ++i) {
+                LOG_TRACE(Render, "trace {}", ++evaluated);
+                LOG_DEBUG(Render, "debug {}", ++evaluated);
+            }
+            Require(evaluated == 0 && emitted == 0,
+                    "runtime verbose calls still evaluated arguments or emitted output");
+            LOG_INFO(Render, "info {}", ++evaluated);
+            LOG_WARNING(Render, "warning {}", ++evaluated);
+            LOG_ERROR(Render, "error {}", ++evaluated);
+            LOG_CRITICAL(Render, "critical {}", ++evaluated);
+            Require(evaluated == 4 && emitted == 4, "runtime policy hid important diagnostics");
+        } else if (mode == "completion") {
+            Common::BuildCompletion completion;
+            Require(!completion.IsReady(), "completion started ready");
+            int payload{};
+            std::atomic<unsigned> entered{};
+            std::atomic<unsigned> observed{};
+            std::vector<std::jthread> waiters;
+            for (unsigned i = 0; i < 16; ++i) {
+                waiters.emplace_back([&] {
+                    ++entered;
+                    completion.Wait();
+                    if (payload == 42 && completion.IsReady()) {
+                        ++observed;
+                    }
+                });
+            }
+            while (entered != 16) {
+                std::this_thread::yield();
+            }
+            payload = 42;
+            completion.Complete();
+            waiters.clear();
+            Require(observed == 16, "completion lost a wakeup or failed to publish build data");
+            completion.Wait();
+            Require(completion.IsReady(), "completed wait lost its state");
         } else if (mode == "macro") {
             using namespace Common::Log;
             g_class_levels.fill(Level::Trace);
