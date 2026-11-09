@@ -5,7 +5,7 @@ name: Build and Release
 
 on:
   push:
-    branches: [main]
+    branches: [main, fix/runtime-log-stalls]
     paths-ignore:
       - "documents/**"
       - "**/*.md"
@@ -148,9 +148,27 @@ jobs:
         run: ctest --test-dir build --output-on-failure --progress -E 'GcnTest'
         shell: bash
 
+  runtime-logging-test:
+    name: Runtime logging regressions (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    steps:
+    - uses: actions/checkout@v6
+    - name: Fetch logging dependencies only
+      run: git submodule update --init --depth 1 externals/fmt externals/spdlog
+    - name: Configure logging regressions
+      run: cmake -S tests/logging -B build-logging -DCMAKE_BUILD_TYPE=Release
+    - name: Build logging regressions
+      run: cmake --build build-logging --config Release --parallel 2
+    - name: Run logging regressions
+      run: ctest --test-dir build-logging -C Release --output-on-failure -V
+
   windows-sdl:
     runs-on: windows-2025-vs2026
-    needs: get-info
+    needs: [get-info, runtime-logging-test]
     steps:
     - uses: actions/checkout@v6
       with:
