@@ -155,6 +155,7 @@ set(GCN_TEST_SOURCES
     # Stubs that replace dependencies
     stubs/common_stub.cpp
     stubs/resource_tracking_pass_stub.cpp
+    stubs/shader_runtime_stub.cpp
     stubs/scm_rev_stub.cpp
     stubs/sdl_stub.cpp
     stubs/core_stub.cpp
@@ -168,6 +169,8 @@ set(GCN_TEST_SOURCES
 
     # Tests
     gcn/test_gcn_instructions.cpp
+    gcn/test_wave64_lowering.cpp
+    ${CMAKE_SOURCE_DIR}/src/shader_recompiler/ir/passes/lower_wave64_pass.cpp
 )
 
 set(VIDEO_CORE_TEST_SOURCES

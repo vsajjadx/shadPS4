@@ -5,6 +5,10 @@
 
 namespace Core {
 
+void WriteCrashDump(void* /*exception_pointers*/) {
+    // Unit tests do not install the emulator's process crash monitor.
+}
+
 SignalDispatch::SignalDispatch() = default;
 
 SignalDispatch::~SignalDispatch() = default;

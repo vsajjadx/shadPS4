@@ -9,42 +9,12 @@
 #include "shader_recompiler/ir/program.h"
 #include "shader_recompiler/profile.h"
 
-#include <cstdlib>
-
 namespace Shader::Optimization {
-
-static bool IsDivergentCondition(const IR::U1& condition) {
-    if (condition.IsImmediate()) {
-        return false;
-    }
-    const IR::Inst* const condition_inst = condition.Inst();
-    return IR::BreadthFirstSearch(condition_inst,
-                                  [](const IR::Inst* inst) -> std::optional<bool> {
-                                      switch (inst->GetOpcode()) {
-                                      case IR::Opcode::LaneId:
-                                          return true;
-                                      case IR::Opcode::GetAttributeU32:
-                                          switch (inst->Arg(0).Attribute()) {
-                                          case IR::Attribute::LocalInvocationId:
-                                          case IR::Attribute::LocalInvocationIndex:
-                                          case IR::Attribute::GlobalInvocationId:
-                                              return true;
-                                          default:
-                                              break;
-                                          }
-                                          break;
-                                      default:
-                                          break;
-                                      }
-                                      return std::nullopt;
-                                  })
-        .value_or(false);
-}
 
 // A loop's barriers need every thread of the workgroup to run it the same number of times, so its
 // exits must not depend on anything that can differ between threads or waves: lane and invocation
 // ids, exec and vcc masks, subgroup operations, or memory the threads load or write.
-static bool IsVaryingLoopExit(const IR::U1& condition) {
+static bool IsVaryingCondition(const IR::U1& condition) {
     if (condition.IsImmediate()) {
         return false;
     }
@@ -92,7 +62,7 @@ static std::vector<IR::Block*> FindUniformBlocks(const IR::Program& program) {
         for (const IR::AbstractSyntaxNode& node : program.syntax_list) {
             switch (node.type) {
             case Type::If:
-                if_stack.push_back(IsVaryingLoopExit(node.data.if_node.cond));
+                if_stack.push_back(IsVaryingCondition(node.data.if_node.cond));
                 divergent_ifs += static_cast<u32>(if_stack.back());
                 break;
             case Type::EndIf:
@@ -107,15 +77,22 @@ static std::vector<IR::Block*> FindUniformBlocks(const IR::Program& program) {
                 break;
             case Type::Break:
                 if (!loop_stack.empty() &&
-                    (divergent_ifs > 0 || IsVaryingLoopExit(node.data.break_node.cond))) {
+                    (divergent_ifs > 0 || IsVaryingCondition(node.data.break_node.cond))) {
                     divergent_loops.push_back(loop_stack.back());
+                }
+                break;
+            case Type::Return:
+                // A divergent early exit can strand the other half-wave at any later
+                // workgroup barrier, including a barrier in a previous loop iteration.
+                if (divergent_ifs > 0 || !loop_stack.empty()) {
+                    return {};
                 }
                 break;
             case Type::Repeat:
                 if (loop_stack.empty() || loop_stack.back() != node.data.repeat.merge) {
                     return {};
                 }
-                if (IsVaryingLoopExit(node.data.repeat.cond)) {
+                if (IsVaryingCondition(node.data.repeat.cond)) {
                     divergent_loops.push_back(loop_stack.back());
                 }
                 loop_stack.pop_back();
@@ -136,7 +113,7 @@ static std::vector<IR::Block*> FindUniformBlocks(const IR::Program& program) {
     for (const IR::AbstractSyntaxNode& node : program.syntax_list) {
         switch (node.type) {
         case Type::If: {
-            const bool divergent = IsDivergentCondition(node.data.if_node.cond);
+            const bool divergent = IsVaryingCondition(node.data.if_node.cond);
             conditionals.push_back({node.data.if_node.merge, divergent});
             divergence_depth += static_cast<u32>(divergent);
             break;
@@ -174,23 +151,6 @@ static std::vector<IR::Block*> FindUniformBlocks(const IR::Program& program) {
     return blocks;
 }
 
-static IR::Inst* FindBallotForMaskedBitCount(const IR::Inst& mbcnt) {
-    IR::Value value = mbcnt.Arg(0);
-    if (value.IsImmediate()) {
-        return nullptr;
-    }
-    IR::Inst* inst = value.Inst();
-    if (inst->GetOpcode() != IR::Opcode::CompositeExtractU32x2 || inst->Arg(0).IsImmediate()) {
-        return nullptr;
-    }
-    inst = inst->Arg(0).Inst();
-    if (inst->GetOpcode() != IR::Opcode::UnpackUint2x32 || inst->Arg(0).IsImmediate()) {
-        return nullptr;
-    }
-    inst = inst->Arg(0).Inst();
-    return inst->GetOpcode() == IR::Opcode::Ballot ? inst : nullptr;
-}
-
 void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info,
                            const Profile& profile) {
     if (program.info.hw_stage != HwStage::Compute || profile.subgroup_size == 64) {
@@ -204,38 +164,25 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
     }
 
     std::vector<IR::Inst*> worklist;
-    // SHADPS4_WAVE64_FORCE_LOWER=1: lower wave ops even inside control flow judged non uniform.
-    // ReadLane is forced by default in this diagnostic build; Ballot only with the variable.
-    static const bool force_ballot = std::getenv("SHADPS4_WAVE64_FORCE_LOWER") != nullptr;
     const auto uniform_blocks = FindUniformBlocks(program);
+    bool needs_scratch{};
     for (IR::Block* block : program.blocks) {
         const bool is_uniform = std::ranges::contains(uniform_blocks, block);
-        const auto push_worklist = [&](IR::Inst& inst) {
-            const bool force = inst.GetOpcode() == IR::Opcode::ReadLane || force_ballot;
-            if (is_uniform || force) {
-                worklist.push_back(&inst);
-            } else {
-                LOG_WARNING(Render_Recompiler,
-                            "{} instruction in non uniform control flow (cs shader {:#x}, "
-                            "workgroup {}x{}x{})",
-                            inst.GetOpcode(), program.info.pgm_hash, size_x, size_y, size_z);
-            }
-        };
         for (IR::Inst& inst : block->Instructions()) {
-            if (inst.GetOpcode() == IR::Opcode::ReadLane && inst.Arg(1).IsImmediate()) {
-                push_worklist(inst);
-            } else if (inst.GetOpcode() == IR::Opcode::Ballot) {
-                const auto is_unpack = [](const IR::Use& use) {
-                    return use.user->GetOpcode() == IR::Opcode::UnpackUint2x32;
-                };
-                if (std::ranges::any_of(inst.Uses(), is_unpack)) {
-                    push_worklist(inst);
-                }
-            } else if (inst.GetOpcode() == IR::Opcode::MaskedBitCount32) {
-                IR::Inst* const ballot = FindBallotForMaskedBitCount(inst);
-                if (ballot == nullptr ||
-                    std::ranges::contains(uniform_blocks, ballot->GetParent())) {
+            const auto opcode = inst.GetOpcode();
+            if (opcode == IR::Opcode::MaskedBitCount32) {
+                // This is a per-invocation arithmetic operation, not a collective.
+                // Its lane number must not reset at the host's 32-lane boundary.
+                worklist.push_back(&inst);
+            } else if (opcode == IR::Opcode::ReadLane || opcode == IR::Opcode::Ballot) {
+                if (is_uniform) {
                     worklist.push_back(&inst);
+                    needs_scratch = true;
+                } else {
+                    LOG_WARNING(Render_Recompiler,
+                                "Cannot safely lower {} in non uniform control flow "
+                                "(cs shader {:#x}, workgroup {}x{}x{})",
+                                opcode, program.info.pgm_hash, size_x, size_y, size_z);
                 }
             }
         }
@@ -245,38 +192,58 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
     }
 
     const u32 scratch_base = Common::AlignUp(runtime_info.hw.cs.shared_memory_size, sizeof(u64));
-    const u32 scratch_size =
-        (Common::AlignUp(num_threads, 64) / profile.subgroup_size) * sizeof(u32);
-    program.info.shared_memory_scratch_size =
-        scratch_base + scratch_size - runtime_info.hw.cs.shared_memory_size;
+    // One slot per invocation supports runtime-selected ReadLane sources. Separate
+    // slots also avoid concurrent non-atomic stores to the same ballot word.
+    const u32 scratch_size = needs_scratch ? Common::AlignUp(num_threads, 64) * sizeof(u32) : 0;
+    const bool scratch_fits =
+        !needs_scratch || scratch_base + scratch_size <= profile.max_shared_memory_size;
+    if (needs_scratch && scratch_fits) {
+        program.info.shared_memory_scratch_size =
+            scratch_base + scratch_size - runtime_info.hw.cs.shared_memory_size;
+    } else if (!scratch_fits) {
+        LOG_WARNING(Render_Recompiler,
+                    "Insufficient shared memory for wave64 lowering (cs shader {:#x})",
+                    program.info.pgm_hash);
+    }
 
     for (IR::Inst* inst : worklist) {
-        LOG_INFO(Render_Recompiler, "Lowering {} instruction for wave64", inst->GetOpcode());
+        if (inst->GetOpcode() != IR::Opcode::MaskedBitCount32 && !scratch_fits) {
+            continue;
+        }
+        LOG_INFO(Render_Recompiler, "Lowering {} instruction for wave64 (cs shader {:#x})",
+                 inst->GetOpcode(), program.info.pgm_hash);
         IR::IREmitter ir{*inst->GetParent(), IR::Block::InstructionList::s_iterator_to(*inst)};
         const IR::U32 invocation_index = ir.GetAttributeU32(IR::Attribute::LocalInvocationIndex);
-        const IR::U32 subgroup_id = ir.ShiftRightLogical(invocation_index, ir.Imm32(5));
+        const IR::U32 wave_base = ir.BitwiseAnd(invocation_index, ir.Imm32(~63u));
+        const auto scratch_offset = [&](const IR::U32& index) {
+            return ir.IAdd(ir.Imm32(scratch_base), ir.ShiftLeftLogical(index, ir.Imm32(2u)));
+        };
         if (inst->GetOpcode() == IR::Opcode::Ballot) {
             const IR::U32 mask_low =
                 IR::U32{ir.CompositeExtract(ir.UnpackUint2x32(ir.Ballot(IR::U1{inst->Arg(0)})), 0)};
-            const IR::U32 offset =
-                ir.IAdd(ir.Imm32(scratch_base), ir.ShiftLeftLogical(subgroup_id, ir.Imm32(2u)));
-            ir.WriteShared(32, mask_low, offset);
+            ir.WriteShared(32, mask_low, scratch_offset(invocation_index));
             ir.Barrier();
-            const IR::U64 mask =
-                IR::U64{ir.LoadShared(64, false, ir.BitwiseAnd(offset, ir.Imm32(~7u)))};
+            const IR::U32 low{ir.LoadShared(32, false, scratch_offset(wave_base))};
+            const IR::U32 high_index = ir.IAdd(wave_base, ir.Imm32(32u));
+            // The last guest wave may have no upper host subgroup. Do not read
+            // uninitialized scratch in that case; inactive lanes have a zero ballot.
+            const IR::U32 valid_high_index = ir.UMin(high_index, ir.Imm32(num_threads - 1));
+            const IR::U32 high{ir.LoadShared(32, false, scratch_offset(valid_high_index))};
+            const IR::U32 high_or_zero{ir.Select(
+                ir.ILessThan(high_index, ir.Imm32(num_threads), false), high, ir.Imm32(0u))};
+            const IR::U64 mask = ir.PackUint2x32(ir.CompositeConstruct(low, high_or_zero));
             ir.Barrier();
             inst->ReplaceUsesWithAndRemove(mask);
         } else if (inst->GetOpcode() == IR::Opcode::ReadLane) {
-            const IR::U32 lane32 = ir.BitwiseAnd(IR::U32{inst->Arg(1)}, ir.Imm32(31));
-            const IR::U32 half = ir.ShiftRightLogical(IR::U32{inst->Arg(1)}, ir.Imm32(5u));
-            const IR::U32 offset =
-                ir.IAdd(ir.Imm32(scratch_base), ir.ShiftLeftLogical(subgroup_id, ir.Imm32(2u)));
-            ir.WriteShared(32, ir.ReadLane(IR::U32{inst->Arg(0)}, lane32), offset);
+            // Constant-only lowering left dynamic source lanes 32..63 as invalid
+            // native subgroup broadcasts. Publish every invocation's value, then
+            // address the selected lane within its guest wave, not its host subgroup.
+            ir.WriteShared(32, inst->Arg(0), scratch_offset(invocation_index));
             ir.Barrier();
-            const IR::U32 value =
-                IR::U32{ir.LoadShared(32, false,
-                                      ir.IAdd(ir.BitwiseAnd(offset, ir.Imm32(~7u)),
-                                              ir.ShiftLeftLogical(half, ir.Imm32(2u))))};
+            const IR::U32 lane = ir.BitwiseAnd(IR::U32{inst->Arg(1)}, ir.Imm32(63u));
+            const IR::U32 source = ir.IAdd(wave_base, lane);
+            const IR::U32 valid_source = ir.UMin(source, ir.Imm32(num_threads - 1));
+            const IR::U32 value{ir.LoadShared(32, false, scratch_offset(valid_source))};
             ir.Barrier();
             inst->ReplaceUsesWithAndRemove(value);
         } else if (inst->GetOpcode() == IR::Opcode::MaskedBitCount32) {

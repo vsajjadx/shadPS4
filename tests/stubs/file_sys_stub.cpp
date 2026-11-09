@@ -1,12 +1,22 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <system_error>
 
 #include "core/file_sys/ifile.h"
 
 namespace Core::FileSys {
+
+bool IsPkgFile(const std::filesystem::path& path) {
+    std::string extension = path.extension().string();
+    std::ranges::transform(extension, extension.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::error_code ec;
+    return extension == ".pkg" && std::filesystem::is_regular_file(path, ec) && !ec;
+}
 
 bool IsZArchiveFile(const std::filesystem::path& path) {
     std::error_code ec;
