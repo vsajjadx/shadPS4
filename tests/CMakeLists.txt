@@ -171,6 +171,7 @@ set(GCN_TEST_SOURCES
     gcn/test_gcn_instructions.cpp
     gcn/test_wave64_lowering.cpp
     ${CMAKE_SOURCE_DIR}/src/shader_recompiler/ir/passes/lower_wave64_pass.cpp
+    ${CMAKE_SOURCE_DIR}/src/shader_recompiler/ir/passes/shared_memory_barrier_pass.cpp
 )
 
 set(VIDEO_CORE_TEST_SOURCES

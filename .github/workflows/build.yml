@@ -5,7 +5,12 @@ name: Build and Release
 
 on:
   push:
-    branches: [main, fix/runtime-log-stalls, fix/nhl-runtime-correctness, fix/runtime-stutter-log-analysis]
+    branches:
+      - main
+      - fix/runtime-log-stalls
+      - fix/nhl-runtime-correctness
+      - fix/runtime-stutter-log-analysis
+      - fix/nhl24-wave64-lighting
     paths-ignore:
       - "documents/**"
       - "**/*.md"
@@ -166,9 +171,27 @@ jobs:
     - name: Run logging regressions
       run: ctest --test-dir build-logging -C Release --output-on-failure -V
 
+  shader-regression-test:
+    name: Wave64 compute regressions (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: recursive
+    - name: Install shader test dependencies
+      run: sudo apt-get update && sudo apt-get install -y g++-14 ninja-build libx11-dev libxext-dev libwayland-dev libdecor-0-dev libxkbcommon-dev libxcursor-dev libxi-dev libxss-dev libxtst-dev libxrandr-dev libxfixes-dev libudev-dev uuid-dev libasound2-dev libpulse-dev libopenal-dev
+    - name: Configure shader regressions
+      run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=ON -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14
+    - name: Prepare shadPS4 user data directory
+      run: mkdir -p ~/.local/share/shadPS4
+    - name: Build shader regressions
+      run: cmake --build build --target shadps4_gcn_test --parallel 2
+    - name: Run Wave64 regressions
+      run: ./build/tests/shadps4_gcn_test --gtest_filter='Wave64LoweringTest.*'
+
   windows-sdl:
     runs-on: windows-2025-vs2026
-    needs: [get-info, runtime-logging-test]
+    needs: [get-info, runtime-logging-test, shader-regression-test]
     steps:
     - uses: actions/checkout@v6
       with:

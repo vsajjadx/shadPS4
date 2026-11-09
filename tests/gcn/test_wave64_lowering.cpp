@@ -66,6 +66,10 @@ protected:
         Optimization::LowerWave64BallotPass(program, runtime, profile);
     }
 
+    void InsertSharedMemoryBarriers() {
+        Optimization::SharedMemoryBarrierPass(program, runtime, profile);
+    }
+
     size_t Count(IR::Opcode opcode) const {
         size_t count{};
         for (const auto* b : program.blocks) {
@@ -300,5 +304,35 @@ TEST_F(Wave64LoweringTest, FullGuestLdsDoesNotGenerateOutOfRangeScratch) {
     EXPECT_EQ(Count(IR::Opcode::ReadLane), 1);
     EXPECT_EQ(Count(IR::Opcode::Barrier), 0);
     EXPECT_EQ(info.shared_memory_scratch_size, 0);
+}
+
+TEST_F(Wave64LoweringTest, SplitGuestWaveUsesWorkgroupLdsBarriersOnWave32Hosts) {
+    runtime.hw.cs.shared_memory_size = 256;
+    profile.needs_lds_barriers = true;
+    IR::IREmitter ir{*block};
+    const auto id = ir.GetAttributeU32(IR::Attribute::LocalInvocationIndex);
+    const auto offset = ir.ShiftLeftLogical(id, ir.Imm32(2));
+    ir.WriteShared(32, id, offset);
+    const auto sink = ir.IAdd(IR::U32{ir.LoadShared(32, false, offset)}, ir.Imm32(0));
+    (void)sink;
+    InsertSharedMemoryBarriers();
+    // A subgroup barrier does not make lane 0..31's stores visible to lane 32..63.
+    // One barrier publishes the stores before the loads; the second protects the
+    // next wave iteration from overwriting the values being consumed.
+    EXPECT_EQ(Count(IR::Opcode::Barrier), 2);
+    EXPECT_EQ(Count(IR::Opcode::SubgroupBarrier), 0);
+}
+
+TEST_F(Wave64LoweringTest, MultiWaveGroupDoesNotRendezvousIndependentWaves) {
+    runtime.hw.cs.workgroup_size = {128, 1, 1};
+    runtime.hw.cs.shared_memory_size = 512;
+    profile.needs_lds_barriers = true;
+    IR::IREmitter ir{*block};
+    ir.WriteShared(32, ir.Imm32(7), ir.Imm32(0));
+    const auto sink = ir.IAdd(IR::U32{ir.LoadShared(32, false, ir.Imm32(0))}, ir.Imm32(0));
+    (void)sink;
+    InsertSharedMemoryBarriers();
+    EXPECT_EQ(Count(IR::Opcode::Barrier), 0);
+    EXPECT_EQ(Count(IR::Opcode::SubgroupBarrier), 2);
 }
 } // namespace
