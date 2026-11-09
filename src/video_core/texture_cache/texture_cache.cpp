@@ -803,15 +803,11 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     ImageId image_id{};
     bool perfect_match = false;
 
-    ImageId subrect_source{};
     // Check for a perfect match first
     for (const auto& cache_id : image_ids) {
         auto& cache_image = slot_images[cache_id];
         if (cache_image.info.guest_address != info.guest_address) {
             continue;
-        }
-        if (desc.IsSubrectTexture(cache_image.info) && cache_image.HasGpuValidData()) {
-            subrect_source = cache_id;
         }
         if (cache_image.info.guest_size != info.guest_size) {
             continue;
@@ -828,10 +824,6 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         }
         image_id = cache_id;
         perfect_match = true;
-    }
-
-    if (!image_id) {
-        image_id = subrect_source;
     }
 
     // Try to resolve overlaps (if any)
