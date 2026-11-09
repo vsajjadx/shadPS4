@@ -4,6 +4,9 @@
 name: Windows launcher hotfix
 
 on:
+  push:
+    branches: [fix/launcher-process-freeze]
+    paths: [.github/workflows/launcher-hotfix.yml]
   workflow_dispatch:
     inputs:
       base_run_id:
@@ -39,7 +42,7 @@ jobs:
       id: verify
       env:
         GH_TOKEN: ${{ github.token }}
-        BASE_RUN: ${{ inputs.base_run_id }}
+        BASE_RUN: ${{ inputs.base_run_id || '42637569553' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -145,7 +148,7 @@ jobs:
       uses: actions/download-artifact@v8
       with:
         name: ${{ needs.prepare.outputs.artifact }}
-        run-id: ${{ inputs.base_run_id }}
+        run-id: ${{ inputs.base_run_id || '42637569553' }}
         github-token: ${{ github.token }}
         path: bundle
     - name: Replace launcher and deployed Qt dependencies
@@ -157,7 +160,7 @@ jobs:
       env:
         BUNDLE_SHA: ${{ needs.prepare.outputs.fullhash }}
         EMULATOR_SHA: ${{ needs.prepare.outputs.emulator_sha }}
-        BASE_RUN: ${{ inputs.base_run_id }}
+        BASE_RUN: ${{ inputs.base_run_id || '42637569553' }}
       shell: bash
       run: |
         set -euo pipefail
