@@ -530,7 +530,7 @@ s32 PS4_SYSV_ABI close(s32 fd) {
     }
     if (file->ref_count > 1) {
         LOG_INFO(Kernel_Fs, "DIAG close fd {} {}: ref_count {} so the host handle is kept", fd,
-                 file->m_guest_name, file->ref_count);
+                 file->m_guest_name, file->ref_count.load());
     }
     LOG_INFO(Kernel_Fs, "Closing {}", file->m_guest_name);
     // FIXME: Lock file mutex before deleting it?
