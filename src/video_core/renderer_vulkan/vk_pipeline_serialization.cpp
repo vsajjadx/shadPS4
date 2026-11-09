@@ -16,9 +16,9 @@
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-static constexpr u32 ShaderBinaryVersion = 14u;
-static constexpr u32 ShaderMetaVersion = 10u;
-static constexpr u32 PipelineKeyVersion = 4u;
+static constexpr u32 ShaderBinaryVersion = 18u;
+static constexpr u32 ShaderMetaVersion = 14u;
+static constexpr u32 PipelineKeyVersion = 8u;
 } // namespace Serialization
 
 namespace Vulkan {
