@@ -766,7 +766,21 @@ IR::U32 CalculateBufferAddress(IR::IREmitter& ir, const IR::Inst& inst, const In
                             u32(info.sw_stage), info.pgm_hash);
             }
         }
-        const IR::U32 thread_id{ir.LaneId()};
+        const IR::U32 wave_mask = ir.Imm32(63U);
+        const IR::U32 thread_id = [&]() -> IR::U32 {
+            switch (info.sw_stage) {
+            case SwStage::Compute:
+                return ir.BitwiseAnd(ir.GetAttributeU32(IR::Attribute::LocalInvocationIndex),
+                                     wave_mask);
+            case SwStage::Vertex: {
+                const IR::U32 vertex_id = ir.GetAttributeU32(IR::Attribute::VertexId);
+                const IR::U32 base_vertex = ir.GetAttributeU32(IR::Attribute::BaseVertex);
+                return ir.BitwiseAnd(ir.ISub(vertex_id, base_vertex), wave_mask);
+            }
+            default:
+                return ir.LaneId();
+            }
+        }();
         index = ir.IAdd(index, thread_id);
     }
     // offset = (inst_offen ? vgpr_offset : 0) + inst_offset
