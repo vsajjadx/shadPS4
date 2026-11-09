@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <string>
 #include <unordered_map>
 
 #include "common/logging/classes.h"
@@ -183,6 +184,14 @@ IR::Program TranslateProgram(const std::span<const u32>& code, Pools& pools, Inf
         const auto movrel_bounds =
             Shader::Optimization::AnalyzeMovRelBounds(temp_program, runtime_info);
 
+        {
+            std::string bounds;
+            for (size_t i = 0; i < movrel_bounds.size() && i < 16; ++i) {
+                bounds += fmt::format("{} ", movrel_bounds[i]);
+            }
+            LOG_INFO(Render_Recompiler, "DIAG movrel: {} shader {:#x} bounds[{}]: {}",
+                     info.hw_stage, info.pgm_hash, movrel_bounds.size(), bounds);
+        }
         Shader::Optimization::LowerMovRelPass(program, runtime_info, movrel_bounds);
     }
     Shader::Optimization::SsaRewritePass(program);

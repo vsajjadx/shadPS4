@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <unordered_set>
 #include <xxhash.h>
 
@@ -439,6 +440,18 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
 
     if (!BindResources(pipeline)) {
         return;
+    }
+
+    {
+        static std::atomic<u64> indirect_count{0};
+        const u64 n = indirect_count.fetch_add(1, std::memory_order_relaxed);
+        if (n < 400 || n % 500 == 0) {
+            LOG_INFO(Render_Vulkan,
+                     "DIAG dispatch-indirect #{}: args at {:#x} (+{:#x}) size {:#x}, workgroup "
+                     "size {}x{}x{}",
+                     n, address + offset, offset, size, cs_program.num_thread_x.full,
+                     cs_program.num_thread_y.full, cs_program.num_thread_z.full);
+        }
     }
 
     const auto [buffer, base] = buffer_cache.ObtainBuffer(address + offset, size);

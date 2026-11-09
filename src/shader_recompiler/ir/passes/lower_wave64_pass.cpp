@@ -203,14 +203,21 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
 
     std::vector<IR::Inst*> worklist;
     const auto uniform_blocks = FindUniformBlocks(program);
+    LOG_INFO(Render_Recompiler,
+             "DIAG wave64 pass: cs shader {:#x} workgroup {}x{}x{} ({} threads) host subgroup {} "
+             "uniform blocks {}/{}",
+             program.info.pgm_hash, size_x, size_y, size_z, num_threads, profile.subgroup_size,
+             uniform_blocks.size(), program.blocks.size());
     for (IR::Block* block : program.blocks) {
         const bool is_uniform = std::ranges::contains(uniform_blocks, block);
         const auto push_worklist = [&](IR::Inst& inst) {
             if (is_uniform) {
                 worklist.push_back(&inst);
             } else {
-                LOG_WARNING(Render_Recompiler, "{} instruction in non uniform control flow",
-                            inst.GetOpcode());
+                LOG_WARNING(Render_Recompiler,
+                            "DIAG wave64 pass: cs shader {:#x}: {} instruction in non uniform "
+                            "control flow, NOT lowered",
+                            program.info.pgm_hash, inst.GetOpcode());
             }
         };
         for (IR::Inst& inst : block->Instructions()) {
@@ -243,7 +250,8 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
         scratch_base + scratch_size - runtime_info.hw.cs.shared_memory_size;
 
     for (IR::Inst* inst : worklist) {
-        LOG_INFO(Render_Recompiler, "Lowering {} instruction for wave64", inst->GetOpcode());
+        LOG_INFO(Render_Recompiler, "DIAG wave64 pass: cs shader {:#x}: lowering {} for wave64",
+                 program.info.pgm_hash, inst->GetOpcode());
         IR::IREmitter ir{*inst->GetParent(), IR::Block::InstructionList::s_iterator_to(*inst)};
         const IR::U32 invocation_index = ir.GetAttributeU32(IR::Attribute::LocalInvocationIndex);
         const IR::U32 subgroup_id = ir.ShiftRightLogical(invocation_index, ir.Imm32(5));

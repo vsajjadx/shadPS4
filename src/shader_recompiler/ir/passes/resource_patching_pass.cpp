@@ -631,6 +631,9 @@ void PatchGlobalDataShareAccess(IR::Inst& inst, Info& info, Descriptors& descrip
     IR::IREmitter ir{*inst.GetParent(), IR::Block::InstructionList::s_iterator_to(inst)};
 
     if (inst.GetOpcode() == IR::Opcode::DataAppend || inst.GetOpcode() == IR::Opcode::DataConsume) {
+        LOG_INFO(Render_Recompiler,
+                 "DIAG append/consume: {} shader {:#x} {} patched to GDS buffer binding {}",
+                 info.hw_stage, info.pgm_hash, inst.GetOpcode(), binding);
         RemoveAppendBufferLaneOffset(inst);
         const IR::Value replacement =
             inst.GetOpcode() == IR::Opcode::DataAppend

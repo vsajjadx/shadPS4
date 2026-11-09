@@ -1380,7 +1380,8 @@ std::string PipelineCache::GetShaderName(Shader::HwStage stage, u64 hash,
 
 void PipelineCache::DumpShader(std::span<const u32> code, u64 hash, Shader::HwStage stage,
                                size_t perm_idx, std::string_view ext) {
-    if (!EmulatorSettings.IsDumpShaders()) {
+    // Diagnostic build: compute shaders are always dumped so a hung dispatch can be inspected.
+    if (!EmulatorSettings.IsDumpShaders() && stage != Shader::HwStage::Compute) {
         return;
     }
 

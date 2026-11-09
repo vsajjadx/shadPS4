@@ -96,6 +96,18 @@ static PS4_SYSV_ABI void stack_chk_fail() {
                 reinterpret_cast<u64>(caller), mod->GetBaseAddress())) {
             static std::atomic<u32> recoveries{0};
             const u32 n = recoveries.fetch_add(1, std::memory_order_relaxed);
+            if (n < 8) {
+                const u64* sp = static_cast<const u64*>(_AddressOfReturnAddress());
+                std::string stack;
+                for (int i = 0; i < 16; ++i) {
+                    stack += fmt::format("{:#x} ", sp[i]);
+                }
+                LOG_WARNING(Lib_Kernel,
+                            "DIAG stack_chk_fail #{}: thread {:#x} slot {:p} stack from return "
+                            "slot: {}",
+                            n, std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                            static_cast<const void*>(sp), stack);
+            }
             if (n < 64 || (n & (n - 1)) == 0) {
                 LOG_WARNING(Lib_Kernel,
                             "Guest fault recovery: stack check failed in {} at offset {:#x}, "

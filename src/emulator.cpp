@@ -7,7 +7,9 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <functional>
 #include <set>
+#include <thread>
 #include <sstream>
 #include <fmt/core.h>
 #include <fmt/xchar.h>
@@ -723,6 +725,7 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     LOG_INFO(Config, "GPU textureLodBias: {}", EmulatorSettings.GetTextureLodBias());
     LOG_INFO(Config, "GPU fastShaderMath: {}", EmulatorSettings.IsFastShaderMath());
     LOG_INFO(Config, "GPU submitDrawInterval: {}", EmulatorSettings.GetSubmitDrawInterval());
+    LOG_INFO(Config, "DIAG build: upstream sync + diagnostics (branch diag/logging)");
     LOG_INFO(Config, "Vulkan gpuId: {}", EmulatorSettings.GetGpuId());
     LOG_INFO(Config, "Vulkan vkValidation: {}", EmulatorSettings.IsVkValidationEnabled());
     LOG_INFO(Config, "Vulkan vkValidationCore: {}", EmulatorSettings.IsVkValidationCoreEnabled());
@@ -918,6 +921,8 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     Libraries::InitHLELibs(&linker->GetHLESymbols());
 
     std::jthread init_thread{[&, this]() {
+        LOG_INFO(Config, "DIAG loader thread {:#x} started",
+                 std::hash<std::thread::id>{}(std::this_thread::get_id()));
         // Load the module with the linker.
         if (linker->LoadModule(guest_eboot_path) == -1) {
             LOG_CRITICAL(Loader, "Failed to load game's eboot.bin: {}", guest_eboot_path);
@@ -950,6 +955,7 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
             });
         }
 
+        LOG_INFO(Config, "DIAG calling linker->Execute on loader thread");
         linker->Execute(args);
     }};
 
