@@ -68,6 +68,7 @@ public:
     void Translate(IR::Block* block, u32 pc, IR::Condition cond,
                    std::span<const GcnInst> inst_list);
     void TranslateInstruction(const GcnInst& inst);
+    void AnalyzeMovRel(std::span<const GcnInst> inst_list);
 
     // Instruction categories
     void EmitPrologue(IR::Block* first_block);
@@ -391,6 +392,9 @@ private:
     IR::U32 AlphaToMaskLevel(const IR::U32& packed, AmdGpu::ShaderExportFormat format);
     void ExportAlphaToMask(const IR::U32& level);
     IR::U32 ReplicateSampleMask(const IR::U32& mask, u32 log2_samples);
+    u32 GetMovRelEndVgpr(u32 base_vgprno) const;
+    IR::U32 VMovRelSHelper(u32 src_vgprno, const IR::U32 m0);
+    void VMovRelDHelper(u32 dst_vgprno, const IR::U32 src_val, const IR::U32 m0);
     void LogMissingOpcode(const GcnInst& inst);
 
     IR::VectorReg GetScratchVgpr(u32 offset);
@@ -403,6 +407,7 @@ private:
     u32 next_vgpr_num;
     std::unordered_map<u32, IR::VectorReg> vgpr_map;
     std::array<IR::Attribute, MaxInterpVgpr> vgpr_to_interp{};
+    std::vector<u32> movrel_cluster_starts;
     FetchShaderData fetch_data{};
     bool opcode_missing = false;
     bool valid_mask_exported = false;
