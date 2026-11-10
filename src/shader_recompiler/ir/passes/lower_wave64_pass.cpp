@@ -47,6 +47,33 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
             }
         }
     }
+    // A guest wave is 64 invocations but the host subgroup has fewer, so the host lane id and the
+    // host's inverse ballot (which tests the bit at the subgroup lane id) restart at the second
+    // half of every guest wave: its invocations read the low half of the 64-bit mask. Address both
+    // by the invocation's lane within its guest wave instead.
+    std::vector<IR::Inst*> lane_insts;
+    for (IR::Block* block : program.blocks) {
+        for (IR::Inst& inst : block->Instructions()) {
+            const auto opcode = inst.GetOpcode();
+            if (opcode == IR::Opcode::InverseBallot || opcode == IR::Opcode::LaneId) {
+                lane_insts.push_back(&inst);
+            }
+        }
+    }
+    for (IR::Inst* inst : lane_insts) {
+        IR::IREmitter ir{*inst->GetParent(), IR::Block::InstructionList::s_iterator_to(*inst)};
+        const IR::U32 guest_lane =
+            ir.BitwiseAnd(ir.GetAttributeU32(IR::Attribute::LocalInvocationIndex), ir.Imm32(63u));
+        if (inst->GetOpcode() == IR::Opcode::LaneId) {
+            inst->ReplaceUsesWithAndRemove(guest_lane);
+        } else {
+            const IR::U64 shifted{ir.ShiftRightLogical(IR::U64{inst->Arg(0)}, guest_lane)};
+            const IR::U1 bit{ir.INotEqual(ir.BitwiseAnd(shifted, ir.Imm64(u64{1})),
+                                          ir.Imm64(u64{0}))};
+            inst->ReplaceUsesWithAndRemove(bit);
+        }
+    }
+
     if (worklist.empty()) {
         return;
     }
