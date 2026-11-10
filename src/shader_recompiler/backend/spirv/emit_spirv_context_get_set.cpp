@@ -522,71 +522,17 @@ template <u32 N, PointerType alias>
 static void EmitStoreBufferB32xN(EmitContext& ctx, IR::Inst* inst, u32 handle, Id address,
                                  Id value) {
     const auto& spv_buffer = ctx.buffers[handle];
-    const Id dword_offset = spv_buffer.Offset(PointerSize::B32);
-    const Id byte_offset = spv_buffer.Offset(PointerSize::B8);
-    if (Sirit::ValidId(dword_offset)) {
-        address = ctx.OpIAdd(ctx.U32[1], address, dword_offset);
+    if (const Id offset = spv_buffer.Offset(PointerSize::B32); Sirit::ValidId(offset)) {
+        address = ctx.OpIAdd(ctx.U32[1], address, offset);
     }
     const auto& data_types = alias == PointerType::U32 ? ctx.U32 : ctx.F32;
     const auto [id, pointer_type] = spv_buffer.Alias(alias);
-
-    const bool handle_unaligned = Sirit::ValidId(dword_offset) && Sirit::ValidId(byte_offset);
-    Id unaligned_label{};
-    Id merge_label{};
-    Id shift{};
-    if (handle_unaligned) {
-        // Loads read dwords at the exact byte address when the bound buffer base is not dword
-        // aligned (see EmitLoadBufferB32xN), so stores must write them there too. Otherwise data
-        // written by one shader (e.g. indirect dispatch arguments) is read from another place.
-        const Id sub = ctx.OpBitwiseAnd(ctx.U32[1], byte_offset, ctx.ConstU32(3U));
-        shift = ctx.OpShiftLeftLogical(ctx.U32[1], sub, ctx.ConstU32(3U));
-        const Id is_aligned = ctx.OpIEqual(ctx.U1[1], sub, ctx.u32_zero_value);
-        const Id aligned_label = ctx.OpLabel();
-        unaligned_label = ctx.OpLabel();
-        merge_label = ctx.OpLabel();
-        ctx.OpSelectionMerge(merge_label, spv::SelectionControlMask::MaskNone);
-        ctx.OpBranchConditional(is_aligned, aligned_label, unaligned_label);
-        ctx.AddLabel(aligned_label);
-    }
 
     for (u32 i = 0; i < N; i++) {
         const Id index_i = i == 0 ? address : ctx.OpIAdd(ctx.U32[1], address, ctx.ConstU32(i));
         const Id ptr_i = ctx.OpAccessChain(pointer_type, id, ctx.u32_zero_value, index_i);
         const Id value_i = N == 1 ? value : ctx.OpCompositeExtract(data_types[1], value, i);
         ctx.OpStore(ptr_i, value_i);
-    }
-
-    if (handle_unaligned) {
-        ctx.OpBranch(merge_label);
-        ctx.AddLabel(unaligned_label);
-        const auto [u32_id, u32_pointer_type] = spv_buffer.Alias(PointerType::U32);
-        const Id inv_shift = ctx.OpISub(ctx.U32[1], ctx.ConstU32(32U), shift);
-        // Bits of the low dword that stay below the stored value, and their complement.
-        const Id keep_low = ctx.OpISub(
-            ctx.U32[1], ctx.OpShiftLeftLogical(ctx.U32[1], ctx.ConstU32(1U), shift),
-            ctx.ConstU32(1U));
-        const Id keep_high = ctx.OpBitwiseXor(ctx.U32[1], keep_low, ctx.ConstU32(0xFFFFFFFFU));
-        const Id atomic_scope = ctx.ConstU32(static_cast<u32>(spv::Scope::Device));
-        for (u32 i = 0; i < N; i++) {
-            Id value_i = N == 1 ? value : ctx.OpCompositeExtract(data_types[1], value, i);
-            if constexpr (alias == PointerType::F32) {
-                value_i = ctx.OpBitcast(ctx.U32[1], value_i);
-            }
-            const Id index_lo = i == 0 ? address : ctx.OpIAdd(ctx.U32[1], address, ctx.ConstU32(i));
-            const Id index_hi = ctx.OpIAdd(ctx.U32[1], address, ctx.ConstU32(i + 1));
-            const Id ptr_lo =
-                ctx.OpAccessChain(u32_pointer_type, u32_id, ctx.u32_zero_value, index_lo);
-            const Id ptr_hi =
-                ctx.OpAccessChain(u32_pointer_type, u32_id, ctx.u32_zero_value, index_hi);
-            const Id lo_bits = ctx.OpShiftLeftLogical(ctx.U32[1], value_i, shift);
-            const Id hi_bits = ctx.OpShiftRightLogical(ctx.U32[1], value_i, inv_shift);
-            ctx.OpAtomicAnd(ctx.U32[1], ptr_lo, atomic_scope, ctx.u32_zero_value, keep_low);
-            ctx.OpAtomicOr(ctx.U32[1], ptr_lo, atomic_scope, ctx.u32_zero_value, lo_bits);
-            ctx.OpAtomicAnd(ctx.U32[1], ptr_hi, atomic_scope, ctx.u32_zero_value, keep_high);
-            ctx.OpAtomicOr(ctx.U32[1], ptr_hi, atomic_scope, ctx.u32_zero_value, hi_bits);
-        }
-        ctx.OpBranch(merge_label);
-        ctx.AddLabel(merge_label);
     }
 }
 
