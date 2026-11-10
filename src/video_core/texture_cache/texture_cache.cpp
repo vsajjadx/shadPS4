@@ -186,7 +186,7 @@ void TextureCache::WriteAliasToBuffer(ImageId image_id, VAddr begin, VAddr end) 
 
 void TextureCache::SyncAliasedImages(ImageId image_id, const ImageViewInfo& view) {
     Image& image = slot_images[image_id];
-    if (image.info.guest_address == 0 || image.info.num_samples > 1) {
+    if (true || image.info.guest_address == 0 || image.info.num_samples > 1) {
         return;
     }
     const VAddr image_begin = image.info.guest_address;
