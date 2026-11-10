@@ -400,41 +400,10 @@ void EmitSetPatch(EmitContext& ctx, IR::Patch patch, Id value) {
 template <u32 N, PointerType alias>
 static Id EmitLoadBufferB32xN(EmitContext& ctx, IR::Inst* inst, u32 handle, Id address) {
     const auto& spv_buffer = ctx.buffers[handle];
-    const Id dword_offset = spv_buffer.Offset(PointerSize::B32);
-    const Id byte_offset = spv_buffer.Offset(PointerSize::B8);
-    if (Sirit::ValidId(dword_offset)) {
-        address = ctx.OpIAdd(ctx.U32[1], address, dword_offset);
+    if (const Id offset = spv_buffer.Offset(PointerSize::B32); Sirit::ValidId(offset)) {
+        address = ctx.OpIAdd(ctx.U32[1], address, offset);
     }
     const auto& data_types = alias == PointerType::U32 ? ctx.U32 : ctx.F32;
-    if (Sirit::ValidId(dword_offset) && Sirit::ValidId(byte_offset)) {
-        // The bound window starts at the guest address rounded down to the storage alignment and
-        // the dword offset above drops the low two bits of the remaining byte offset, so a guest
-        // buffer whose base is not dword aligned was read shifted by up to 3 bytes. The hardware
-        // reads such dwords at the exact byte address: rebuild them from two neighbouring dwords.
-        const auto [u32_id, u32_pointer_type] = spv_buffer.Alias(PointerType::U32);
-        const Id sub = ctx.OpBitwiseAnd(ctx.U32[1], byte_offset, ctx.ConstU32(3U));
-        const Id shift = ctx.OpShiftLeftLogical(ctx.U32[1], sub, ctx.ConstU32(3U));
-        const Id inv_shift = ctx.OpISub(ctx.U32[1], ctx.ConstU32(32U), shift);
-        const Id is_aligned = ctx.OpIEqual(ctx.U1[1], sub, ctx.u32_zero_value);
-        boost::container::static_vector<Id, N> parts;
-        for (u32 i = 0; i < N; i++) {
-            const Id index_lo = i == 0 ? address : ctx.OpIAdd(ctx.U32[1], address, ctx.ConstU32(i));
-            const Id index_hi = ctx.OpIAdd(ctx.U32[1], address, ctx.ConstU32(i + 1));
-            const Id lo = ctx.OpLoad(ctx.U32[1], ctx.OpAccessChain(u32_pointer_type, u32_id,
-                                                                    ctx.u32_zero_value, index_lo));
-            const Id hi = ctx.OpLoad(ctx.U32[1], ctx.OpAccessChain(u32_pointer_type, u32_id,
-                                                                    ctx.u32_zero_value, index_hi));
-            const Id merged =
-                ctx.OpBitwiseOr(ctx.U32[1], ctx.OpShiftRightLogical(ctx.U32[1], lo, shift),
-                                ctx.OpShiftLeftLogical(ctx.U32[1], hi, inv_shift));
-            Id value = ctx.OpSelect(ctx.U32[1], is_aligned, lo, merged);
-            if constexpr (alias == PointerType::F32) {
-                value = ctx.OpBitcast(ctx.F32[1], value);
-            }
-            parts.push_back(value);
-        }
-        return N == 1 ? parts[0] : ctx.OpCompositeConstruct(data_types[N], parts);
-    }
     const auto [id, pointer_type] = spv_buffer.Alias(alias);
 
     boost::container::static_vector<Id, N> ids;
