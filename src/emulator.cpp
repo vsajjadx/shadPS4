@@ -634,20 +634,6 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         EmulatorSettings.SetPipelineCacheEnabled(true, true);
         LOG_INFO(Config, "Pipeline cache forced on to precompile shaders at boot");
     }
-    // The PS4 CPU always sees what the GPU wrote, including images rendered in linear layout, and
-    // games rely on it for lighting, exposure and visibility data. Every game runs with precise
-    // and linear image readbacks so they all see coherent memory, unless its own config says
-    // otherwise.
-    const bool readbacks_game_specific = EmulatorSettings.IsReadbacksGameSpecific();
-    if (!readbacks_game_specific &&
-        EmulatorSettings.GetReadbacksMode() != GpuReadbacksMode::Precise) {
-        EmulatorSettings.SetReadbacksMode(GpuReadbacksMode::Precise, true);
-        LOG_INFO(Config, "GPU readbacks forced to Precise");
-    }
-    if (!readbacks_game_specific && !EmulatorSettings.IsReadbackLinearImagesEnabled()) {
-        EmulatorSettings.SetReadbackLinearImagesEnabled(true, true);
-        LOG_INFO(Config, "Linear image readbacks forced on");
-    }
     // Compiling a new pipeline on the GPU thread freezes the game for tens of milliseconds, so
     // pipelines are built on worker threads for every game. A game-specific config can still turn
     // it off.
