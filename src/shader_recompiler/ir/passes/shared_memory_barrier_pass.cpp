@@ -1,10 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <unordered_set>
-#include "shader_recompiler/ir/breadth_first_search.h"
 #include "shader_recompiler/ir/ir_emitter.h"
 #include "shader_recompiler/ir/passes/resource_pass.h"
+#include "shader_recompiler/ir/passes/workgroup_uniformity.h"
 #include "shader_recompiler/ir/program.h"
 #include "shader_recompiler/profile.h"
 
@@ -58,12 +57,12 @@ static void EmitBarrierInBlock(IR::Block* block, bool subgroup = false) {
         }
     }
     if (action != BarrierAction::None) {
-        IR::IREmitter ir{*block, --block->end()};
+        // IR control flow lives in the ASL, not in a terminator instruction.
+        // Inserting before back() can leave a final LDS store unpublished.
+        IR::IREmitter ir{*block, block->end()};
         emit_barrier(ir);
     }
 }
-
-using NodeSet = std::unordered_set<const IR::Block*>;
 
 static void EmitBarrierAtBlockStart(IR::Block* block) {
     auto insert_point = std::ranges::find_if_not(block->Instructions(), IR::IsPhi);
@@ -71,70 +70,13 @@ static void EmitBarrierAtBlockStart(IR::Block* block) {
     ir.Barrier();
 }
 
-static bool IsDivergent(const IR::U1& cond) {
-    return IR::BreadthFirstSearch(cond, [](IR::Inst* inst) -> std::optional<bool> {
-               if (inst->GetOpcode() == IR::Opcode::LaneId) {
-                   return true;
-               }
-               if (inst->GetOpcode() == IR::Opcode::GetAttributeU32) {
-                   switch (inst->Arg(0).Attribute()) {
-                   case IR::Attribute::LocalInvocationId:
-                   case IR::Attribute::LocalInvocationIndex:
-                   case IR::Attribute::GlobalInvocationId:
-                       return true;
-                   default:
-                       break;
-                   }
-               }
-               return std::nullopt;
-           }) == true;
-}
-
-// Inserts a barrier after divergent conditional blocks to avoid undefined
-// behavior when some threads write and others read from shared memory.
-static void EmitBarrierInMergeBlock(const IR::AbstractSyntaxNode::Data& data,
-                                    NodeSet& divergence_end, u32& divergence_depth) {
-    const IR::U1 cond = data.if_node.cond;
-    if (IsDivergent(cond)) {
-        if (divergence_depth == 0) {
-            EmitBarrierAtBlockStart(data.if_node.merge);
-        }
-        ++divergence_depth;
-        divergence_end.emplace(data.if_node.merge);
-    }
-}
-
-// A barrier inside a loop is invalid when different invocations leave on different iterations.
-// Mark such loops so their shared-memory synchronization can be deferred to the merge block.
-static NodeSet FindDivergentLoops(const IR::AbstractSyntaxList& syntax_list) {
-    NodeSet divergent_loops;
-    for (const IR::AbstractSyntaxNode& node : syntax_list) {
-        switch (node.type) {
-        case IR::AbstractSyntaxNode::Type::Repeat:
-            if (IsDivergent(node.data.repeat.cond)) {
-                divergent_loops.emplace(node.data.repeat.merge);
-            }
-            break;
-        case IR::AbstractSyntaxNode::Type::Break:
-            if (IsDivergent(node.data.break_node.cond)) {
-                divergent_loops.emplace(node.data.break_node.merge);
-            }
-            break;
-        default:
-            break;
-        }
-    }
-    return divergent_loops;
-}
-
 // GCN waves run in lockstep, so games load from a buffer what another invocation of the wave
 // stored without a barrier. Inserts one after such stores.
-static void EmitBufferBarriers(IR::Program& program) {
+static void EmitBufferBarriers(IR::Program& program,
+                               const std::vector<IR::Block*>& uniform_blocks) {
     using Type = IR::AbstractSyntaxNode::Type;
     // Index of the last load from each buffer, counting instructions in program order.
     std::array<u32, NUM_BUFFERS> last_load{};
-    // Threads that skip one just run to the end.
-    NodeSet early_outs;
     u32 index{};
     for (const IR::AbstractSyntaxNode& node : program.syntax_list) {
         if (node.type == Type::Block) {
@@ -144,31 +86,22 @@ static void EmitBufferBarriers(IR::Program& program) {
                     last_load[inst.Arg(0).U32()] = index;
                 }
             }
-        } else if (node.type == Type::EndIf) {
-            early_outs.emplace(node.data.end_if.merge);
-        } else if (node.type != Type::Return) {
-            early_outs.clear();
         }
     }
-    const NodeSet divergent_loops = FindDivergentLoops(program.syntax_list);
-    NodeSet divergence_end;
-    u32 divergence_depth{};
     std::vector<u32> loops;
+    bool pending_divergent_store{};
     index = 0;
     for (const IR::AbstractSyntaxNode& node : program.syntax_list) {
-        if (node.type == Type::If && !early_outs.contains(node.data.if_node.merge) &&
-            IsDivergent(node.data.if_node.cond)) {
-            divergence_end.emplace(node.data.if_node.merge);
-            ++divergence_depth;
-        } else if (node.type == Type::EndIf) {
-            divergence_depth -= static_cast<u32>(divergence_end.contains(node.data.end_if.merge));
-        } else if (node.type == Type::Loop) {
+        if (node.type == Type::Loop) {
             loops.push_back(index);
-            divergence_depth += static_cast<u32>(divergent_loops.contains(node.data.loop.merge));
         } else if (node.type == Type::Repeat) {
             loops.pop_back();
-            divergence_depth -= static_cast<u32>(divergent_loops.contains(node.data.repeat.merge));
         } else if (node.type == Type::Block) {
+            const bool is_uniform = std::ranges::contains(uniform_blocks, node.data.block);
+            const bool publish_pending = is_uniform && pending_divergent_store;
+            if (publish_pending) {
+                pending_divergent_store = false;
+            }
             const auto emit_barrier = [&](IR::Block::iterator insert_point) {
                 IR::IREmitter{*node.data.block, insert_point}.Barrier(true);
             };
@@ -179,13 +112,22 @@ static void EmitBufferBarriers(IR::Program& program) {
                 if (store && IsBufferInstruction(inst) && !IsBufferStore(inst)) {
                     emit_barrier(IR::Block::InstructionList::s_iterator_to(inst));
                     store = nullptr;
-                } else if (divergence_depth == 0 && IsBufferStore(inst) && !IsBufferAtomic(inst) &&
+                } else if (IsBufferStore(inst) && !IsBufferAtomic(inst) &&
                            last_load[inst.Arg(0).U32()] > (loops.empty() ? index : loops.front())) {
-                    store = &inst;
+                    if (is_uniform) {
+                        store = &inst;
+                    } else {
+                        pending_divergent_store = true;
+                    }
                 }
             }
             if (store) {
                 emit_barrier(std::next(IR::Block::InstructionList::s_iterator_to(*store)));
+            }
+            if (publish_pending) {
+                // Stores in a partial wave become visible at its uniform merge,
+                // never at a rendezvous inside the divergent producer block.
+                emit_barrier(std::ranges::find_if_not(node.data.block->Instructions(), IR::IsPhi));
             }
         }
     }
@@ -198,12 +140,13 @@ void SharedMemoryBarrierPass(IR::Program& program, const RuntimeInfo& runtime_in
     if (program.info.hw_stage != HwStage::Compute) {
         return;
     }
+    const auto uniform_blocks = FindWorkgroupUniformBlocks(program);
     const auto& cs_info = runtime_info.hw.cs;
     const u32 shared_memory_size = cs_info.shared_memory_size;
     const u32 threadgroup_size =
         cs_info.workgroup_size[0] * cs_info.workgroup_size[1] * cs_info.workgroup_size[2];
     if (threadgroup_size == GcnSubgroupSize && profile.subgroup_size != GcnSubgroupSize) {
-        EmitBufferBarriers(program);
+        EmitBufferBarriers(program, uniform_blocks);
     }
     if (shared_memory_size == 0) {
         return;
@@ -226,42 +169,23 @@ void SharedMemoryBarrierPass(IR::Program& program, const RuntimeInfo& runtime_in
         return;
     }
     using Type = IR::AbstractSyntaxNode::Type;
-    u32 divergence_depth{};
-    NodeSet divergence_end;
-    const NodeSet divergent_loops = FindDivergentLoops(program.syntax_list);
     for (const IR::AbstractSyntaxNode& node : program.syntax_list) {
-        if (node.type == Type::EndIf) {
-            if (divergence_end.contains(node.data.end_if.merge)) {
-                --divergence_depth;
-            }
+        if (node.type != Type::Block) {
             continue;
         }
-        // Check if branch depth is zero, we don't want to insert barrier in potentially divergent
-        // code.
-        if (node.type == Type::If) {
-            EmitBarrierInMergeBlock(node.data, divergence_end, divergence_depth);
+        const bool is_uniform = std::ranges::contains(uniform_blocks, node.data.block);
+        if (large_group || !is_uniform) {
+            // Never rendezvous independent guest waves or partially active invocations
+            // at a workgroup execution barrier. Retain local memory ordering instead.
+            EmitBarrierInBlock(node.data.block, true);
             continue;
         }
-        if (node.type == Type::Loop && divergent_loops.contains(node.data.loop.merge)) {
-            ++divergence_depth;
-            continue;
+        if (node.data.block != program.blocks.front()) {
+            // Publish stores from preceding divergent blocks only after reconvergence.
+            // Uniformity also excludes merges reached after a divergent early return.
+            EmitBarrierAtBlockStart(node.data.block);
         }
-        if (node.type == Type::Repeat && divergent_loops.contains(node.data.repeat.merge)) {
-            ASSERT(divergence_depth > 0);
-            --divergence_depth;
-            if (divergence_depth == 0) {
-                EmitBarrierAtBlockStart(node.data.repeat.merge);
-            }
-            continue;
-        }
-        if (node.type == Type::Block) {
-            if (large_group) {
-                // Independent guest waves must never rendezvous at an implicit wave barrier.
-                EmitBarrierInBlock(node.data.block, true);
-            } else if (divergence_depth == 0) {
-                EmitBarrierInBlock(node.data.block);
-            }
-        }
+        EmitBarrierInBlock(node.data.block);
     }
 }
 

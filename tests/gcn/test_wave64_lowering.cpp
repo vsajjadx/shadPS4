@@ -335,4 +335,139 @@ TEST_F(Wave64LoweringTest, MultiWaveGroupDoesNotRendezvousIndependentWaves) {
     EXPECT_EQ(Count(IR::Opcode::Barrier), 0);
     EXPECT_EQ(Count(IR::Opcode::SubgroupBarrier), 2);
 }
+
+TEST_F(Wave64LoweringTest, LoadedBranchNeverGetsAWorkgroupLdsBarrier) {
+    runtime.hw.cs.shared_memory_size = 256;
+    profile.needs_lds_barriers = true;
+    IR::IREmitter entry{*block};
+    const IR::U32 loaded{entry.LoadShared(32, false, entry.Imm32(0))};
+    auto* body = AddIf(entry.INotEqual(loaded, entry.Imm32(0)));
+    IR::IREmitter ir{*body};
+    ir.WriteShared(32, ir.Imm32(7), ir.Imm32(4));
+    InsertSharedMemoryBarriers();
+    for (const auto& inst : body->Instructions()) {
+        EXPECT_NE(inst.GetOpcode(), IR::Opcode::Barrier);
+    }
+    // The halves must rendezvous only after the loaded condition reconverges.
+    ASSERT_FALSE(program.blocks.back()->empty());
+    EXPECT_EQ(program.blocks.back()->front().GetOpcode(), IR::Opcode::Barrier);
+}
+
+TEST_F(Wave64LoweringTest, EarlyReturnDoesNotStrandOtherHalfWaveAtLdsBarrier) {
+    runtime.hw.cs.shared_memory_size = 256;
+    profile.needs_lds_barriers = true;
+    IR::IREmitter entry{*block};
+    const auto id = entry.GetAttributeU32(IR::Attribute::LocalInvocationIndex);
+    AddIf(entry.ILessThan(id, entry.Imm32(32), false));
+    IR::AbstractSyntaxNode node{};
+    node.type = IR::AbstractSyntaxNode::Type::Return;
+    program.syntax_list.insert(program.syntax_list.begin() + 3, node);
+    IR::IREmitter ir{*program.blocks.back()};
+    ir.WriteShared(32, ir.Imm32(7), ir.Imm32(0));
+    InsertSharedMemoryBarriers();
+    EXPECT_EQ(Count(IR::Opcode::Barrier), 0);
+}
+
+TEST_F(Wave64LoweringTest, BlockExitBarrierComesAfterTheLastSharedWrite) {
+    runtime.hw.cs.shared_memory_size = 256;
+    profile.needs_lds_barriers = true;
+    IR::IREmitter ir{*block};
+    ir.WriteShared(32, ir.Imm32(7), ir.Imm32(0));
+    InsertSharedMemoryBarriers();
+    EXPECT_EQ(block->front().GetOpcode(), IR::Opcode::WriteSharedU32);
+    EXPECT_EQ(block->back().GetOpcode(), IR::Opcode::Barrier);
+}
+
+TEST_F(Wave64LoweringTest, DivergentMultiWaveMergeNeverGetsAWorkgroupBarrier) {
+    runtime.hw.cs.workgroup_size = {128, 1, 1};
+    runtime.hw.cs.shared_memory_size = 512;
+    profile.needs_lds_barriers = true;
+    IR::IREmitter entry{*block};
+    auto* body = AddIf(entry.ILessThan(entry.LaneId(), entry.Imm32(32), false));
+    IR::IREmitter ir{*body};
+    ir.WriteShared(32, ir.Imm32(7), ir.Imm32(0));
+    InsertSharedMemoryBarriers();
+    EXPECT_EQ(Count(IR::Opcode::Barrier), 0);
+}
+
+TEST_F(Wave64LoweringTest, LoadedLoopExitNeverGetsWorkgroupBarriersInItsBody) {
+    runtime.hw.cs.shared_memory_size = 256;
+    profile.needs_lds_barriers = true;
+    auto* body = NewBlock();
+    auto* merge = NewBlock();
+    IR::AbstractSyntaxNode node{};
+    node.type = IR::AbstractSyntaxNode::Type::Loop;
+    node.data.loop = {body, body, merge};
+    program.syntax_list.push_back(node);
+    AddBlock(body);
+    IR::IREmitter ir{*body};
+    ir.WriteShared(32, ir.Imm32(7), ir.Imm32(0));
+    const IR::U32 loaded{ir.LoadShared(32, false, ir.Imm32(4))};
+    const auto condition = ir.INotEqual(loaded, ir.Imm32(0));
+    node.type = IR::AbstractSyntaxNode::Type::Repeat;
+    node.data.repeat = {condition, body, merge};
+    program.syntax_list.push_back(node);
+    AddBlock(merge);
+    InsertSharedMemoryBarriers();
+    for (const auto& inst : body->Instructions()) {
+        EXPECT_NE(inst.GetOpcode(), IR::Opcode::Barrier);
+    }
+    ASSERT_FALSE(merge->empty());
+    EXPECT_EQ(merge->front().GetOpcode(), IR::Opcode::Barrier);
+}
+
+TEST_F(Wave64LoweringTest, PhiOfDifferentConstantsIsNotProofOfUniformity) {
+    IR::IREmitter entry{*block};
+    const auto id = entry.GetAttributeU32(IR::Attribute::LocalInvocationIndex);
+    auto* body = AddIf(entry.ILessThan(id, entry.Imm32(32), false));
+    auto* merge = program.blocks.back();
+    merge->AppendNewInst(IR::Opcode::Phi, {});
+    auto& phi = merge->back();
+    phi.SetFlags(IR::Type::U32);
+    phi.AddPhiOperand(block, entry.Imm32(0));
+    phi.AddPhiOperand(body, entry.Imm32(1));
+    IR::IREmitter joined{*merge};
+    auto* nested = AddIf(joined.INotEqual(IR::U32{IR::Value{&phi}}, joined.Imm32(0)));
+    IR::IREmitter ir{*nested};
+    const auto sink = ir.IAdd(ir.ReadLane(ir.Imm32(7), ir.Imm32(63)), ir.Imm32(0));
+    (void)sink;
+    Lower();
+    EXPECT_EQ(Count(IR::Opcode::Barrier), 0);
+    EXPECT_EQ(Count(IR::Opcode::ReadLane), 1);
+}
+
+TEST_F(Wave64LoweringTest, BufferBarrierNeverFollowsADivergentEarlyReturn) {
+    IR::IREmitter entry{*block};
+    const auto id = entry.GetAttributeU32(IR::Attribute::LocalInvocationIndex);
+    AddIf(entry.ILessThan(id, entry.Imm32(32), false));
+    IR::AbstractSyntaxNode node{};
+    node.type = IR::AbstractSyntaxNode::Type::Return;
+    program.syntax_list.insert(program.syntax_list.begin() + 3, node);
+    IR::IREmitter ir{*program.blocks.back()};
+    ir.StoreBufferU32(1, ir.Imm32(0), ir.Imm32(0), ir.Imm32(7), {});
+    const auto sink =
+        ir.IAdd(IR::U32{ir.LoadBufferU32(1, ir.Imm32(0), ir.Imm32(4), {})}, ir.Imm32(0));
+    (void)sink;
+    InsertSharedMemoryBarriers();
+    EXPECT_EQ(Count(IR::Opcode::Barrier), 0);
+}
+
+TEST_F(Wave64LoweringTest, DivergentBufferStoreIsPublishedAtTheUniformMerge) {
+    IR::IREmitter entry{*block};
+    auto* body = AddIf(entry.ILessThan(entry.LaneId(), entry.Imm32(32), false));
+    IR::IREmitter ir{*body};
+    ir.StoreBufferU32(1, ir.Imm32(0), ir.Imm32(0), ir.Imm32(7), {});
+    auto* merge = program.blocks.back();
+    IR::IREmitter joined{*merge};
+    const auto sink = joined.IAdd(
+        IR::U32{joined.LoadBufferU32(1, joined.Imm32(0), joined.Imm32(4), {})}, joined.Imm32(0));
+    (void)sink;
+    InsertSharedMemoryBarriers();
+    EXPECT_EQ(Count(IR::Opcode::Barrier), 1);
+    EXPECT_EQ(merge->front().GetOpcode(), IR::Opcode::Barrier);
+    EXPECT_TRUE(merge->front().Flags<bool>());
+    for (const auto& inst : body->Instructions()) {
+        EXPECT_NE(inst.GetOpcode(), IR::Opcode::Barrier);
+    }
+}
 } // namespace
