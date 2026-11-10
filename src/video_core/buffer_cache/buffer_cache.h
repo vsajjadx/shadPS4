@@ -138,6 +138,16 @@ public:
     /// Mark region as modified from the GPU
     void MarkRegionAsGpuModified(VAddr addr, size_t size);
 
+    /// A shader wrote through device addresses. Those stores reach the arenas without any
+    /// binding, so no range is marked as GPU written; remember that resident memory may hold
+    /// data the guest copy does not.
+    void NoteDmaWrites() noexcept {
+        dma_writes_seen = true;
+    }
+
+    /// Whether any part of the range is backed by the arenas.
+    [[nodiscard]] bool IsRangeResident(VAddr addr, size_t size) const;
+
     /// Synchronizes all buffers needed for DMA.
     void SynchronizeDmaBuffers();
 
@@ -208,6 +218,7 @@ private:
     std::unique_ptr<FaultManager> fault_manager;
     std::unique_ptr<Buffer> bda_pagetable_buffer;
     bool fault_process_pending{};
+    bool dma_writes_seen{};
 
     std::array<const Buffer*, NUM_ARENA_PAGES> address_space{};
     std::deque<Buffer> arenas;

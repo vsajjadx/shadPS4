@@ -535,6 +535,7 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
     heap_bind_sets.clear();
 
     bool uses_dma = false;
+    bool writes_dma = false;
 
     // Bind resource buffers and textures.
     Shader::Backend::Bindings binding{};
@@ -548,6 +549,7 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
         BindBuffers(*stage, binding, push_data);
         BindTextures(*stage, binding);
         uses_dma |= stage->uses_dma;
+        writes_dma |= stage->writes_dma;
     }
     set_writes.resize(set_write_index);
     if (!pipeline->GetHeapKinds().empty()) {
@@ -573,6 +575,9 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
 
     if (uses_dma) {
         buffer_cache.SynchronizeDmaBuffers();
+    }
+    if (writes_dma) {
+        buffer_cache.NoteDmaWrites();
     }
 
     return true;

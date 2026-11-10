@@ -206,6 +206,7 @@ void Visit(Info& info, const IR::Inst& inst) {
         break;
     case IR::Opcode::WriteConst:
         info.uses_dma = true;
+        info.writes_dma = true;
         info.uses_device_address = true;
         break;
     case IR::Opcode::PackUfloat10_11_11:
@@ -229,6 +230,7 @@ void CollectShaderInfoPass(IR::Program& program, const Profile& profile) {
 
     if (!EmulatorSettings.IsDirectMemoryAccessEnabled() || !profile.support_bda) {
         info.uses_dma = info.uses_device_address && profile.support_bda;
+        info.writes_dma = info.writes_dma && info.uses_dma;
         info.readconst_types =
             info.uses_dma ? Info::ReadConstType::Dynamic : Info::ReadConstType::None;
     }

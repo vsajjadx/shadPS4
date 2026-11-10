@@ -310,7 +310,12 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     const bool is_texel_buffer = True(flags & ObtainBufferFlags::IsTexelBuffer);
     const bool skip_stream_buffer = True(flags & ObtainBufferFlags::IgnoreStreamBuffer);
     // For read-only buffers use device local stream buffer to reduce renderpass breaks.
-    if (!is_written && !skip_stream_buffer && size <= STREAM_THRESHOLD &&
+    // A compute shader that stores through device addresses (indirect dispatch arguments, light
+    // lists, descriptor tables) changes arena memory without marking anything as GPU written.
+    // Copying such a range from guest memory into the stream buffer reads stale or garbage data,
+    // so resident ranges are read from the arenas once DMA stores have been seen.
+    const bool dma_dirty = dma_writes_seen && IsRangeResident(device_addr, size);
+    if (!is_written && !skip_stream_buffer && size <= STREAM_THRESHOLD && !dma_dirty &&
         !IsRegionGpuModified(device_addr, size) && !IsRangeGpuWritten(device_addr, size)) {
         const auto [data, offset] = stream_buffer.Map(size, instance.UniformMinAlignment());
         memory->CopySparseMemory(device_addr, data, size);
@@ -344,6 +349,18 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBufferForImage(VAddr device_add
     memory->CopySparseMemory(device_addr, staging.mapped, staging.size);
     staging.Flush();
     return {staging.buffer, staging.offset};
+}
+
+bool BufferCache::IsRangeResident(VAddr addr, size_t size) const {
+    if (size == 0) {
+        return false;
+    }
+    const u64 first_block = addr >> block_shift;
+    const u64 last_block = (addr + size - 1) >> block_shift;
+    u64 gap_blocks{};
+    resident_ranges.ForEachGap(first_block, last_block + 1,
+                               [&](u64 start, u64 end) { gap_blocks += end - start; });
+    return gap_blocks < last_block + 1 - first_block;
 }
 
 bool BufferCache::IsRegionCpuModified(VAddr addr, size_t size) {
