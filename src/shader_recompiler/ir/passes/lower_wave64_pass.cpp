@@ -13,7 +13,7 @@ namespace Shader::Optimization {
 
 void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info,
                            const Profile& profile) {
-    if (program.info.hw_stage != HwStage::Compute || profile.subgroup_size == 64) {
+    if (true || program.info.hw_stage != HwStage::Compute || profile.subgroup_size == 64) {
         return;
     }
 
