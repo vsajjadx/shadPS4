@@ -461,6 +461,19 @@ void TextureCache::MarkAsMaybeGpuDirty(VAddr addr, size_t size) {
     });
 }
 
+u32 TextureCache::FlushGpuImagesInRange(VAddr addr, size_t size) {
+    boost::container::small_vector<ImageId, 8> images;
+    ForEachImageInRegion(addr, size, [&](ImageId image_id, Image& image) {
+        if (True(image.flags & ImageFlagBits::GpuModified)) {
+            images.push_back(image_id);
+        }
+    });
+    for (const ImageId image_id : images) {
+        DownloadImageMemory(image_id, DownloadMemoryFlags::Sync);
+    }
+    return static_cast<u32>(images.size());
+}
+
 void TextureCache::UnmapMemory(VAddr cpu_addr, size_t size) {
     SmallVector<ImageId, 16> deleted_images;
     ForEachImageInRegion(cpu_addr, size, [&](ImageId id, Image&) { deleted_images.push_back(id); });

@@ -423,6 +423,14 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
 
     scheduler.PopPendingOperations();
 
+    // GPU-driven dispatches (NHL 24 light culling) take their group counts from memory a previous
+    // pass wrote through a storage image. The buffer tracker never sees those writes, so the
+    // stream buffer path below would copy stale guest memory and the dispatch got skipped, which
+    // left lighting passes out and made lights flicker. Write such images back first.
+    if (texture_cache.FlushGpuImagesInRange(address + offset, size) != 0) {
+        scheduler.PopPendingOperations();
+    }
+
     const auto& cs_program = liverpool->GetCsRegs();
     const ComputePipeline* pipeline = pipeline_cache.GetComputePipeline();
     if (!pipeline || !pipeline->IsReady()) {

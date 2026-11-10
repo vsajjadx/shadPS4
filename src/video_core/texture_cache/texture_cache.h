@@ -127,6 +127,10 @@ public:
     /// Marks all images as maybe GPU dirty within the provided range.
     void MarkAsMaybeGpuDirty(VAddr addr, size_t size);
 
+    /// Writes every image the GPU modified in the range back to guest memory, so CPU-side reads
+    /// of GPU-produced data (indirect arguments) see it. Returns how many images were flushed.
+    u32 FlushGpuImagesInRange(VAddr addr, size_t size);
+
     /// Evicts any images that overlap the unmapped range.
     void UnmapMemory(VAddr cpu_addr, size_t size);
 
