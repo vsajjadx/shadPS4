@@ -998,38 +998,12 @@ Value IREmitter::Unpack4x8(const AmdGpu::NumberFormat number_format, const U32& 
 }
 
 U32 IREmitter::Pack10_11_11(const AmdGpu::NumberFormat number_format, const Value& vector) {
-    if (number_format == AmdGpu::NumberFormat::Float) {
+    switch (number_format) {
+    case AmdGpu::NumberFormat::Float:
         return Inst<U32>(Opcode::PackUfloat10_11_11, vector);
+    default:
+        UNREACHABLE_MSG("Unsupported 10_11_11 number format: {}", number_format);
     }
-    // Mirror of Unpack10_11_11 for the normalized and integer formats: every component is
-    // converted on its own and inserted in its field, so a shader using one of them is translated
-    // instead of being dropped.
-    static constexpr std::array<std::pair<u32, u32>, 3> fields{{{0, 11}, {11, 11}, {22, 10}}};
-    U32 packed = Imm32(0u);
-    for (size_t i = 0; i < fields.size(); ++i) {
-        const u32 offset = fields[i].first;
-        const u32 count = fields[i].second;
-        const F32 component{CompositeExtract(vector, i)};
-        const U32 bits = [&]() -> U32 {
-            switch (number_format) {
-            case AmdGpu::NumberFormat::Unorm:
-                return U32{ConvertFToU(
-                    32, FPRoundEven(FPMul(F32{FPSaturate(component)},
-                                          Imm32(static_cast<float>((1u << count) - 1)))))};
-            case AmdGpu::NumberFormat::Snorm:
-                return U32{ConvertFToS(
-                    32, FPRoundEven(FPMul(F32{FPClamp(component, Imm32(-1.f), Imm32(1.f))},
-                                          Imm32(static_cast<float>((1u << (count - 1)) - 1)))))};
-            case AmdGpu::NumberFormat::Uint:
-            case AmdGpu::NumberFormat::Sint:
-                return BitCast<U32>(component);
-            default:
-                UNREACHABLE_MSG("Unsupported 10_11_11 number format: {}", number_format);
-            }
-        }();
-        packed = U32{BitFieldInsert(packed, bits, Imm32(offset), Imm32(count))};
-    }
-    return packed;
 }
 
 U32 IREmitter::Pack2_10_10_10(const AmdGpu::NumberFormat number_format, const Value& vector) {
