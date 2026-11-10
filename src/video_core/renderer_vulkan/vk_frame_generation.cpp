@@ -5,11 +5,14 @@
 #include <atomic>
 #include <span>
 
+#include "common/div_ceil.h"
 #include "common/logging/log.h"
+#include "video_core/host_shaders/frame_generation_clamp_comp.h"
 #include "video_core/renderer_vulkan/vk_frame_generation.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
+#include "video_core/renderer_vulkan/vk_shader_util.h"
 
 #include <vk_mem_alloc.h>
 #include "ffx_vk_fsr3_3_1_5_bridge.h"
@@ -24,7 +27,10 @@ constexpr vk::Format MotionFormat = vk::Format::eR16G16Sfloat;
 
 constexpr vk::ImageUsageFlags ColorUsage = vk::ImageUsageFlagBits::eStorage |
                                            vk::ImageUsageFlagBits::eSampled |
-                                           vk::ImageUsageFlagBits::eTransferDst;
+                                           vk::ImageUsageFlagBits::eTransferDst |
+                                           vk::ImageUsageFlagBits::eTransferSrc;
+constexpr vk::ImageUsageFlags PreviousUsage =
+    vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferDst;
 constexpr vk::ImageUsageFlags InterpolatedUsage = vk::ImageUsageFlagBits::eStorage |
                                                   vk::ImageUsageFlagBits::eSampled |
                                                   vk::ImageUsageFlagBits::eTransferSrc;
@@ -106,6 +112,7 @@ FrameGenerator::FrameGenerator(const Instance& instance_, Scheduler& scheduler_)
 
 FrameGenerator::~FrameGenerator() {
     Destroy();
+    DestroyClampPass();
 }
 
 void FrameGenerator::Fail(const char* what) {
@@ -202,12 +209,131 @@ void FrameGenerator::Destroy() {
     }
     pending.clear();
     DestroySignature();
+    DestroyClampViews();
+    has_previous = false;
     DestroyTarget(color);
+    DestroyTarget(previous);
     DestroyTarget(interpolated);
     DestroyTarget(depth);
     DestroyTarget(motion);
     width = 0;
     height = 0;
+}
+
+bool FrameGenerator::CreateClampPass() {
+    if (clamp_pipeline) {
+        return true;
+    }
+    const auto device = instance.GetDevice();
+    std::array<vk::DescriptorSetLayoutBinding, 3> bindings{};
+    for (u32 i = 0; i < bindings.size(); ++i) {
+        bindings[i] = vk::DescriptorSetLayoutBinding{
+            .binding = i,
+            .descriptorType = vk::DescriptorType::eStorageImage,
+            .descriptorCount = 1,
+            .stageFlags = vk::ShaderStageFlagBits::eCompute,
+        };
+    }
+    clamp_set_layout = Check<"create frame generation clamp set layout">(
+        device.createDescriptorSetLayout({
+            .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
+            .bindingCount = static_cast<u32>(bindings.size()),
+            .pBindings = bindings.data(),
+        }));
+    const vk::PushConstantRange push{
+        .stageFlags = vk::ShaderStageFlagBits::eCompute,
+        .offset = 0,
+        .size = sizeof(u32) * 2,
+    };
+    clamp_layout = Check<"create frame generation clamp layout">(device.createPipelineLayout({
+        .setLayoutCount = 1,
+        .pSetLayouts = &clamp_set_layout,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &push,
+    }));
+    const auto module = CompileSPV(FRAME_GENERATION_CLAMP_COMP, device);
+    if (!module) {
+        DestroyClampPass();
+        return false;
+    }
+    clamp_pipeline = Check<"create frame generation clamp pipeline">(device.createComputePipeline(
+        {}, vk::ComputePipelineCreateInfo{
+                .stage{
+                    .stage = vk::ShaderStageFlagBits::eCompute,
+                    .module = module,
+                    .pName = "main",
+                },
+                .layout = clamp_layout,
+            }));
+    device.destroyShaderModule(module);
+    return true;
+}
+
+void FrameGenerator::DestroyClampPass() {
+    const auto device = instance.GetDevice();
+    if (clamp_pipeline) {
+        device.destroyPipeline(clamp_pipeline);
+    }
+    if (clamp_layout) {
+        device.destroyPipelineLayout(clamp_layout);
+    }
+    if (clamp_set_layout) {
+        device.destroyDescriptorSetLayout(clamp_set_layout);
+    }
+    clamp_pipeline = vk::Pipeline{};
+    clamp_layout = vk::PipelineLayout{};
+    clamp_set_layout = vk::DescriptorSetLayout{};
+}
+
+bool FrameGenerator::CreateClampViews() {
+    const auto device = instance.GetDevice();
+    const auto make_view = [&](vk::Image image) {
+        return Check<"create frame generation image view">(device.createImageView({
+            .image = image,
+            .viewType = vk::ImageViewType::e2D,
+            .format = ColorFormat,
+            .subresourceRange = ColorRange,
+        }));
+    };
+    color_view = make_view(color.image);
+    previous_view = make_view(previous.image);
+    interpolated_view = make_view(interpolated.image);
+    return true;
+}
+
+void FrameGenerator::DestroyClampViews() {
+    const auto device = instance.GetDevice();
+    for (vk::ImageView* view : {&color_view, &previous_view, &interpolated_view}) {
+        if (*view) {
+            device.destroyImageView(*view);
+        }
+        *view = vk::ImageView{};
+    }
+}
+
+void FrameGenerator::RecordClamp(vk::CommandBuffer cmdbuf) {
+    const std::array<vk::DescriptorImageInfo, 3> images{
+        vk::DescriptorImageInfo{.imageView = color_view, .imageLayout = vk::ImageLayout::eGeneral},
+        vk::DescriptorImageInfo{.imageView = previous_view,
+                                .imageLayout = vk::ImageLayout::eGeneral},
+        vk::DescriptorImageInfo{.imageView = interpolated_view,
+                                .imageLayout = vk::ImageLayout::eGeneral},
+    };
+    std::array<vk::WriteDescriptorSet, 3> writes{};
+    for (u32 i = 0; i < writes.size(); ++i) {
+        writes[i] = vk::WriteDescriptorSet{
+            .dstBinding = i,
+            .descriptorCount = 1,
+            .descriptorType = vk::DescriptorType::eStorageImage,
+            .pImageInfo = &images[i],
+        };
+    }
+    const std::array<u32, 2> size{width, height};
+    cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, clamp_pipeline);
+    cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, clamp_layout, 0, writes);
+    cmdbuf.pushConstants(clamp_layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(size),
+                         size.data());
+    cmdbuf.dispatch(Common::DivCeil(width, 8u), Common::DivCeil(height, 8u), 1);
 }
 
 bool FrameGenerator::CreateSignature(u32 frame_width, u32 frame_height) {
@@ -409,6 +535,7 @@ bool FrameGenerator::IsSceneCut(u64 id) {
 bool FrameGenerator::Recreate(vk::CommandBuffer cmdbuf, u32 new_width, u32 new_height) {
     Destroy();
     if (!CreateTarget(color, ColorFormat, ColorUsage, new_width, new_height, "color") ||
+        !CreateTarget(previous, ColorFormat, PreviousUsage, new_width, new_height, "previous") ||
         !CreateTarget(interpolated, ColorFormat, InterpolatedUsage, new_width, new_height,
                       "output") ||
         !CreateTarget(depth, DepthFormat, InputUsage, new_width, new_height, "depth") ||
@@ -421,6 +548,10 @@ bool FrameGenerator::Recreate(vk::CommandBuffer cmdbuf, u32 new_width, u32 new_h
         Destroy();
         Suspend("out of video memory for its scene change signature");
         return false;
+    }
+    // Without the safety pass the generated frames are used as they are.
+    if (CreateClampPass()) {
+        CreateClampViews();
     }
 
     const FfxVkFsr3_3_1_6FrameGenerationCreateInfo create_info{
@@ -460,6 +591,9 @@ bool FrameGenerator::Recreate(vk::CommandBuffer cmdbuf, u32 new_width, u32 new_h
     cmdbuf.clearColorImage(depth.image, vk::ImageLayout::eGeneral, zero, ColorRange);
     cmdbuf.clearColorImage(motion.image, vk::ImageLayout::eGeneral, zero, ColorRange);
     const std::array cleared{
+        Barrier(previous.image, vk::PipelineStageFlagBits2::eNone, vk::AccessFlagBits2::eNone,
+                vk::PipelineStageFlagBits2::eAllCommands, vk::AccessFlagBits2::eNone,
+                vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral),
         Barrier(depth.image, vk::PipelineStageFlagBits2::eTransfer,
                 vk::AccessFlagBits2::eTransferWrite, vk::PipelineStageFlagBits2::eAllCommands,
                 vk::AccessFlagBits2::eShaderRead, vk::ImageLayout::eGeneral,
@@ -593,6 +727,22 @@ bool FrameGenerator::Generate(vk::CommandBuffer cmdbuf, vk::Image frame, vk::Ima
     reset = false;
     consecutive_failures = 0;
 
+    if (has_previous && !was_reset && clamp_pipeline && interpolated_view) {
+        const std::array to_clamp{
+            Barrier(interpolated.image, Stage::eAllCommands, Access::eShaderWrite,
+                    Stage::eComputeShader, Access::eShaderRead | Access::eShaderWrite,
+                    Layout::eGeneral, Layout::eGeneral),
+            Barrier(previous.image, Stage::eTransfer, Access::eTransferWrite,
+                    Stage::eComputeShader, Access::eShaderRead, Layout::eGeneral,
+                    Layout::eGeneral),
+            Barrier(color.image, Stage::eAllCommands, Access::eShaderWrite | Access::eTransferWrite,
+                    Stage::eComputeShader, Access::eShaderRead, Layout::eGeneral,
+                    Layout::eGeneral),
+        };
+        PipelineBarriers(cmdbuf, to_clamp);
+        RecordClamp(cmdbuf);
+    }
+
     const std::array to_output{
         Barrier(interpolated.image, Stage::eAllCommands, Access::eShaderWrite, Stage::eTransfer,
                 Access::eTransferRead, Layout::eGeneral, Layout::eGeneral),
@@ -611,6 +761,18 @@ bool FrameGenerator::Generate(vk::CommandBuffer cmdbuf, vk::Image frame, vk::Ima
                 Layout::eGeneral),
     };
     PipelineBarriers(cmdbuf, to_present);
+
+    // Keep this frame for the next one's safety pass.
+    const std::array to_save{
+        Barrier(color.image, Stage::eAllCommands, Access::eShaderWrite | Access::eTransferWrite,
+                Stage::eTransfer, Access::eTransferRead, Layout::eGeneral, Layout::eGeneral),
+        Barrier(previous.image, Stage::eAllCommands, Access::eNone, Stage::eTransfer,
+                Access::eTransferWrite, Layout::eGeneral, Layout::eGeneral),
+    };
+    PipelineBarriers(cmdbuf, to_save);
+    CopyImage(cmdbuf, color.image, Layout::eGeneral, previous.image, Layout::eGeneral, width,
+              height);
+    has_previous = true;
     return !was_reset;
 }
 

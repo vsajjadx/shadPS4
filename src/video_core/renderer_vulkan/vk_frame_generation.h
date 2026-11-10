@@ -90,6 +90,11 @@ private:
 
     bool Recreate(vk::CommandBuffer cmdbuf, u32 width, u32 height);
     void Destroy();
+    bool CreateClampPass();
+    void DestroyClampPass();
+    bool CreateClampViews();
+    void DestroyClampViews();
+    void RecordClamp(vk::CommandBuffer cmdbuf);
     void DestroyTarget(Target& target);
     bool CreateTarget(Target& target, vk::Format format, vk::ImageUsageFlags usage, u32 width,
                       u32 height, const char* name, u32 mip_levels = 1);
@@ -105,7 +110,17 @@ private:
     Scheduler& scheduler;
     FfxVkFsr3_3_1_6FrameGenerationContext* context{};
     Target color;
+    Target previous;
     Target interpolated;
+    /// Pulls the generated frame back to colors the real frames around it have nearby.
+    vk::DescriptorSetLayout clamp_set_layout{};
+    vk::PipelineLayout clamp_layout{};
+    vk::Pipeline clamp_pipeline{};
+    vk::ImageView color_view{};
+    vk::ImageView previous_view{};
+    vk::ImageView interpolated_view{};
+    /// `previous` holds the frame before the one `color` holds.
+    bool has_previous{};
     Target depth;
     Target motion;
     Target signature;
