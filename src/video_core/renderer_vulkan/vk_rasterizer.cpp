@@ -433,7 +433,11 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
         return;
     }
 
-    const auto [buffer, base] = buffer_cache.ObtainBuffer(address + offset, size);
+    // Indirect arguments are usually produced by an earlier GPU pass (light/tile culling), so the
+    // CPU copy of that memory is stale. Never snapshot it into the stream buffer: read the real
+    // device-side buffer, ordered after its producer by the barrier below.
+    const auto [buffer, base] = buffer_cache.ObtainBuffer(
+        address + offset, size, VideoCore::ObtainBufferFlags::IgnoreStreamBuffer);
     if (buffer == &buffer_cache.GetStreamBuffer()) {
         std::array<u32, 3> groups{};
         memory->CopySparseMemory(address + offset, reinterpret_cast<u8*>(groups.data()),
