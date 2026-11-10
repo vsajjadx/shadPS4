@@ -440,7 +440,11 @@ void PatchImageSharp(const ResourceDiscovery& resource, Info& info, Descriptors&
 
     // Patch image instruction if image is FMask.
     if (AmdGpu::IsFmask(image.GetDataFmt())) {
-        ASSERT_MSG(!is_written, "FMask storage instructions are not supported");
+        if (is_written) {
+            LOG_WARNING(Render_Recompiler, "Dropping write to an FMask image");
+            inst.Invalidate();
+            return;
+        }
 
         IR::IREmitter ir{*inst.GetParent(), IR::Block::InstructionList::s_iterator_to(inst)};
         switch (inst.GetOpcode()) {

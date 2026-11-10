@@ -209,10 +209,12 @@ static void LowerBufferFormatInst(IR::Block& block, IR::Inst& inst, Info& info) 
         .num_conversion = is_inst_typed ? AmdGpu::MapNumberConversion(flags.inst_num_fmt.Value(),
                                                                       flags.inst_data_fmt.Value())
                                         : buffer.GetNumberConversion(),
-        .num_components = AmdGpu::NumComponents(data_format),
+        .num_components = static_cast<u32>(data_format) < AmdGpu::NUM_ENTRIES
+                              ? AmdGpu::NumComponents(data_format)
+                              : 0,
     };
 
-    if (data_format == AmdGpu::DataFormat::FormatInvalid) {
+    if (data_format == AmdGpu::DataFormat::FormatInvalid || format_info.num_components == 0) {
         LOG_WARNING(Render_Recompiler, "Skipping lowering for null buffer sharp");
         if (IsBufferFormatLoad(inst)) {
             inst.ReplaceUsesWithAndRemove(

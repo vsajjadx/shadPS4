@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
+#include <sstream>
 #include <unordered_set>
 #include <xxhash.h>
 
@@ -369,6 +371,27 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     ResetBindings(false);
 }
 
+namespace {
+
+bool IsComputePassDisabled(u64 hash) {
+    static const std::unordered_set<u64> disabled = [] {
+        std::unordered_set<u64> hashes;
+        if (const char* list = std::getenv("SHADPS4_DISABLE_CS")) {
+            std::stringstream stream{list};
+            std::string token;
+            while (std::getline(stream, token, ',')) {
+                if (!token.empty()) {
+                    hashes.insert(std::strtoull(token.c_str(), nullptr, 16));
+                }
+            }
+        }
+        return hashes;
+    }();
+    return !disabled.empty() && disabled.contains(hash);
+}
+
+} // Anonymous namespace
+
 void Rasterizer::DispatchDirect() {
     RENDERER_TRACE;
 
@@ -385,6 +408,9 @@ void Rasterizer::DispatchDirect() {
         return;
     }
     if (!pipeline->IsReady()) {
+        return;
+    }
+    if (IsComputePassDisabled(pipeline->GetStageHash(Shader::SwStage::Compute))) {
         return;
     }
 
@@ -430,6 +456,9 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
     const auto& cs_program = liverpool->GetCsRegs();
     const ComputePipeline* pipeline = pipeline_cache.GetComputePipeline();
     if (!pipeline || !pipeline->IsReady()) {
+        return;
+    }
+    if (IsComputePassDisabled(pipeline->GetStageHash(Shader::SwStage::Compute))) {
         return;
     }
 
