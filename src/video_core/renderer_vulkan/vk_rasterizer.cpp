@@ -1232,14 +1232,15 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
                             "Rejecting implausible T# in {} {:#x} image {}: address={:#x}, "
                             "size={}x{}x{}, levels={}, "
                             "layers={}, guest_size={:#x}, data_format={}, tile_mode={}, type={}, "
-                            "base_array={}, last_array={}, pitch={}",
+                            "base_array={}, last_array={}, pitch={}, num_format={}, vk_format={}",
                             stage.hw_stage, stage.pgm_hash, desc_idx, desc.info.guest_address,
                             desc.info.size.width, desc.info.size.height, desc.info.size.depth,
                             desc.info.resources.levels, desc.info.resources.layers,
                             desc.info.guest_size, static_cast<u32>(data_fmt),
                             static_cast<u32>(tsharp.GetTileMode()),
                             static_cast<u32>(tsharp.GetType()), static_cast<u32>(tsharp.base_array),
-                            static_cast<u32>(tsharp.last_array), tsharp.Pitch());
+                            static_cast<u32>(tsharp.last_array), tsharp.Pitch(),
+                            static_cast<u32>(num_fmt), static_cast<u32>(desc.info.pixel_format));
                 image_id = {};
                 continue;
             }
