@@ -308,14 +308,17 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     }
 
     const auto size = stride * max_count;
-    const auto [buffer, base] = buffer_cache.ObtainBuffer(arg_address + offset, size);
+    // Draw arguments are GPU-produced; bypass a stale CPU stream-buffer snapshot.
+    const auto [buffer, base] = buffer_cache.ObtainBuffer(
+        arg_address + offset, size, VideoCore::ObtainBufferFlags::IgnoreStreamBuffer);
     needs_barrier |= runtime.IsBufferAccessed(buffer, base, size);
     bound_buffers.emplace_back(buffer, base, size, vk::AccessFlagBits2::eIndirectCommandRead);
 
     const VideoCore::Buffer* count_buffer;
     u64 count_offset;
     if (count_address != 0) {
-        std::tie(count_buffer, count_offset) = buffer_cache.ObtainBuffer(count_address, 4);
+        std::tie(count_buffer, count_offset) = buffer_cache.ObtainBuffer(
+            count_address, 4, VideoCore::ObtainBufferFlags::IgnoreStreamBuffer);
         needs_barrier |= runtime.IsBufferAccessed(count_buffer, count_offset, 4);
         bound_buffers.emplace_back(count_buffer, count_offset, 4,
                                    vk::AccessFlagBits2::eIndirectCommandRead);
