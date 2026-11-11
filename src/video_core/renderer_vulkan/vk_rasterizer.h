@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <optional>
+
 #include <atomic>
 #include <unordered_map>
 #include <boost/container/static_vector.hpp>
@@ -154,6 +156,12 @@ private:
 
     void ResetBindings(bool is_compute);
 
+    /// Copies the group counts of an indirect dispatch into a host buffer, zeroed when they
+    /// exceed the device limits. Returns the buffer and offset to dispatch from, or nothing when
+    /// the clamp is unavailable (no buffer device address).
+    std::optional<std::pair<vk::Buffer, u64>> ClampIndirectDispatch(const VideoCore::Buffer* buffer,
+                                                                    u64 offset);
+
     bool IsComputeMetaClear(const Pipeline* pipeline);
     bool IsComputeImageCopy(const Pipeline* pipeline);
     bool IsComputeImageClear(const Pipeline* pipeline);
@@ -240,6 +248,14 @@ private:
     boost::container::small_vector<vk::DescriptorSet, 8> heap_bind_sets;
     Pipeline::DescriptorWrites set_writes;
     Shader::PushData push_data;
+
+    static constexpr u32 IndirectClampSlots = 4096;
+    static constexpr u32 IndirectClampSlotSize = 16;
+    std::optional<VideoCore::Buffer> indirect_clamp_buffer;
+    vk::UniquePipelineLayout indirect_clamp_layout;
+    vk::UniquePipeline indirect_clamp_pipeline;
+    u32 indirect_clamp_slot{};
+    bool indirect_clamp_failed{};
 
     void NoteSceneDraw(VideoCore::ImageId depth_id, bool reversed);
     void NoteSampledImage(VideoCore::ImageId image_id, bool written);

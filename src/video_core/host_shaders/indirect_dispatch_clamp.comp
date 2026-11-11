@@ -1,0 +1,36 @@
+// SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+// Copies the group counts of an indirect dispatch, written by an earlier GPU pass, into a host
+// buffer and zeroes them when they exceed the device limits. A guest pass that produces garbage
+// counts (billions of groups) would otherwise run until the device is lost.
+
+#version 460 core
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+
+layout(local_size_x = 1) in;
+
+layout(buffer_reference, buffer_reference_align = 4, std430) readonly buffer Source {
+    uint groups[3];
+};
+layout(buffer_reference, buffer_reference_align = 4, std430) writeonly buffer Destination {
+    uint out_groups[3];
+};
+
+layout(push_constant) uniform PushConstants {
+    uvec2 source;
+    uvec2 destination;
+    uvec4 max_groups;
+};
+
+void main() {
+    Source src = Source(source);
+    Destination dst = Destination(destination);
+    const uvec3 groups = uvec3(src.groups[0], src.groups[1], src.groups[2]);
+    const bool valid = all(lessThanEqual(groups, max_groups.xyz));
+    const uvec3 result = valid ? groups : uvec3(0);
+    dst.out_groups[0] = result.x;
+    dst.out_groups[1] = result.y;
+    dst.out_groups[2] = result.z;
+}

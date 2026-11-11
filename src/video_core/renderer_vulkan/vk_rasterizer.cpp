@@ -26,6 +26,8 @@
 #include "video_core/renderer_vulkan/vk_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_hle.h"
+#include "video_core/renderer_vulkan/vk_shader_util.h"
+#include "video_core/host_shaders/indirect_dispatch_clamp_comp.h"
 #include "video_core/texture_cache/image_view.h"
 #include "video_core/texture_cache/texture_cache.h"
 
@@ -448,6 +450,82 @@ void Rasterizer::DispatchDirect() {
     }
 }
 
+std::optional<std::pair<vk::Buffer, u64>> Rasterizer::ClampIndirectDispatch(
+    const VideoCore::Buffer* buffer, u64 offset) {
+    if (indirect_clamp_failed || !instance.IsBufferDeviceAddressSupported()) {
+        return std::nullopt;
+    }
+    const auto device = instance.GetDevice();
+    if (!indirect_clamp_pipeline) {
+        indirect_clamp_buffer.emplace(instance, 0, IndirectClampSlots * IndirectClampSlotSize,
+                                      VideoCore::MemoryType::DeviceLocal,
+                                      "Indirect Dispatch Clamp");
+        const vk::PushConstantRange push_range = {
+            .stageFlags = vk::ShaderStageFlagBits::eCompute,
+            .offset = 0,
+            .size = 32,
+        };
+        indirect_clamp_layout = Check(device.createPipelineLayoutUnique({
+            .pushConstantRangeCount = 1,
+            .pPushConstantRanges = &push_range,
+        }));
+        const auto module = CompileSPV(INDIRECT_DISPATCH_CLAMP_COMP, device);
+        if (!module) {
+            LOG_ERROR(Render_Vulkan, "Indirect dispatch clamp shader did not compile");
+            indirect_clamp_failed = true;
+            return std::nullopt;
+        }
+        const vk::ComputePipelineCreateInfo pipeline_ci = {
+            .stage =
+                {
+                    .stage = vk::ShaderStageFlagBits::eCompute,
+                    .module = module,
+                    .pName = "main",
+                },
+            .layout = *indirect_clamp_layout,
+        };
+        indirect_clamp_pipeline = Check(device.createComputePipelineUnique({}, pipeline_ci));
+        device.destroyShaderModule(module);
+    }
+
+    const u64 slot_offset = u64{indirect_clamp_slot} * IndirectClampSlotSize;
+    indirect_clamp_slot = (indirect_clamp_slot + 1) % IndirectClampSlots;
+    const auto& max_groups = instance.GetLimits().maxComputeWorkGroupCount;
+    struct {
+        u64 source;
+        u64 destination;
+        u32 max_groups[4];
+    } push{
+        .source = buffer->BufferDeviceAddress() + offset,
+        .destination = indirect_clamp_buffer->BufferDeviceAddress() + slot_offset,
+        .max_groups = {max_groups[0], max_groups[1], max_groups[2], 0},
+    };
+    static_assert(sizeof(push) == 32);
+
+    const auto cmdbuf = scheduler.CommandBuffer();
+    // The arguments were written by earlier GPU work, and the slot may still be read by an
+    // indirect dispatch issued IndirectClampSlots dispatches ago.
+    const vk::MemoryBarrier2 before = {
+        .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+        .srcAccessMask = vk::AccessFlagBits2::eMemoryWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite,
+    };
+    cmdbuf.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &before});
+    cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, *indirect_clamp_pipeline);
+    cmdbuf.pushConstants(*indirect_clamp_layout, vk::ShaderStageFlagBits::eCompute, 0,
+                         sizeof(push), &push);
+    cmdbuf.dispatch(1, 1, 1);
+    const vk::MemoryBarrier2 after = {
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eDrawIndirect,
+        .dstAccessMask = vk::AccessFlagBits2::eIndirectCommandRead,
+    };
+    cmdbuf.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &after});
+    return std::make_pair(indirect_clamp_buffer->Handle(), slot_offset);
+}
+
 void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
     RENDERER_TRACE;
 
@@ -492,6 +570,16 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
     }
 
     scheduler.EndRendering();
+    // GPU-produced group counts are not validated on the CPU any more (they are not known there).
+    // Garbage counts lost the device in NHL 24 (cs 0x8939d227 after 0x91b69bbf), so clamp them on
+    // the GPU before the guest pipeline is bound.
+    vk::Buffer args_buffer = buffer->Handle();
+    u64 args_offset = base;
+    if (buffer != &buffer_cache.GetStreamBuffer()) {
+        if (const auto clamped = ClampIndirectDispatch(buffer, base)) {
+            std::tie(args_buffer, args_offset) = *clamped;
+        }
+    }
     pipeline->BindResources(set_writes, push_data);
     if (!heap_bind_sets.empty()) {
         pipeline->BindHeapSets(heap_bind_sets);
@@ -503,7 +591,7 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
         cmdbuf.setCheckpointNV(reinterpret_cast<const void*>(instance.NoteCheckpoint(
             "dispatch-indirect", pipeline->GetStageHash(Shader::SwStage::Compute), 0, 0, 0, 0)));
     }
-    cmdbuf.dispatchIndirect(buffer->Handle(), base);
+    cmdbuf.dispatchIndirect(args_buffer, args_offset);
     DebugState.IncDispatch();
 
     ResetBindings(true);
