@@ -152,7 +152,22 @@ static bool IsRepeatingFault(EXCEPTION_POINTERS* pExp) {
     return true;
 }
 
+// ntdll!DbgBreakPoint, the breakpoint a debugger break-in request executes. Resolved before the
+// handlers are installed, never written afterwards.
+static const void* g_debugger_break_point = nullptr;
+
+// False on a thread the loader never initialised: it has no static TLS block, so every
+// thread_local access on it dereferences a null pointer. The thread of a debugger break-in
+// request (ntdll!DbgUiRemoteBreakin) is created that way, with
+// THREAD_CREATE_FLAGS_SKIP_THREAD_ATTACH | THREAD_CREATE_FLAGS_SKIP_LOADER_INIT.
+static bool CurrentThreadHasStaticTls() noexcept {
+    // TEB::ThreadLocalStoragePointer is the twelfth pointer of the TEB (offset 0x58).
+    static_assert(sizeof(void*) == 8);
+    return static_cast<void* const*>(static_cast<void*>(NtCurrentTeb()))[11] != nullptr;
+}
+
 static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept;
+static LONG SignalHandlerImpl(EXCEPTION_POINTERS* pExp) noexcept;
 
 #endif
 
@@ -407,6 +422,10 @@ static void DumpForCurrentThread(const char* reason) noexcept {
 }
 
 static LONG WINAPI LastChanceFilter(EXCEPTION_POINTERS* pExp) noexcept {
+    if (!CurrentThreadHasStaticTls()) {
+        // Logging and the dump writer use thread_local state; see SignalHandler.
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
     DWORD code = 0;
     const void* address = nullptr;
     if (pExp != nullptr && pExp->ExceptionRecord != nullptr) {
@@ -432,7 +451,38 @@ static void PureCallHandler() noexcept {
     DumpForCurrentThread("pure virtual function call");
 }
 
+// Entry of the vectored handler. Windows calls it for every exception of every thread in the
+// process, including threads the emulator did not create, so it must not touch thread_local
+// state and must keep a small stack frame. Everything else is in SignalHandlerImpl.
+//
+// The case that matters is the debugger break-in request. Windows injects a thread running
+// ntdll!DbgUiRemoteBreakin, which executes the breakpoint ntdll!DbgBreakPoint, when a debugger
+// asks for it - and on every F12 press in the foreground window of a debugged process, because
+// F12 is the user debugger hotkey (AeDebug\UserDebuggerHotKey). The crash monitor is attached as
+// a debugger, so that is every F12 press in the emulator window. The injected thread has no
+// static TLS block: the handler body faulted on its first thread_local access, the fault
+// re-entered the handler, and the recursion ended in a stack overflow that killed the emulator.
 static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
+    if (pExp != nullptr && pExp->ExceptionRecord != nullptr && pExp->ContextRecord != nullptr &&
+        pExp->ExceptionRecord->ExceptionCode == EXCEPTION_BREAKPOINT &&
+        g_debugger_break_point != nullptr &&
+        pExp->ExceptionRecord->ExceptionAddress == g_debugger_break_point) {
+        // Meant for a debugger, not an exception of the emulator. Step over the int3 the way a
+        // debugger answering DBG_CONTINUE does: the context of a breakpoint exception points at
+        // the instruction, not past it. The injected thread then returns and exits by itself.
+        if (pExp->ContextRecord->Rip == reinterpret_cast<u64>(g_debugger_break_point)) {
+            pExp->ContextRecord->Rip += 1;
+        }
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (!CurrentThreadHasStaticTls()) {
+        // Not a thread of the emulator, and nothing below can run on it.
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    return SignalHandlerImpl(pExp);
+}
+
+__declspec(noinline) static LONG SignalHandlerImpl(EXCEPTION_POINTERS* pExp) noexcept {
     using namespace Libraries::Kernel;
     const auto* signals = Signals::Instance();
 
@@ -881,6 +931,10 @@ void SignalHandler(int sig, siginfo_t* info, void* raw_context) {
 
 SignalDispatch::SignalDispatch() {
 #if defined(_WIN32)
+    if (const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll")) {
+        g_debugger_break_point =
+            reinterpret_cast<const void*>(GetProcAddress(ntdll, "DbgBreakPoint"));
+    }
     ASSERT_MSG(handle = AddVectoredExceptionHandler(0, SignalHandler),
                "Failed to register exception handler.");
     // Catch what the vectored handler does not see: truly unhandled exceptions, abort() and

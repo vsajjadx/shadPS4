@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <chrono>
 #include <string>
+#include <thread>
 
 #include "common/assert.h"
 #include "common/debug.h"
@@ -13,6 +15,7 @@
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/gnmdriver/gnmdriver.h"
 #include "core/libraries/videoout/driver.h"
+#include "core/libraries/videoout/frame_step.h"
 #include "core/libraries/videoout/videoout_error.h"
 #include "imgui/renderer/imgui_core.h"
 #include "video_core/amdgpu/liverpool.h"
@@ -22,6 +25,30 @@ extern std::unique_ptr<Vulkan::Presenter> presenter;
 extern std::unique_ptr<AmdGpu::Liverpool> liverpool;
 
 namespace Libraries::VideoOut {
+
+static std::atomic_bool frame_frozen{false};
+static std::atomic_bool slow_motion{false};
+
+// Toggled only from the window event thread; the present thread just reads the flags.
+bool ToggleFrameFreeze() {
+    const bool frozen = !frame_frozen.load();
+    frame_frozen.store(frozen);
+    return frozen;
+}
+
+bool ToggleSlowMotion() {
+    const bool slow = !slow_motion.load();
+    slow_motion.store(slow);
+    return slow;
+}
+
+bool IsFrameFrozen() {
+    return frame_frozen.load();
+}
+
+bool IsSlowMotion() {
+    return slow_motion.load();
+}
 
 constexpr static bool Is32BppPixelFormat(PixelFormat format) {
     switch (format) {
@@ -376,6 +403,9 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
     constexpr std::chrono::seconds flip_stall_timeout{10};
     bool stall_dumped = false;
     u32 stall_dumps = 0;
+    // Diagnostic frame stepping: one flip per slow_motion_period while slow motion is on.
+    constexpr std::chrono::seconds slow_motion_period{1};
+    std::chrono::steady_clock::time_point last_stepped_flip{};
 
     const auto wait_for_request = [&] {
         std::unique_lock lk{mutex};
@@ -416,6 +446,27 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
             continue;
         }
 
+        // Frame stepping holds the last frame on screen and takes no flip, so the game stalls on
+        // its own flip pacing with the frame of interest still visible.
+        const auto step_now = std::chrono::steady_clock::now();
+        if (IsFrameFrozen() ||
+            (IsSlowMotion() && step_now - last_stepped_flip < slow_motion_period)) {
+            if (!unlimited || may_redraw()) {
+                DrawLastFrame();
+                last_draw = std::chrono::steady_clock::now();
+            }
+            if (last_flip != std::chrono::steady_clock::time_point{}) {
+                last_flip = step_now; // Not a hang: keep the flip stall watchdog quiet.
+            }
+            if (unlimited) {
+                // Queued requests make wait_for_request return at once; do not spin on them.
+                std::this_thread::sleep_for(max_idle_period);
+            } else {
+                timer.End();
+            }
+            continue;
+        }
+
         // Check if it's time to take a request.
         auto& vblank_status = main_port.vblank_status;
         if (vblank_status.count % (main_port.flip_rate + 1) == 0) {
@@ -434,6 +485,7 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
                 Flip(request);
                 last_draw = std::chrono::steady_clock::now();
                 last_flip = last_draw;
+                last_stepped_flip = last_draw;
                 stall_dumped = false;
                 FRAME_END;
             }

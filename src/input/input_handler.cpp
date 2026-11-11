@@ -185,6 +185,8 @@ std::filesystem::path GetInputConfigFile(const std::string& game_id) {
             {"hotkey_toggle_friends", "f2"},
             {"hotkey_toggle_frame_generation", "1"},
             {"hotkey_toggle_dlss5", "2"},
+            {"hotkey_freeze_frame", "9"},
+            {"hotkey_slow_motion_1fps", "0"},
         };
         std::string legacy_capture_binding;
         bool legacy_capture_binding_found = false;
@@ -851,6 +853,12 @@ void ControllerOutput::FinalizeUpdate(u8 gamepad_index) {
             break;
         case HOTKEY_TOGGLE_DLSS5:
             PushSDLEvent(SDL_EVENT_TOGGLE_DLSS5);
+            break;
+        case HOTKEY_FREEZE_FRAME:
+            PushSDLEvent(SDL_EVENT_TOGGLE_FREEZE_FRAME);
+            break;
+        case HOTKEY_SLOW_MOTION:
+            PushSDLEvent(SDL_EVENT_TOGGLE_SLOW_MOTION);
             break;
         case KEY_TOGGLE:
             // noop

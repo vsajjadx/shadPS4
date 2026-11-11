@@ -23,6 +23,7 @@
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/pad/pad.h"
 #include "core/libraries/system/userservice.h"
+#include "core/libraries/videoout/frame_step.h"
 #include "core/user_settings.h"
 #include "imgui/brightness_layer.h"
 #include "imgui/friends_layer.h"
@@ -360,6 +361,22 @@ void WindowSDL::WaitEvent() {
         const auto state = Dlss5::ToggleDLSS5();
         const std::string message =
             !state ? "DLSS5 could not be started" : "DLSS5 " + std::string(*state ? "on" : "off");
+        LOG_INFO(Frontend, "{}", message);
+        shadNotifications::QueueNotification(message, 2.0f,
+                                             shadNotifications::position::BottomRight);
+        break;
+    }
+    case SDL_EVENT_TOGGLE_FREEZE_FRAME: {
+        const bool frozen = Libraries::VideoOut::ToggleFrameFreeze();
+        const std::string message = frozen ? "Frame frozen" : "Frame freeze off";
+        LOG_INFO(Frontend, "{}", message);
+        shadNotifications::QueueNotification(message, 2.0f,
+                                             shadNotifications::position::BottomRight);
+        break;
+    }
+    case SDL_EVENT_TOGGLE_SLOW_MOTION: {
+        const bool slow = Libraries::VideoOut::ToggleSlowMotion();
+        const std::string message = slow ? "Slow motion: 1 frame per second" : "Slow motion off";
         LOG_INFO(Frontend, "{}", message);
         shadNotifications::QueueNotification(message, 2.0f,
                                              shadNotifications::position::BottomRight);

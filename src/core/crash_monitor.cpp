@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 #include <fmt/format.h>
 #include <windows.h>
@@ -276,6 +277,17 @@ int Run(DWORD pid) {
     DebugSetProcessKillOnExit(FALSE);
     Note(fmt::format("attached to emulator process {}", pid));
 
+    // A debugger break-in request runs ntdll!DbgUiRemoteBreakin on a thread injected into the
+    // emulator, which executes the breakpoint ntdll!DbgBreakPoint. ntdll is mapped at the same
+    // address in every process, so the monitor's own copy gives both addresses.
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    const auto breakin_start =
+        reinterpret_cast<uintptr_t>(ntdll ? GetProcAddress(ntdll, "DbgUiRemoteBreakin") : nullptr);
+    const auto breakin_breakpoint =
+        reinterpret_cast<uintptr_t>(ntdll ? GetProcAddress(ntdll, "DbgBreakPoint") : nullptr);
+    std::unordered_set<DWORD> breakin_threads;
+    bool breakin_noted = false;
+
     bool first_break = true;
     bool reported = false;
     DEBUG_EVENT ev{};
@@ -296,13 +308,41 @@ int Run(DWORD pid) {
                 CloseHandle(ev.u.LoadDll.hFile);
             }
             break;
+        case CREATE_THREAD_DEBUG_EVENT:
+            if (breakin_start != 0 &&
+                reinterpret_cast<uintptr_t>(ev.u.CreateThread.lpStartAddress) == breakin_start) {
+                breakin_threads.insert(ev.dwThreadId);
+            }
+            break;
+        case EXIT_THREAD_DEBUG_EVENT:
+            breakin_threads.erase(ev.dwThreadId);
+            break;
         case EXCEPTION_DEBUG_EVENT: {
             const auto& ex = ev.u.Exception;
             const DWORD code = ex.ExceptionRecord.ExceptionCode;
-            if (code == EXCEPTION_BREAKPOINT && first_break) {
-                // The break-in of the attach itself, not an exception of the emulator.
-                first_break = false;
-                break;
+            if (code == EXCEPTION_BREAKPOINT) {
+                const bool breakin =
+                    breakin_threads.contains(ev.dwThreadId) ||
+                    (breakin_breakpoint != 0 &&
+                     reinterpret_cast<uintptr_t>(ex.ExceptionRecord.ExceptionAddress) ==
+                         breakin_breakpoint);
+                if (first_break || breakin) {
+                    // A break-in request, not an exception of the emulator: the attach itself,
+                    // or one that Windows issues afterwards. It does so on every F12 press in the
+                    // emulator window, because F12 is the user debugger hotkey of a debugged
+                    // process (AeDebug\UserDebuggerHotKey). It is answered here, as a debugger
+                    // does. Passed on, the emulator's exception handlers would run on the
+                    // injected thread, which the loader never initialised.
+                    if (!first_break && !breakin_noted) {
+                        breakin_noted = true;
+                        Note(fmt::format("debugger break-in request on thread {} continued (F12 "
+                                         "pressed in the emulator window); further ones are not "
+                                         "listed",
+                                         ev.dwThreadId));
+                    }
+                    first_break = false;
+                    break;
+                }
             }
             // Everything else goes to the emulator's own handlers first.
             status = DBG_EXCEPTION_NOT_HANDLED;
