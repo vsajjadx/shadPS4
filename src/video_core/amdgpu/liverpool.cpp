@@ -231,8 +231,6 @@ void Liverpool::Process(std::stop_token stoken) {
             break;
         }
 
-        VideoCore::StartCapture();
-
         curr_qid = -1;
 
         while ((num_submits || num_commands) && !stoken.stop_requested()) {
@@ -274,7 +272,6 @@ void Liverpool::Process(std::stop_token stoken) {
                 rasterizer->OnSubmit();
                 rasterizer->Flush();
             }
-            VideoCore::EndCapture();
             submit_done = false;
         }
 

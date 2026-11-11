@@ -116,6 +116,7 @@ public:
     u32 Add(const ImageResource& desc) {
         const u32 index{Add(image_resources, desc, [&desc](const auto& existing) {
             return desc.sharp_fetch == existing.sharp_fetch && desc.is_array == existing.is_array &&
+                   desc.is_written == existing.is_written &&
                    desc.is_heap == existing.is_heap && desc.heap_buffer == existing.heap_buffer &&
                    desc.heap_type == existing.heap_type && desc.is_depth == existing.is_depth &&
                    desc.mip_fallback_mode == existing.mip_fallback_mode &&

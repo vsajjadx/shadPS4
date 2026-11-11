@@ -12,13 +12,7 @@ namespace VideoCore {
 /// Loads renderdoc dynamic library module.
 void LoadRenderDoc();
 
-/// Begins a capture if a renderdoc instance is attached.
-void StartCapture();
-
-/// Ends current renderdoc capture.
-void EndCapture();
-
-/// Triggers capturing process.
+/// Captures the next presented frame if RenderDoc is attached.
 void TriggerCapture();
 
 /// Sets output directory for captures

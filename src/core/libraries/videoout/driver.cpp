@@ -406,6 +406,7 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
     // Diagnostic frame stepping: one flip per slow_motion_period while slow motion is on.
     constexpr std::chrono::seconds slow_motion_period{1};
     std::chrono::steady_clock::time_point last_stepped_flip{};
+    bool frame_step_paused_guest_threads{};
 
     const auto wait_for_request = [&] {
         std::unique_lock lk{mutex};
@@ -435,7 +436,18 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
             timer.Start();
         }
 
-        if (DebugState.IsGuestThreadsPaused()) {
+        const auto step_now = std::chrono::steady_clock::now();
+        if (frame_step_paused_guest_threads && !IsFrameFrozen() &&
+            (!IsSlowMotion() || step_now - last_stepped_flip >= slow_motion_period)) {
+            DebugState.ResumeGuestThreads();
+            frame_step_paused_guest_threads = false;
+        }
+
+        if (IsFrameFrozen()) {
+            if (!DebugState.IsGuestThreadsPaused()) {
+                DebugState.PauseGuestThreads();
+                frame_step_paused_guest_threads = true;
+            }
             if (!unlimited || may_redraw()) {
                 DrawLastFrame();
                 last_draw = std::chrono::steady_clock::now();
@@ -446,11 +458,7 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
             continue;
         }
 
-        // Frame stepping holds the last frame on screen and takes no flip, so the game stalls on
-        // its own flip pacing with the frame of interest still visible.
-        const auto step_now = std::chrono::steady_clock::now();
-        if (IsFrameFrozen() ||
-            (IsSlowMotion() && step_now - last_stepped_flip < slow_motion_period)) {
+        if (DebugState.IsGuestThreadsPaused()) {
             if (!unlimited || may_redraw()) {
                 DrawLastFrame();
                 last_draw = std::chrono::steady_clock::now();
@@ -487,6 +495,13 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
                 last_flip = last_draw;
                 last_stepped_flip = last_draw;
                 stall_dumped = false;
+                if (IsSlowMotion() && !DebugState.IsGuestThreadsPaused()) {
+                    // Let the submitted frame finish, then pause guest execution until the next
+                    // one-second step. This throttles guest frames without leaving flip requests
+                    // queued or stalling the GPU command processor.
+                    DebugState.PauseGuestThreads();
+                    frame_step_paused_guest_threads = true;
+                }
                 FRAME_END;
             }
         }

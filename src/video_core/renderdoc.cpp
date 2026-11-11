@@ -19,12 +19,6 @@
 
 namespace VideoCore {
 
-enum class CaptureState {
-    Idle,
-    Triggered,
-    InProgress,
-};
-static CaptureState capture_state{CaptureState::Idle};
 static std::atomic<u32> screenshot_game_only_count{0};
 static std::atomic<u32> screenshot_with_overlays_count{0};
 
@@ -107,32 +101,13 @@ void LoadRenderDoc() {
     }
 }
 
-void StartCapture() {
-    if (!rdoc_api) {
-        return;
-    }
-
-    if (capture_state == CaptureState::Triggered) {
-        rdoc_api->StartFrameCapture(nullptr, nullptr);
-        capture_state = CaptureState::InProgress;
-    }
-}
-
-void EndCapture() {
-    if (!rdoc_api) {
-        return;
-    }
-
-    if (capture_state == CaptureState::InProgress) {
-        rdoc_api->EndFrameCapture(nullptr, nullptr);
-        capture_state = CaptureState::Idle;
-    }
-}
-
 void TriggerCapture() {
-    if (capture_state == CaptureState::Idle) {
-        capture_state = CaptureState::Triggered;
+    if (!rdoc_api) {
+        return;
     }
+
+    rdoc_api->TriggerCapture();
+    LOG_INFO(Render, "RenderDoc capture requested for the next presented frame");
 }
 
 void SetOutputDir(const std::filesystem::path& path, const std::string& prefix) {
