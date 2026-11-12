@@ -453,7 +453,11 @@ void Rasterizer::DispatchDirect() {
 }
 
 bool Rasterizer::InitIndirectClamp() {
-    if (indirect_clamp_failed || !instance.IsBufferDeviceAddressSupported()) {
+    // Off unless SHADPS4_INDIRECT_CLAMP is set: with one image per resized surface (dynamic
+    // resolution) NHL 24 no longer produces garbage group counts, and runs with the GPU pass
+    // lost the device twice (WriteInvalid) while the frame-step hotkeys were in use.
+    static const bool enabled = std::getenv("SHADPS4_INDIRECT_CLAMP") != nullptr;
+    if (!enabled || indirect_clamp_failed || !instance.IsBufferDeviceAddressSupported()) {
         return false;
     }
     const auto device = instance.GetDevice();
