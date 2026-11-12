@@ -6,6 +6,7 @@
 #include <functional>
 #include <mutex>
 #include <optional>
+#include <source_location>
 #include <thread>
 #include <unordered_set>
 #include <absl/container/flat_hash_map.h>
@@ -422,7 +423,8 @@ private:
     void WriteAliasToBuffer(ImageId image_id, VAddr begin, VAddr end);
 
     /// Register image in the page table
-    void RegisterImage(ImageId image);
+    void RegisterImage(ImageId image,
+                       std::source_location caller = std::source_location::current());
 
     /// Unregister image from the page table
     void UnregisterImage(ImageId image);

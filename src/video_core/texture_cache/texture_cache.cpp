@@ -843,13 +843,14 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     // its own, both stayed alive, and passes that wrote one size were read through the other, so
     // stale contents flickered in at the right and bottom edges. Keep a single image per surface:
     // a request for another size takes over the contents of the most recently used one.
+    // The mip count may differ too: NHL 24 samples its 1920x1080 scene target with a full mip
+    // chain while rendering the next frame into it as a single-level 1832x1032 target.
     {
         const auto is_resize_of = [&info](const ImageInfo& other) {
             return other.guest_address == info.guest_address && other.size != info.size &&
                    other.pixel_format == info.pixel_format && other.type == info.type &&
                    other.tile_mode == info.tile_mode && other.size.depth == 1 &&
-                   info.size.depth == 1 && other.resources.levels == info.resources.levels &&
-                   other.resources.layers == info.resources.layers &&
+                   info.size.depth == 1 && other.resources.layers == info.resources.layers &&
                    other.num_samples == info.num_samples && !info.props.is_block &&
                    !info.props.is_depth;
         };
@@ -973,6 +974,26 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     }
     // Create and register a new image
     if (!image_id) {
+        static std::unordered_set<u64> reported_new;
+        ForEachImageWithAddress(info.guest_address, [&](ImageId other_id, Image& other) {
+            const auto& o = other.info;
+            if (o.guest_address != info.guest_address || o.pixel_format != info.pixel_format ||
+                o.size == info.size || !reported_new.insert(info.guest_address).second) {
+                return;
+            }
+            const bool in_ids = std::ranges::find(image_ids, other_id) != image_ids.end();
+            LOG_WARNING(Render_Vulkan,
+                        "New size of a cached surface at {:#x}: {}x{} vs {}x{} in_ids={} type {}/{} "
+                        "tile {}/{} depth {}/{} block {}/{} levels {}/{} layers {}/{} samples {}/{} "
+                        "guest_size {:#x}/{:#x} found_gen {}",
+                        info.guest_address, info.size.width, info.size.height, o.size.width,
+                        o.size.height, in_ids, u32(info.type), u32(o.type), u32(info.tile_mode),
+                        u32(o.tile_mode), bool(info.props.is_depth), bool(o.props.is_depth),
+                        bool(info.props.is_block), bool(o.props.is_block),
+                        info.resources.levels, o.resources.levels, info.resources.layers,
+                        o.resources.layers, info.num_samples, o.num_samples, info.guest_size,
+                        o.guest_size, image_ids.size());
+        });
         image_id = slot_images.Insert(instance, runtime, slot_image_views, info);
         RegisterImage(image_id);
     }
@@ -1348,9 +1369,31 @@ vk::Sampler TextureCache::GetSampler(const AmdGpu::Sampler& sharp,
     return sampler.Handle();
 }
 
-void TextureCache::RegisterImage(ImageId image_id) {
+void TextureCache::RegisterImage(ImageId image_id, std::source_location caller) {
     ++image_set_generation;
     Image& image = slot_images[image_id];
+    {
+        // Diagnostic: two live images of one surface with different sizes is how NHL 24's
+        // dynamic resolution produced stale lights, lines and the indirect dispatch hang.
+        static std::unordered_set<u64> reported;
+        const auto& new_info = image.info;
+        ForEachImageWithAddress(new_info.guest_address, [&](ImageId other_id, Image& other) {
+            const auto& o = other.info;
+            if (other_id == image_id || o.guest_address != new_info.guest_address ||
+                o.pixel_format != new_info.pixel_format || o.tile_mode != new_info.tile_mode ||
+                o.size == new_info.size || !reported.insert(new_info.guest_address).second) {
+                return;
+            }
+            LOG_WARNING(Render_Vulkan,
+                        "Second size of one surface at {:#x}: new {}x{} (levels {}, layers {}, "
+                        "samples {}) from {}:{}, existing {}x{} (levels {}, layers {}, samples {})",
+                        new_info.guest_address, new_info.size.width, new_info.size.height,
+                        new_info.resources.levels, new_info.resources.layers,
+                        new_info.num_samples, caller.function_name(), caller.line(),
+                        o.size.width, o.size.height, o.resources.levels, o.resources.layers,
+                        o.num_samples);
+        });
+    }
     ASSERT_MSG(False(image.flags & ImageFlagBits::Registered),
                "Trying to register an already registered image");
     image.flags |= ImageFlagBits::Registered;
