@@ -450,20 +450,22 @@ void Rasterizer::DispatchDirect() {
     }
 }
 
-std::optional<std::pair<vk::Buffer, u64>> Rasterizer::ClampIndirectDispatch(
-    const VideoCore::Buffer* buffer, u64 offset) {
+bool Rasterizer::InitIndirectClamp() {
     if (indirect_clamp_failed || !instance.IsBufferDeviceAddressSupported()) {
-        return std::nullopt;
+        return false;
     }
     const auto device = instance.GetDevice();
     if (!indirect_clamp_pipeline) {
         indirect_clamp_buffer.emplace(instance, 0, IndirectClampSlots * IndirectClampSlotSize,
                                       VideoCore::MemoryType::DeviceLocal,
                                       "Indirect Dispatch Clamp");
+        indirect_clamp_stats.emplace(instance, 0, 16, VideoCore::MemoryType::HostCached,
+                                     "Indirect Dispatch Clamp Stats");
+        std::memset(indirect_clamp_stats->mapped_data.data(), 0, 16);
         const vk::PushConstantRange push_range = {
             .stageFlags = vk::ShaderStageFlagBits::eCompute,
             .offset = 0,
-            .size = 32,
+            .size = 40,
         };
         indirect_clamp_layout = Check(device.createPipelineLayoutUnique({
             .pushConstantRangeCount = 1,
@@ -473,7 +475,7 @@ std::optional<std::pair<vk::Buffer, u64>> Rasterizer::ClampIndirectDispatch(
         if (!module) {
             LOG_ERROR(Render_Vulkan, "Indirect dispatch clamp shader did not compile");
             indirect_clamp_failed = true;
-            return std::nullopt;
+            return false;
         }
         const vk::ComputePipelineCreateInfo pipeline_ci = {
             .stage =
@@ -487,7 +489,14 @@ std::optional<std::pair<vk::Buffer, u64>> Rasterizer::ClampIndirectDispatch(
         indirect_clamp_pipeline = Check(device.createComputePipelineUnique({}, pipeline_ci));
         device.destroyShaderModule(module);
     }
+    return true;
+}
 
+std::optional<std::pair<vk::Buffer, u64>> Rasterizer::ClampIndirectDispatch(
+    const VideoCore::Buffer* buffer, u64 offset) {
+    if (!InitIndirectClamp()) {
+        return std::nullopt;
+    }
     const u64 slot_offset = u64{indirect_clamp_slot} * IndirectClampSlotSize;
     indirect_clamp_slot = (indirect_clamp_slot + 1) % IndirectClampSlots;
     const auto& max_groups = instance.GetLimits().maxComputeWorkGroupCount;
@@ -495,12 +504,14 @@ std::optional<std::pair<vk::Buffer, u64>> Rasterizer::ClampIndirectDispatch(
         u64 source;
         u64 destination;
         u32 max_groups[4];
+        u64 stats;
     } push{
         .source = buffer->BufferDeviceAddress() + offset,
         .destination = indirect_clamp_buffer->BufferDeviceAddress() + slot_offset,
         .max_groups = {max_groups[0], max_groups[1], max_groups[2], 0},
+        .stats = indirect_clamp_stats->BufferDeviceAddress(),
     };
-    static_assert(sizeof(push) == 32);
+    static_assert(sizeof(push) == 40);
 
     const auto cmdbuf = scheduler.CommandBuffer();
     // The arguments were written by earlier GPU work, and the slot may still be read by an
@@ -526,7 +537,26 @@ std::optional<std::pair<vk::Buffer, u64>> Rasterizer::ClampIndirectDispatch(
     return std::make_pair(indirect_clamp_buffer->Handle(), slot_offset);
 }
 
-void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
+std::optional<u32> Rasterizer::SnapshotIndirectDispatchArgs(VAddr address) {
+    if (!InitIndirectClamp()) {
+        return std::nullopt;
+    }
+    constexpr u32 size = 3 * sizeof(u32);
+    const auto [buffer, base] = buffer_cache.ObtainBuffer(
+        address, size, VideoCore::ObtainBufferFlags::IgnoreStreamBuffer);
+    if (buffer == &buffer_cache.GetStreamBuffer()) {
+        return std::nullopt;
+    }
+    scheduler.EndRendering();
+    const u32 slot = indirect_clamp_slot;
+    if (!ClampIndirectDispatch(buffer, base)) {
+        return std::nullopt;
+    }
+    return slot;
+}
+
+void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size,
+                                  std::optional<u32> snapshot_slot) {
     RENDERER_TRACE;
 
     scheduler.PopPendingOperations();
@@ -541,6 +571,28 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
     }
 
     if (!BindResources(pipeline)) {
+        return;
+    }
+
+    if (snapshot_slot) {
+        // The counts were copied when the guest patched its dispatch packet; later writes to
+        // their source memory must not change this dispatch.
+        scheduler.EndRendering();
+        pipeline->BindResources(set_writes, push_data);
+        if (!heap_bind_sets.empty()) {
+            pipeline->BindHeapSets(heap_bind_sets);
+        }
+        const auto cmdbuf = scheduler.CommandBuffer();
+        cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline->Handle());
+        if (instance.HasCheckpoints()) {
+            cmdbuf.setCheckpointNV(reinterpret_cast<const void*>(instance.NoteCheckpoint(
+                "dispatch-indirect", pipeline->GetStageHash(Shader::SwStage::Compute), 0, 0, 0,
+                0)));
+        }
+        cmdbuf.dispatchIndirect(indirect_clamp_buffer->Handle(),
+                                u64{*snapshot_slot} * IndirectClampSlotSize);
+        DebugState.IncDispatch();
+        ResetBindings(true);
         return;
     }
 
@@ -576,6 +628,7 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
     vk::Buffer args_buffer = buffer->Handle();
     u64 args_offset = base;
     if (buffer != &buffer_cache.GetStreamBuffer()) {
+        indirect_clamp_last_shader = pipeline->GetStageHash(Shader::SwStage::Compute);
         if (const auto clamped = ClampIndirectDispatch(buffer, base)) {
             std::tie(args_buffer, args_offset) = *clamped;
         }
@@ -632,6 +685,18 @@ void Rasterizer::ResolveOcclusionDumps() {
 }
 
 void Rasterizer::OnSubmit() {
+    if (indirect_clamp_stats) {
+        indirect_clamp_stats->Invalidate(0, 16);
+        u32 stats[4];
+        std::memcpy(stats, indirect_clamp_stats->mapped_data.data(), sizeof(stats));
+        if (stats[0] != indirect_clamp_reported) {
+            LOG_WARNING(Render_Vulkan,
+                        "Indirect dispatch clamp: {} dispatches rejected so far, last with "
+                        "{}x{}x{} groups (latest indirect cs {:#x})",
+                        stats[0], stats[1], stats[2], stats[3], indirect_clamp_last_shader);
+            indirect_clamp_reported = stats[0];
+        }
+    }
     occlusion_counter.TickFrame();
     buffer_cache.TickFrame();
     texture_cache.ProcessDownloadImages();

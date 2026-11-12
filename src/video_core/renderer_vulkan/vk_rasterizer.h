@@ -59,7 +59,13 @@ public:
                       VAddr count_address, u16 vertex_sgpr_offset, u16 instance_sgpr_offset);
 
     void DispatchDirect();
-    void DispatchIndirect(VAddr address, u32 offset, u32 size);
+    void DispatchIndirect(VAddr address, u32 offset, u32 size,
+                          std::optional<u32> snapshot_slot = std::nullopt);
+
+    /// Copies the group counts at address into a host slot now, the way the GPU copies them into
+    /// a DISPATCH_DIRECT packet when the guest patches one with DMA_DATA. Returns the slot, to be
+    /// passed to DispatchIndirect, or nothing when snapshots are unavailable.
+    std::optional<u32> SnapshotIndirectDispatchArgs(VAddr address);
 
     void ScopeMarker(fmt::string_view fmt, fmt::format_args args, auto&& func) {
         if (host_markers_enabled) {
@@ -161,6 +167,7 @@ private:
     /// the clamp is unavailable (no buffer device address).
     std::optional<std::pair<vk::Buffer, u64>> ClampIndirectDispatch(const VideoCore::Buffer* buffer,
                                                                     u64 offset);
+    bool InitIndirectClamp();
 
     bool IsComputeMetaClear(const Pipeline* pipeline);
     bool IsComputeImageCopy(const Pipeline* pipeline);
@@ -252,6 +259,9 @@ private:
     static constexpr u32 IndirectClampSlots = 4096;
     static constexpr u32 IndirectClampSlotSize = 16;
     std::optional<VideoCore::Buffer> indirect_clamp_buffer;
+    std::optional<VideoCore::Buffer> indirect_clamp_stats;
+    u32 indirect_clamp_reported{};
+    u64 indirect_clamp_last_shader{};
     vk::UniquePipelineLayout indirect_clamp_layout;
     vk::UniquePipeline indirect_clamp_pipeline;
     u32 indirect_clamp_slot{};

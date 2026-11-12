@@ -17,11 +17,17 @@ layout(buffer_reference, buffer_reference_align = 4, std430) readonly buffer Sou
 layout(buffer_reference, buffer_reference_align = 4, std430) writeonly buffer Destination {
     uint out_groups[3];
 };
+// Diagnostics read by the host: number of rejected dispatches and the last rejected counts.
+layout(buffer_reference, buffer_reference_align = 4, std430) buffer Stats {
+    uint rejected;
+    uint last_groups[3];
+};
 
 layout(push_constant) uniform PushConstants {
     uvec2 source;
     uvec2 destination;
     uvec4 max_groups;
+    uvec2 stats;
 };
 
 void main() {
@@ -30,6 +36,13 @@ void main() {
     const uvec3 groups = uvec3(src.groups[0], src.groups[1], src.groups[2]);
     const bool valid = all(lessThanEqual(groups, max_groups.xyz));
     const uvec3 result = valid ? groups : uvec3(0);
+    if (!valid) {
+        Stats st = Stats(stats);
+        atomicAdd(st.rejected, 1u);
+        st.last_groups[0] = groups.x;
+        st.last_groups[1] = groups.y;
+        st.last_groups[2] = groups.z;
+    }
     dst.out_groups[0] = result.x;
     dst.out_groups[1] = result.y;
     dst.out_groups[2] = result.z;

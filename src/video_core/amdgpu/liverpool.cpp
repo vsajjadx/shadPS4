@@ -1109,6 +1109,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
     struct IndirectPatch {
         const PM4Header* header;
         VAddr indirect_addr;
+        std::optional<u32> snapshot;
     };
     boost::container::small_vector<IndirectPatch, 4> indirect_patches;
 
@@ -1223,7 +1224,14 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
                 if (dst_addr >= base_addr && dst_addr < base_addr + acb_size &&
                     num_bytes == sizeof(PM4CmdDispatchIndirect::GroupDimensions) &&
                     header->type == 3 && header->type3.opcode == PM4ItOpcode::DispatchDirect) {
-                    indirect_patches.emplace_back(header, src_addr);
+                    // The GPU copies the counts into the packet now. Reading src_addr later, at
+                    // the dispatch, picks up whatever the guest wrote there in between.
+                    indirect_patches.erase(
+                        std::remove_if(indirect_patches.begin(), indirect_patches.end(),
+                                       [header](const auto& patch) { return patch.header == header; }),
+                        indirect_patches.end());
+                    indirect_patches.push_back(
+                        {header, src_addr, rasterizer->SnapshotIndirectDispatchArgs(src_addr)});
                 } else {
                     rasterizer->CopyBuffer(dst_addr, src_addr, num_bytes, false, false);
                 }
@@ -1273,7 +1281,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
             if (auto it = std::ranges::find(indirect_patches, header, &IndirectPatch::header);
                 it != indirect_patches.end()) {
                 const auto size = sizeof(PM4CmdDispatchIndirect::GroupDimensions);
-                rasterizer->DispatchIndirect(it->indirect_addr, 0, size);
+                rasterizer->DispatchIndirect(it->indirect_addr, 0, size, it->snapshot);
                 break;
             }
             auto& cs_program = GetCsRegs();
