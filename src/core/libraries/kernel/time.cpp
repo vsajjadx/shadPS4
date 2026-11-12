@@ -478,12 +478,24 @@ s32 PS4_SYSV_ABI sceKernelConvertLocaltimeToUtc(time_t param_1, int64_t param_2,
                                                 OrbisKernelTimezone* timezone, s32* dst_seconds) {
     if (timezone) {
         sceKernelGettimezone(timezone);
-        param_1 -= (timezone->tz_minuteswest + timezone->tz_dsttime) * 60;
+        // Daylight saving time of the converted time, not of the current one: libc's mktime
+        // converts back and forth with sceKernelConvertUtcToLocaltime until both agree, and a
+        // date whose DST state differs from today's never did (They Always Run, issue #13).
+        time_t utc = param_1 - timezone->tz_minuteswest * 60;
+        struct tm tm_val {};
+#ifdef _WIN32
+        localtime_s(&tm_val, &utc);
+#else
+        localtime_r(&utc, &tm_val);
+#endif
+        const s32 dst_sec_val = tm_val.tm_isdst > 0 ? 3600 : 0;
+        utc -= dst_sec_val;
+        timezone->tz_dsttime = dst_sec_val / 60;
         if (seconds) {
-            *seconds = param_1;
+            *seconds = utc;
         }
         if (dst_seconds) {
-            *dst_seconds = timezone->tz_dsttime * 60;
+            *dst_seconds = dst_sec_val;
         }
     } else {
         return ORBIS_KERNEL_ERROR_EINVAL;

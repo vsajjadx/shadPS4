@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include "common/assert.h"
 #include "shader_recompiler/ir/ir_emitter.h"
 #include "shader_recompiler/ir/opcodes.h"
@@ -133,8 +134,14 @@ void RingAccessElimination(const IR::Program& program, const RuntimeInfo& runtim
 
                 const auto offset = inst.Flags<IR::BufferInstInfo>().inst_offset.Value();
                 const auto data = ir.BitCast<IR::F32>(IR::U32{inst.Arg(2)});
-                const auto comp_ofs = info.gs_copy_data.output_vertices * sizeof(u32);
-                const auto output_size = gs_info.output_vertices * dwords_per_vertex * sizeof(u32);
+                // The copy shader may not reveal the vertex count (Giana Sisters: Twisted Dreams,
+                // issue #12): use the geometry shader's own instead of dividing by zero.
+                const u32 copy_vertices = info.gs_copy_data.output_vertices != 0
+                                              ? info.gs_copy_data.output_vertices
+                                              : gs_info.output_vertices;
+                const auto comp_ofs = std::max<u32>(copy_vertices, 1) * sizeof(u32);
+                const auto output_size =
+                    std::max<u32>(gs_info.output_vertices * dwords_per_vertex, 1) * sizeof(u32);
 
                 const auto vc_read_ofs = (((offset / comp_ofs) * comp_ofs) % output_size) * 16u;
                 const auto& it = info.gs_copy_data.attr_map.find(vc_read_ofs);
