@@ -174,6 +174,7 @@ private:
                                                                     u64 offset);
     bool InitIndirectClamp();
     void NoteFrameTarget(VideoCore::ImageId image_id, const char* kind, u64 shader);
+    void FlushPeriodically();
 
     bool IsComputeMetaClear(const Pipeline* pipeline);
     bool IsComputeImageCopy(const Pipeline* pipeline);
@@ -201,6 +202,9 @@ private:
     OcclusionCounter occlusion_counter;
     const bool host_markers_enabled;
     const bool guest_markers_enabled;
+    const u32 submit_draw_interval;
+    u64 last_submit_tick{};
+    u32 draws_since_submit{};
 
     struct ImageBinding {
         VideoCore::ImageId image_id;

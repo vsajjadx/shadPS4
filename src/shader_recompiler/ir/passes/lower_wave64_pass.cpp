@@ -30,7 +30,7 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
         const bool is_uniform = std::ranges::contains(uniform_blocks, block);
         for (IR::Inst& inst : block->Instructions()) {
             const auto opcode = inst.GetOpcode();
-            if (opcode == IR::Opcode::MaskedBitCount32) {
+            if (opcode == IR::Opcode::MaskedBitCount32 || opcode == IR::Opcode::WaveId) {
                 // This is a per-invocation arithmetic operation, not a collective.
                 // Its lane number must not reset at the host's 32-lane boundary.
                 worklist.push_back(&inst);
@@ -51,23 +51,22 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
         return;
     }
 
-    const u32 scratch_base = Common::AlignUp(runtime_info.hw.cs.shared_memory_size, sizeof(u64));
     // One slot per invocation supports runtime-selected ReadLane sources. Separate
     // slots also avoid concurrent non-atomic stores to the same ballot word.
-    const u32 scratch_size = needs_scratch ? Common::AlignUp(num_threads, 64) * sizeof(u32) : 0;
-    const bool scratch_fits =
-        !needs_scratch || scratch_base + scratch_size <= profile.max_shared_memory_size;
-    if (needs_scratch && scratch_fits) {
-        program.info.shared_memory_scratch_size =
-            scratch_base + scratch_size - runtime_info.hw.cs.shared_memory_size;
-    } else if (!scratch_fits) {
+    const u32 scratch_size = Common::AlignUp(num_threads, 64) * sizeof(u32);
+    const bool scratch_fits = !needs_scratch || runtime_info.hw.cs.shared_memory_size +
+                                                        scratch_size <=
+                                                    profile.max_shared_memory_size;
+    if (!scratch_fits) {
         LOG_WARNING(Render_Recompiler,
                     "Insufficient shared memory for wave64 lowering (cs shader {:#x})",
                     program.info.pgm_hash);
     }
+    Info::SharedMemorySegment& shared_scratch_segment = program.info.shared_scratch_segment;
 
     for (IR::Inst* inst : worklist) {
-        if (inst->GetOpcode() != IR::Opcode::MaskedBitCount32 && !scratch_fits) {
+        if (inst->GetOpcode() != IR::Opcode::MaskedBitCount32 &&
+            inst->GetOpcode() != IR::Opcode::WaveId && !scratch_fits) {
             continue;
         }
         LOG_INFO(Render_Recompiler, "Lowering {} instruction for wave64 (cs shader {:#x})",
@@ -76,36 +75,38 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
         const IR::U32 invocation_index = ir.GetAttributeU32(IR::Attribute::LocalInvocationIndex);
         const IR::U32 wave_base = ir.BitwiseAnd(invocation_index, ir.Imm32(~63u));
         const auto scratch_offset = [&](const IR::U32& index) {
-            return ir.IAdd(ir.Imm32(scratch_base), ir.ShiftLeftLogical(index, ir.Imm32(2u)));
+            return ir.ShiftLeftLogical(index, ir.Imm32(2u));
         };
         if (inst->GetOpcode() == IR::Opcode::Ballot) {
             const IR::U32 mask_low =
                 IR::U32{ir.CompositeExtract(ir.UnpackUint2x32(ir.Ballot(IR::U1{inst->Arg(0)})), 0)};
-            ir.WriteShared(32, mask_low, scratch_offset(invocation_index));
+            ir.WriteSharedU32Scratch(mask_low, scratch_offset(invocation_index));
             ir.Barrier();
-            const IR::U32 low{ir.LoadShared(32, false, scratch_offset(wave_base))};
+            const IR::U32 low{ir.LoadSharedU32Scratch(scratch_offset(wave_base))};
             const IR::U32 high_index = ir.IAdd(wave_base, ir.Imm32(32u));
             // The last guest wave may have no upper host subgroup. Do not read
             // uninitialized scratch in that case; inactive lanes have a zero ballot.
             const IR::U32 valid_high_index = ir.UMin(high_index, ir.Imm32(num_threads - 1));
-            const IR::U32 high{ir.LoadShared(32, false, scratch_offset(valid_high_index))};
+            const IR::U32 high{ir.LoadSharedU32Scratch(scratch_offset(valid_high_index))};
             const IR::U32 high_or_zero{ir.Select(
                 ir.ILessThan(high_index, ir.Imm32(num_threads), false), high, ir.Imm32(0u))};
             const IR::U64 mask = ir.PackUint2x32(ir.CompositeConstruct(low, high_or_zero));
             ir.Barrier();
             inst->ReplaceUsesWithAndRemove(mask);
+            shared_scratch_segment.SetMinSize(scratch_size);
         } else if (inst->GetOpcode() == IR::Opcode::ReadLane) {
             // Constant-only lowering left dynamic source lanes 32..63 as invalid
             // native subgroup broadcasts. Publish every invocation's value, then
             // address the selected lane within its guest wave, not its host subgroup.
-            ir.WriteShared(32, inst->Arg(0), scratch_offset(invocation_index));
+            ir.WriteSharedU32Scratch(IR::U32{inst->Arg(0)}, scratch_offset(invocation_index));
             ir.Barrier();
             const IR::U32 lane = ir.BitwiseAnd(IR::U32{inst->Arg(1)}, ir.Imm32(63u));
             const IR::U32 source = ir.IAdd(wave_base, lane);
             const IR::U32 valid_source = ir.UMin(source, ir.Imm32(num_threads - 1));
-            const IR::U32 value{ir.LoadShared(32, false, scratch_offset(valid_source))};
+            const IR::U32 value{ir.LoadSharedU32Scratch(scratch_offset(valid_source))};
             ir.Barrier();
             inst->ReplaceUsesWithAndRemove(value);
+            shared_scratch_segment.SetMinSize(scratch_size);
         } else if (inst->GetOpcode() == IR::Opcode::MaskedBitCount32) {
             const IR::U32 subgroup_invocation_id = ir.BitwiseAnd(invocation_index, ir.Imm32(63));
             const IR::U64 mask = ir.ISub(
@@ -115,6 +116,8 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
             const IR::U32 masked_value{
                 ir.BitCount(ir.BitwiseAnd(IR::U32{inst->Arg(0)}, thread_mask))};
             inst->ReplaceUsesWithAndRemove(ir.IAdd(masked_value, IR::U32{inst->Arg(1)}));
+        } else if (inst->GetOpcode() == IR::Opcode::WaveId) {
+            inst->ReplaceUsesWithAndRemove(ir.ShiftRightLogical(invocation_index, ir.Imm32(6u)));
         }
     }
 }

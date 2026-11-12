@@ -465,6 +465,7 @@ struct GPUSettings {
     Setting<int> brightness{100};
     // Percent applied around mid-grey: higher separates dark and bright tones further.
     Setting<int> contrast{100};
+    Setting<u32> submit_draw_interval{0};
 
     std::vector<OverrideItem> GetOverrideableFields() const {
         return std::vector<OverrideItem>{
@@ -508,6 +509,7 @@ struct GPUSettings {
             make_override<GPUSettings>("fast_shader_math", &GPUSettings::fast_shader_math),
             make_override<GPUSettings>("brightness", &GPUSettings::brightness),
             make_override<GPUSettings>("contrast", &GPUSettings::contrast),
+            make_override<GPUSettings>("submit_draw_interval", &GPUSettings::submit_draw_interval),
         };
     }
 };
@@ -519,7 +521,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(
     userfaultfd, inline_fetch_shader, anisotropic_filtering, texture_lod_bias,
     frame_generation_enabled, frame_generation_backend, lemon_fg_high_quality,
     lemon_fg_hud_protection, lemon_fg_multiplier, gpu_thread_core_reserve, anti_aliasing,
-    resolution_scale, fast_shader_math, brightness, contrast)
+    resolution_scale, fast_shader_math, brightness, contrast, submit_draw_interval)
 
 // -------------------------------
 // Vulkan settings
@@ -849,6 +851,7 @@ public:
     SETTING_FORWARD(m_gpu, AnisotropicFiltering, anisotropic_filtering)
     SETTING_FORWARD(m_gpu, TextureLodBias, texture_lod_bias)
     SETTING_FORWARD_BOOL_READONLY(m_gpu, FastShaderMath, fast_shader_math)
+    SETTING_FORWARD(m_gpu, SubmitDrawInterval, submit_draw_interval)
 
     /// Vblank frequency in Hz, 0 means unlimited.
     u32 GetVblankFrequency() {
