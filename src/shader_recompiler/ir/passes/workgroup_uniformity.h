@@ -7,6 +7,7 @@
 #include <string_view>
 #include <vector>
 #include "shader_recompiler/ir/breadth_first_search.h"
+#include "shader_recompiler/ir/passes/resource_pass.h"
 #include "shader_recompiler/ir/program.h"
 
 namespace Shader::Optimization {
@@ -16,14 +17,27 @@ namespace Shader::Optimization {
 // A loop's barriers need every thread of the workgroup to run it the same number of times, so its
 // exits must not depend on anything that can differ between threads or waves: lane and invocation
 // ids, exec and vcc masks, subgroup operations, or memory the threads load or write.
-inline bool IsWorkgroupVaryingCondition(const IR::U1& condition) {
+//
+// A load from a buffer the program never writes returns the same value to every thread that
+// reads the same address, so it is uniform when its address is: Call of Duty: Black Ops Cold
+// War's video decoder wraps its whole body in a branch on a per-workgroup table entry, and
+// treating that load as varying left the two 32-lane halves of its 64-lane wave without the
+// barriers their shared-memory exchange needs (scrambled 8x8 blocks on NVIDIA).
+inline bool IsWorkgroupVaryingCondition(const IR::U1& condition,
+                                        const std::vector<u32>* written_buffers = nullptr) {
     if (condition.IsImmediate()) {
         return false;
     }
     return IR::BreadthFirstSearch(
                condition.Inst(),
-               [](const IR::Inst* inst) -> std::optional<bool> {
+               [written_buffers](const IR::Inst* inst) -> std::optional<bool> {
                    const IR::Opcode opcode = inst->GetOpcode();
+                   if (written_buffers && IsBufferInstruction(*inst) && !IsBufferStore(*inst) &&
+                       !IsBufferAtomic(*inst) && inst->Arg(0).IsImmediate() &&
+                       !std::ranges::contains(*written_buffers, inst->Arg(0).U32())) {
+                       // Uniform if its address is: keep searching its arguments.
+                       return std::nullopt;
+                   }
                    if (opcode == IR::Opcode::Phi) {
                        // Different incoming constants can still select different values
                        // per invocation. A data-only walk cannot prove a phi uniform.
@@ -39,6 +53,11 @@ inline bool IsWorkgroupVaryingCondition(const IR::U1& condition) {
                        return std::nullopt;
                    }
                    const std::string_view name = IR::NameOf(opcode);
+                   if (name.starts_with("Composite")) {
+                       // CompositeShuffle* reorders vector components of one invocation; it
+                       // is not a subgroup shuffle.
+                       return std::nullopt;
+                   }
                    for (const std::string_view varying :
                         {"Lane", "Ballot", "Shuffle", "Quad", "GroupAny", "Shared", "Buffer",
                          "Image", "Attribute", "Exec", "Vcc", "ThreadBit"}) {
@@ -53,6 +72,26 @@ inline bool IsWorkgroupVaryingCondition(const IR::U1& condition) {
 
 inline std::vector<IR::Block*> FindWorkgroupUniformBlocks(const IR::Program& program) {
     using Type = IR::AbstractSyntaxNode::Type;
+
+    // Buffers the program stores to (or writes atomically); a buffer index that is not an
+    // immediate makes every buffer count as written.
+    std::vector<u32> written_buffers;
+    bool any_buffer_written_dynamically{};
+    for (const IR::Block* block : program.blocks) {
+        for (const IR::Inst& inst : block->Instructions()) {
+            if (IsBufferStore(inst) || IsBufferAtomic(inst)) {
+                if (inst.Arg(0).IsImmediate()) {
+                    written_buffers.push_back(inst.Arg(0).U32());
+                } else {
+                    any_buffer_written_dynamically = true;
+                }
+            }
+        }
+    }
+    const std::vector<u32>* written = any_buffer_written_dynamically ? nullptr : &written_buffers;
+    const auto is_varying = [written](const IR::U1& cond) {
+        return IsWorkgroupVaryingCondition(cond, written);
+    };
 
     struct ConditionalScope {
         const IR::Block* merge;
@@ -69,7 +108,7 @@ inline std::vector<IR::Block*> FindWorkgroupUniformBlocks(const IR::Program& pro
         for (const IR::AbstractSyntaxNode& node : program.syntax_list) {
             switch (node.type) {
             case Type::If:
-                if_stack.push_back(IsWorkgroupVaryingCondition(node.data.if_node.cond));
+                if_stack.push_back(is_varying(node.data.if_node.cond));
                 divergent_ifs += static_cast<u32>(if_stack.back());
                 break;
             case Type::EndIf:
@@ -84,7 +123,7 @@ inline std::vector<IR::Block*> FindWorkgroupUniformBlocks(const IR::Program& pro
                 break;
             case Type::Break:
                 if (!loop_stack.empty() &&
-                    (divergent_ifs > 0 || IsWorkgroupVaryingCondition(node.data.break_node.cond))) {
+                    (divergent_ifs > 0 || is_varying(node.data.break_node.cond))) {
                     divergent_loops.push_back(loop_stack.back());
                 }
                 break;
@@ -100,7 +139,7 @@ inline std::vector<IR::Block*> FindWorkgroupUniformBlocks(const IR::Program& pro
                 if (loop_stack.empty() || loop_stack.back() != node.data.repeat.merge) {
                     return {};
                 }
-                if (IsWorkgroupVaryingCondition(node.data.repeat.cond)) {
+                if (is_varying(node.data.repeat.cond)) {
                     divergent_loops.push_back(loop_stack.back());
                 }
                 loop_stack.pop_back();
@@ -121,7 +160,7 @@ inline std::vector<IR::Block*> FindWorkgroupUniformBlocks(const IR::Program& pro
     for (const IR::AbstractSyntaxNode& node : program.syntax_list) {
         switch (node.type) {
         case Type::If: {
-            const bool divergent = IsWorkgroupVaryingCondition(node.data.if_node.cond);
+            const bool divergent = is_varying(node.data.if_node.cond);
             conditionals.push_back({node.data.if_node.merge, divergent});
             divergence_depth += static_cast<u32>(divergent);
             break;

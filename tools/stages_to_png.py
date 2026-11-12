@@ -29,7 +29,7 @@ def decode(raw, w, h, fmt):
         return np.frombuffer(raw, np.uint8).reshape(h, w, 4)[..., :3] / 255.0, False
     if fmt in (44, 50):
         return np.frombuffer(raw, np.uint8).reshape(h, w, 4)[..., 2::-1] / 255.0, False
-    if fmt in (16, 21):  # R8G8 unorm / uint: show the two planes as red and green
+    if fmt in (16, 20):  # R8G8 unorm / uint: show the two planes as red and green
         a = np.frombuffer(raw, np.uint8).reshape(h, w, 2) / 255.0
         return np.concatenate([a, np.zeros((h, w, 1))], -1), False
     if fmt in (9, 13):
