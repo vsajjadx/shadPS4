@@ -814,28 +814,17 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     game_info.trophy_index_map =
         ExtractTrophies("/app0/sce_sys/npbind.dat", "/app0/sce_sys/trophy");
 
-    std::string game_title = fmt::format("{} - {} <{}>", id, title, app_version);
-    std::string window_title = "";
-    std::string remote_url(Common::g_scm_remote_url);
-    std::string remote_host = Common::GetRemoteNameFromLink();
-    if (Common::g_is_release) {
-        if (remote_host == "shadps4-emu" || remote_url.length() == 0) {
-            window_title = fmt::format("shadPS4 v{} | {}", Common::g_version, game_title);
-        } else {
-            window_title =
-                fmt::format("shadPS4 {}/v{} | {}", remote_host, Common::g_version, game_title);
-        }
-    } else {
-        if (remote_host == "shadps4-emu" || remote_url.length() == 0) {
-            window_title =
-                fmt::format("shadPS4 v{} {} {} {} | {}", Common::g_version, Common::g_scm_branch,
-                            Common::g_scm_desc, Common::g_build_name, game_title);
-        } else {
-            window_title = fmt::format("shadPS4 v{} {}/{} {} {} | {}", Common::g_version,
-                                       remote_host, Common::g_scm_branch, Common::g_scm_desc,
-                                       Common::g_build_name, game_title);
-        }
+    // Left to right: game, how it runs (a package or an extracted folder), build name, version.
+    std::string run_mode = "Extracted";
+    if (from_archive) {
+        run_mode = archive_path.extension() == ".zar" ? "ZAR" : "PKG";
     }
+    std::string build_version = fmt::format("v{}", Common::g_version);
+    if (!Common::g_is_release && Common::g_scm_desc[0] != ' ') {
+        build_version += fmt::format(" ({})", Common::g_scm_desc);
+    }
+    const std::string window_title = fmt::format("{} - {} - shadPS4 {} - {}", title, run_mode,
+                                                 Common::g_build_name, build_version);
     window = std::make_unique<Frontend::WindowSDL>(EmulatorSettings.GetWindowWidth(),
                                                    EmulatorSettings.GetWindowHeight(), controllers,
                                                    window_title);
