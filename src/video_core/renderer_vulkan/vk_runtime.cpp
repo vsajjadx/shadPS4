@@ -348,6 +348,12 @@ VideoCore::ImageView& Runtime::FindSubrectView(VideoCore::Image& image,
         return backing.image.image_ci.extent == create_info.extent &&
                backing.num_samples == info.num_samples;
     });
+    if (it == image.backing_images.end()) {
+        LOG_WARNING(Render_Vulkan, "Subrect crop {}x{} of image {}x{} at {:#x} (format {})",
+                    info.size.width, info.size.height, image.info.size.width,
+                    image.info.size.height, image.info.guest_address,
+                    vk::to_string(image.info.pixel_format));
+    }
     auto& crop =
         it != image.backing_images.end() ? *it : image.AddBacking(create_info, info.num_samples);
     if (!crop.subrect_valid) {

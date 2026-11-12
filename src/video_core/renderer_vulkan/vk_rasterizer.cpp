@@ -615,6 +615,11 @@ void Rasterizer::DumpFrameTargets(const std::filesystem::path& dir) {
                 continue;
             }
             auto& image = texture_cache.GetImage(target.image_id);
+            if (False(image.flags & VideoCore::ImageFlagBits::Registered)) {
+                // Left the cache and waits for deferred deletion: its VkImage can be destroyed
+                // before this copy is recorded.
+                continue;
+            }
             const auto& info = image.info;
             const u32 bpp = DumpBytesPerPixel(info.pixel_format);
             if (bpp == 0 || info.num_samples > 1 || info.size.width < 16 || info.size.height < 16) {

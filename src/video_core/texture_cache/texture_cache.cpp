@@ -435,6 +435,11 @@ void TextureCache::InvalidateMemoryFromGPU(VAddr address, size_t max_size) {
                 return;
             }
             // Ensure image is reuploaded when accessed again.
+            if (next != address) {
+                LOG_WARNING(Render_Vulkan,
+                            "GPU write at {:#x} (+{:#x}) also marks image {}x{} at {:#x}", address,
+                            max_size, image.info.size.width, image.info.size.height, next);
+            }
             image.flags |= ImageFlagBits::GpuDirty;
             next_end = std::max<VAddr>(next_end, next + image.info.guest_size);
         });
