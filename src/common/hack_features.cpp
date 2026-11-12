@@ -13,6 +13,7 @@ namespace Common {
 
 bool HackFeatures::isTheOrder1886 = false;
 bool HackFeatures::isNhl24 = false;
+bool HackFeatures::isCodColdWar = false;
 bool HackFeatures::initialized = false;
 
 void HackFeatures::Init(std::string_view game_serial, std::string_view game_title) {
@@ -27,6 +28,8 @@ void HackFeatures::Init(std::string_view game_serial, std::string_view game_titl
     isNhl24 = game_serial == "CUSA37933" ||
               (title.find("nhl") != std::string::npos &&
                title.find("24") != std::string::npos);
+    isCodColdWar = game_serial == "CUSA15010" ||
+                   title.find("black ops cold war") != std::string::npos;
 
     // Every regional/language release of The Order: 1886 needs these hacks. Known serials are
     // listed, and any other release is recognized by its title.

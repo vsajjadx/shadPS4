@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <string_view>
 #include <vector>
+#include "common/hack_features.h"
 #include "shader_recompiler/ir/breadth_first_search.h"
 #include "shader_recompiler/ir/passes/resource_pass.h"
 #include "shader_recompiler/ir/program.h"
@@ -53,7 +54,7 @@ inline bool IsWorkgroupVaryingCondition(const IR::U1& condition,
                        return std::nullopt;
                    }
                    const std::string_view name = IR::NameOf(opcode);
-                   if (name.starts_with("Composite")) {
+                   if (written_buffers && name.starts_with("Composite")) {
                        // CompositeShuffle* reorders vector components of one invocation; it
                        // is not a subgroup shuffle.
                        return std::nullopt;
@@ -88,7 +89,12 @@ inline std::vector<IR::Block*> FindWorkgroupUniformBlocks(const IR::Program& pro
             }
         }
     }
-    const std::vector<u32>* written = any_buffer_written_dynamically ? nullptr : &written_buffers;
+    // Only Call of Duty: Black Ops Cold War uses these refinements. NHL 24 hung on its lighting
+    // shader 0xa9657ebd with them (more of its blocks got workgroup barriers), so every other
+    // game keeps the stricter proof.
+    const std::vector<u32>* written =
+        any_buffer_written_dynamically || !Common::HackFeatures::isCodColdWar ? nullptr
+                                                                               : &written_buffers;
     const auto is_varying = [written](const IR::U1& cond) {
         return IsWorkgroupVaryingCondition(cond, written);
     };
