@@ -45,6 +45,8 @@ Release: [**NHL 24 lights and lines fixed, FC 27 freeze fixed, synced with offic
 - **Launcher:** the game list shows name, serial, region flag and version together; About has a
   **Recent** section that always describes the latest build.
 - **Window title:** game – PKG / Extracted – build name – version.
+- **DLSS5 removed.** It cut the frame rate to a third and caused blur, ghosting and flicker, so
+  it is gone from the emulator and the launcher, including its `2` key.
 
 ### Direct PKG execution: launch games faster than on the console
 
@@ -87,17 +89,10 @@ This update also improves performance and compatibility in several games, includ
 **The Order: 1886**, **UFC 4**, **NHL 24** and many others. The goal is not only to run more
 games, but to make the playable ones run better and more consistently.
 
-### Earlier: DLSS5, frame generation and Boost
+### Frame generation
 
-Release: [**DLSS5 arrives: frame generation, Boost and Auto Quality**](https://github.com/vsajjadx/shadPS4/releases/tag/dlss5-2026-11-01)
-
-- **DLSS5, one key away.** Press `2` in game for sharper, cleaner images.
-- **Frame Generation** on `1` and **Boost** on `3`: smoother motion and extra performance when
-  you need them.
-- **Everything in Settings → Graphics.** DLSS5, Boost, Frame Generation and Auto Quality all have
-  their switches there, and they start off.
-- **On an RTX 20 or 30 series card?** Turn on **Boost**, **Frame Generation** and **Auto
-  Quality** together for a smooth, steady experience.
+- **Frame Generation** on `1`: smoother motion. Its switch is in **Settings → Graphics**, and it
+  starts off.
 - **Alt+Enter** gives a borderless fullscreen window when a game runs in a window.
 
 ## The launcher
@@ -109,7 +104,7 @@ The zip includes the latest official shadPS4 Qt launcher, with a few additions:
   It only makes new ones if none exist, and updates never touch them.
 - **Easy window size.** Pick the size from a list (720p, 1080p, 1440p, 4K and more) instead of
   typing numbers.
-- **Graphics switches.** DLSS5, Boost, Frame Generation and Auto Quality are all in **Settings → Graphics**.
+- **Frame generation switch** in **Settings → Graphics**.
 - **Compatibility list.** Shows the official list, plus the games this build runs that the
   official one doesn't.
 - **Direct PKG execution.** Point it at a folder with your base game, update and DLC PKGs and
@@ -153,8 +148,8 @@ The zip includes the latest official shadPS4 Qt launcher, with a few additions:
 - **Fewer freezes.** Fixes for games that got stuck on loading screens.
 - **Better graphics.** Fixes for dark scenes, lighting and shadows, especially on NVIDIA cards.
 - **Faster.** Better use of your CPU and GPU.
-- **DLSS5, Boost and frame generation (optional).** In game, `1` toggles frame generation, `2`
-  DLSS5 and `3` Boost, or use the switches in the launcher settings. All are off by default.
+- **Frame generation (optional).** In game, `1` toggles it, or use the switch in the launcher
+  settings. It is off by default.
 - **Direct PKG execution.** Launch games from base, update and DLC PKGs with no extraction.
 - **More games run.** Games like NHL 24, The Order: 1886, The Grand Tour Game and Need for Speed
   Hot Pursuit Remastered, which do not run on the official version, work here.
