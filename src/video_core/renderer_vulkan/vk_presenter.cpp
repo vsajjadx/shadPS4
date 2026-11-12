@@ -1057,6 +1057,20 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame,
         }
         return;
     }
+    {
+        // Game frames per second, logged every 5 s (a figure to compare settings with).
+        static auto window_start = std::chrono::steady_clock::now();
+        static u32 frames = 0;
+        ++frames;
+        const auto t = std::chrono::steady_clock::now();
+        const double elapsed = std::chrono::duration<double>(t - window_start).count();
+        if (elapsed >= 5.0) {
+            LOG_INFO(Render_Vulkan, "Game FPS {:.1f} (DLSS5 {})", frames / elapsed,
+                     ::Dlss5::GetSettings().enabled ? "on" : "off");
+            window_start = t;
+            frames = 0;
+        }
+    }
     const auto now = frame->prepared_at;
     bool steady_cadence = false;
     if (last_real_present.time_since_epoch().count() != 0) {

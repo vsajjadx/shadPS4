@@ -21,7 +21,10 @@ struct Settings {
     float localTone = 0.0f;
     float localStructure = 1.0f;
     float skinStructure = 1.0f;
-    int preset = 1;
+    /// Network: 0 Default, 1 Full Quality, 2 Fast. Full Quality blends earlier frames itself
+    /// (moving players ghost) and ran at a third of the frame rate (NHL 24: 149 fps off, 50 Full
+    /// Quality, 71 Default/Fast), so Default is the default.
+    int preset = 0;
     bool autoMask = true;
     /// Blends earlier frames in; without motion vectors moving objects leave a trail.
     bool temporal = false;
