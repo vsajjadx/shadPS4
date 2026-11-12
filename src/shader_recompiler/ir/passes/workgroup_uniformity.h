@@ -187,6 +187,14 @@ inline std::vector<IR::Block*> FindWorkgroupUniformBlocks(const IR::Program& pro
                 return {};
             }
             divergence_depth -= static_cast<u32>(loops.back().divergent);
+            if (loops.back().divergent && Common::HackFeatures::isFc27) {
+                // The loop header precedes the Loop node in the syntax list but runs on every
+                // iteration, after threads that took a divergent exit have left. A workgroup
+                // barrier there deadlocks the remaining half-wave (FC 27 cs 0x5e4f7d97). Only
+                // for FC 27: NHL 24 has such barriers in 9 shaders, never hangs on them (its
+                // threads run equal iteration counts) and may need them for its LDS exchange.
+                std::erase(blocks, node.data.repeat.loop_header);
+            }
             loops.pop_back();
             break;
         case Type::Block:
