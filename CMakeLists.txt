@@ -1069,8 +1069,6 @@ set(CORE src/core/aerolib/stubs.cpp
          src/core/emulator_state.cpp
          src/core/emulator_state.h
          src/core/emulator_settings.cpp
-         src/core/dlss5.cpp
-         src/core/dlss5.h
          src/core/emulator_settings.h
          src/core/user_manager.cpp
          src/core/user_manager.h
@@ -1252,8 +1250,6 @@ set(VIDEO_CORE src/video_core/amdgpu/cb_db_extent.h
                src/video_core/renderer_vulkan/vk_pipeline_serialization.h
                src/video_core/renderer_vulkan/vk_platform.cpp
                src/video_core/renderer_vulkan/vk_platform.h
-               src/video_core/renderer_vulkan/vk_dlss5.cpp
-               src/video_core/renderer_vulkan/vk_dlss5.h
                src/video_core/renderer_vulkan/vk_presenter.cpp
                src/video_core/renderer_vulkan/vk_presenter.h
                src/video_core/renderer_vulkan/vk_frame_generation.h

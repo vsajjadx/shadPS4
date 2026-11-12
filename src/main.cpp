@@ -26,7 +26,6 @@
 #include "core/user_settings.h"
 #include "emulator.h"
 #include "imgui/big_picture/big_picture.h"
-#include "video_core/renderer_vulkan/vk_dlss5.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -42,7 +41,6 @@ int main(int argc, char* argv[]) {
     if (Core::CrashMonitor::TryRun(monitor_exit_code)) {
         return monitor_exit_code;
     }
-    Vulkan::Dlss5::PrepareDriver();
     SetConsoleOutputCP(CP_UTF8);
 #endif
 

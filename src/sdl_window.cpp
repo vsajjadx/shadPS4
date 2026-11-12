@@ -19,7 +19,6 @@
 #include "common/scope_exit.h"
 #include "core/debug_state.h"
 #include "core/devtools/layer.h"
-#include "core/dlss5.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/kernel/threads/hang_diag.h"
 #include "core/libraries/kernel/time.h"
@@ -358,15 +357,6 @@ void WindowSDL::WaitEvent() {
             message = "FG " + std::string(Vulkan::FrameGeneration::IsEnabled() ? "on" : "off") +
                       " (" + backend + ")";
         }
-        LOG_INFO(Frontend, "{}", message);
-        shadNotifications::QueueNotification(message, 2.0f,
-                                             shadNotifications::position::BottomRight);
-        break;
-    }
-    case SDL_EVENT_TOGGLE_DLSS5: {
-        const auto state = Dlss5::ToggleDLSS5();
-        const std::string message =
-            !state ? "DLSS5 could not be started" : "DLSS5 " + std::string(*state ? "on" : "off");
         LOG_INFO(Frontend, "{}", message);
         shadNotifications::QueueNotification(message, 2.0f,
                                              shadNotifications::position::BottomRight);

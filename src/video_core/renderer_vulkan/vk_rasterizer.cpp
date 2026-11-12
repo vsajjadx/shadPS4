@@ -11,7 +11,6 @@
 #include "common/debug.h"
 #include "common/hack_features.h"
 #include "core/debug_state.h"
-#include "core/dlss5.h"
 #include "core/emulator_settings.h"
 #include "core/memory.h"
 #include "shader_recompiler/resource.h"
@@ -864,8 +863,6 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
 
     set_write_index = 0;
     binding_compute = pipeline->IsCompute();
-    dlss5_pass_reads_scene = false;
-    dlss5_pass_output = {};
     set_writes.clear();
     buffer_infos.clear();
     image_infos.clear();
@@ -1596,7 +1593,6 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
             }
 
             image_id = texture_cache.FindImage(desc);
-            NoteSampledImage(image_id, image_desc.is_written);
             auto* image = &texture_cache.GetImage(image_id);
             if (auto depth_image_id = texture_cache.GetAssociatedDepth(*image)) {
                 // If this image has an associated depth image, it's a stencil attachment.
@@ -1969,146 +1965,6 @@ void Rasterizer::UpdateHeapTextures() {
     runtime.FlushBarriers();
 }
 
-// The scene is the color target most drawn into with depth testing last frame, preferring a
-// floating point one: shadow maps and depth prepasses have no color target, and the material
-// targets of a deferred renderer are fixed point while the lit scene is kept in HDR. Once the scene
-// is drawn (and resolved, when multisampled), the first pass that samples it starts post-processing
-// and compositing (tone mapping, bloom, HUD), so DLSS5 runs on the scene alone just before it.
-void Rasterizer::NoteSceneDraw(VideoCore::ImageId depth_id, bool reversed) {
-    if (!cb_descs[0].image_id) {
-        return;
-    }
-    const auto& info = texture_cache.GetImage(cb_descs[0].image_id).info;
-    const VAddr address = info.guest_address;
-    const auto it = std::ranges::find(scene_targets, address, &SceneTarget::address);
-    if (it != scene_targets.end()) {
-        ++it->draws;
-    } else if (scene_targets.size() < scene_targets.capacity()) {
-        const bool hdr = info.pixel_format == vk::Format::eR16G16B16A16Sfloat ||
-                         info.pixel_format == vk::Format::eB10G11R11UfloatPack32 ||
-                         info.pixel_format == vk::Format::eR32G32B32A32Sfloat;
-        scene_targets.push_back({address, 1, u64{info.size.width} * info.size.height, hdr});
-    }
-    if (address == dlss5_scene_address) {
-        dlss5_scene_color = cb_descs[0].image_id;
-        dlss5_scene_depth = depth_id;
-        dlss5_scene_reversed = reversed;
-        dlss5_sampled_address = address;
-        dlss5_scene_drawn = true;
-    }
-}
-
-void Rasterizer::NoteSampledImage(VideoCore::ImageId image_id, bool written) {
-    if (!dlss5_scene_drawn || dlss5_before_hud) {
-        return;
-    }
-    if (written) {
-        dlss5_pass_output = image_id;
-        if (dlss5_pass_reads_scene) {
-            FollowMultisampledScene();
-        }
-        return;
-    }
-    if (texture_cache.GetImage(image_id).info.guest_address != dlss5_sampled_address) {
-        return;
-    }
-    for (const auto& target : cb_descs) {
-        if (!binding_compute && target.image_id &&
-            texture_cache.GetImage(target.image_id).info.guest_address == dlss5_sampled_address) {
-            return;
-        }
-    }
-    auto* const pass = Dlss5::Get();
-    if (!pass || !::Dlss5::GetSettings().enabled || !::Dlss5::GetSettings().beforeHud ||
-        !texture_cache.IsRegistered(dlss5_scene_color)) {
-        return;
-    }
-    auto& image = texture_cache.GetImage(dlss5_scene_color);
-    if (image.info.num_samples > 1) {
-        dlss5_pass_reads_scene = true;
-        FollowMultisampledScene();
-        return;
-    }
-    dlss5_before_hud = true;
-    const u32 width = image.info.size.width;
-    const u32 height = image.info.size.height;
-    scheduler.EndRendering();
-    const auto depth = PrepareDlss5Depth(width, height);
-    runtime.Transit(&image, vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eAllCommands,
-                    vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite);
-    runtime.FlushBarriers();
-    pass->Render(scheduler.CommandBuffer(), image.GetImage(), {}, image.info.pixel_format, width,
-                 height, depth ? &*depth : nullptr);
-}
-
-// A multisampled scene is resolved by the pass that samples it, so the scene continues in the
-// image that pass writes.
-void Rasterizer::FollowMultisampledScene() {
-    const auto output_id = binding_compute ? dlss5_pass_output : cb_descs[0].image_id;
-    if (!output_id) {
-        return;
-    }
-    const auto& scene = texture_cache.GetImage(dlss5_scene_color);
-    const auto& output = texture_cache.GetImage(output_id);
-    if (output.info.num_samples == 1 && output.info.size.width == scene.info.size.width &&
-        output.info.size.height == scene.info.size.height) {
-        dlss5_scene_color = output_id;
-        dlss5_sampled_address = output.info.guest_address;
-    }
-}
-
-bool Rasterizer::TakeDlss5BeforeHud() {
-    u64 largest_area = 0;
-    for (const auto& target : scene_targets) {
-        largest_area = std::max(largest_area, target.area);
-    }
-    const auto most_drawn =
-        std::ranges::max_element(scene_targets, {}, [largest_area](const SceneTarget& target) {
-            return std::pair{target.hdr && target.area * 2 >= largest_area, target.draws};
-        });
-    if (most_drawn != scene_targets.end()) {
-        dlss5_scene_address = most_drawn->address;
-    }
-    scene_targets.clear();
-    const bool ran = dlss5_before_hud;
-    dlss5_before_hud = false;
-    dlss5_scene_drawn = false;
-    dlss5_scene_depth = {};
-    return ran;
-}
-
-std::optional<Dlss5Depth> Rasterizer::PrepareDlss5Depth(u32 width, u32 height) {
-    auto scene_depth = texture_cache.PeekSceneDepth();
-    if (dlss5_scene_depth && texture_cache.IsRegistered(dlss5_scene_depth)) {
-        scene_depth = VideoCore::TextureCache::SceneDepth{dlss5_scene_depth, dlss5_scene_reversed};
-    }
-    if (!scene_depth || height == 0 || !::Dlss5::GetSettings().useDepth) {
-        return std::nullopt;
-    }
-    auto& depth_image = texture_cache.GetImage(scene_depth->image_id);
-    const u32 depth_width = depth_image.info.size.width;
-    const u32 depth_height = depth_image.info.size.height;
-    if (depth_width == 0 || depth_height == 0 || depth_image.info.num_samples > 1) {
-        return std::nullopt;
-    }
-    const float ratio = static_cast<float>(width) / static_cast<float>(height);
-    const float depth_ratio = static_cast<float>(depth_width) / static_cast<float>(depth_height);
-    if (std::abs(depth_ratio - ratio) >= 0.05f) {
-        return std::nullopt;
-    }
-    VideoCore::ImageViewInfo view_info{};
-    view_info.format = depth_image.info.pixel_format == vk::Format::eD16Unorm ||
-                               depth_image.info.pixel_format == vk::Format::eD16UnormS8Uint
-                           ? vk::Format::eR16Unorm
-                           : vk::Format::eR32Sfloat;
-    const vk::ImageView view = *depth_image.FindView(view_info).image_view;
-    runtime.Transit(&depth_image, vk::ImageLayout::eGeneral,
-                    vk::PipelineStageFlagBits2::eComputeShader,
-                    vk::AccessFlagBits2::eShaderSampledRead);
-    runtime.FlushBarriers();
-    return Dlss5Depth{view, depth_width, depth_height, scene_depth->reversed};
-}
-
 RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
     attachment_feedback_loop = false;
     const auto& regs = liverpool->regs;
@@ -2200,7 +2056,6 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
             const bool reversed =
                 func == AmdGpu::CompareFunc::Greater || func == AmdGpu::CompareFunc::GreaterEqual;
             texture_cache.NoteDepthDraw(image_id, reversed);
-            NoteSceneDraw(image_id, reversed);
         }
         auto& image = texture_cache.GetImage(image_id);
 
@@ -2281,10 +2136,6 @@ void Rasterizer::Resolve() {
     runtime.ResolveImage(&mrt0_image, &mrt1_image, mrt0_desc.view_info.range,
                          mrt1_desc.view_info.range);
     texture_cache.MarkAsGpuWritten(mrt1_image);
-    if (dlss5_scene_drawn && mrt0_image.info.guest_address == dlss5_sampled_address) {
-        dlss5_scene_color = texture_cache.FindImage(mrt1_desc, true);
-        dlss5_sampled_address = mrt1_image.info.guest_address;
-    }
     ScopeMarkerEnd();
 }
 

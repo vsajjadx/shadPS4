@@ -13,7 +13,6 @@
 #include "common/path_util.h"
 #include "core/cpu_patches.h"
 #include "core/devtools/layer.h"
-#include "core/dlss5.h"
 #include "imgui/imgui_std.h"
 #include "settings_dialog_imgui.h"
 
@@ -82,17 +81,6 @@ void SettingsWindow::LoadSettings(std::string profile) {
     }
     rcasEnabledSetting = EmulatorSettings.IsRcasEnabled();
     rcasAttenuationSetting = static_cast<float>(EmulatorSettings.GetRcasAttenuation() * 0.001f);
-    {
-        const auto& ns = Dlss5::GetSettings();
-        dlss5EnabledSetting = ns.enabled;
-        dlss5StyleSetting = ns.style;
-        dlss5NetworkSetting = ns.preset;
-        dlss5IntensitySetting = ns.intensity;
-        dlss5GlobalToneSetting = ns.globalTone;
-        dlss5LocalToneSetting = ns.localTone;
-        dlss5LocalStructureSetting = ns.localStructure;
-        dlss5SkinStructureSetting = ns.skinStructure;
-    }
     {
         const u32 aniso = EmulatorSettings.GetAnisotropicFiltering();
         anisotropySetting = aniso >= 16 ? 4 : aniso >= 8 ? 3 : aniso >= 4 ? 2 : aniso >= 2 ? 1 : 0;
@@ -170,20 +158,6 @@ void SettingsWindow::SaveSettings(std::string profile) {
     EmulatorSettings.SetAnisotropicFiltering(anisotropySetting == 0 ? 0u : 1u << anisotropySetting,
                                              isSpecific);
     EmulatorSettings.SetTextureLodBias(textureLodBiasSetting, isSpecific);
-
-    {
-        auto& ns = Dlss5::GetSettings();
-        ns.enabled = dlss5EnabledSetting;
-        ns.style = dlss5StyleSetting;
-        ns.preset = dlss5NetworkSetting;
-        ns.intensity = dlss5IntensitySetting;
-        ns.globalTone = dlss5GlobalToneSetting;
-        ns.localTone = dlss5LocalToneSetting;
-        ns.localStructure = dlss5LocalStructureSetting;
-        ns.skinStructure = dlss5SkinStructureSetting;
-        Dlss5::SaveSettings();
-        Dlss5::ApplySettings();
-    }
 
     /////////// Input Tab
     EmulatorSettings.SetMotionControlsEnabled(motionControlsSetting, isSpecific);
@@ -806,22 +780,6 @@ void SettingsWindow::DrawSettingsTable(SettingsCategory category) {
                                 lemonFgMultiplierOptions);
                 AddSettingCheckbox("Multi FG High Quality", lemonFgHighQualitySetting);
                 AddSettingCheckbox("Multi FG HUD Protection", lemonFgHudProtectionSetting);
-            }
-
-            AddSettingCheckbox("Enable DLSS5", dlss5EnabledSetting);
-            if (dlss5EnabledSetting) {
-                AddSettingCombo("DLSS5 Network", dlss5NetworkSetting, Dlss5::NetworkOptions());
-                AddSettingSliderFloat("DLSS5 Intensity", dlss5IntensitySetting, 0.0f, 1.0f, 3);
-                AddSettingCombo("DLSS5 Fine Tuning: Style", dlss5StyleSetting,
-                                Dlss5::StyleOptions());
-                AddSettingSliderFloat("DLSS5 Fine Tuning: Global Tone", dlss5GlobalToneSetting,
-                                      0.0f, 2.0f, 3);
-                AddSettingSliderFloat("DLSS5 Fine Tuning: Local Tone", dlss5LocalToneSetting, 0.0f,
-                                      2.0f, 3);
-                AddSettingSliderFloat("DLSS5 Fine Tuning: Local Structure",
-                                      dlss5LocalStructureSetting, 0.0f, 2.0f, 3);
-                AddSettingSliderFloat("DLSS5 Fine Tuning: Skin Structure",
-                                      dlss5SkinStructureSetting, -1.0f, 2.5f, 3);
             }
 
             AddSettingCombo("Anisotropic Filtering", anisotropySetting, anisotropyOptions);

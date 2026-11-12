@@ -44,7 +44,6 @@
 #define SDL_EVENT_SCREENSHOT_WITH_OVERLAYS SDL_EVENT_USER + 14
 #define SDL_EVENT_TOGGLE_FRIENDS SDL_EVENT_USER + 15
 #define SDL_EVENT_TOGGLE_FRAME_GENERATION SDL_EVENT_USER + 16
-#define SDL_EVENT_TOGGLE_DLSS5 SDL_EVENT_USER + 17
 #define SDL_EVENT_TOGGLE_FREEZE_FRAME SDL_EVENT_USER + 18
 #define SDL_EVENT_TOGGLE_SLOW_MOTION SDL_EVENT_USER + 19
 #define SDL_EVENT_DUMP_FRAME_TARGETS SDL_EVENT_USER + 20
@@ -73,7 +72,6 @@
 #define HOTKEY_OPEN_EMULATOR_SETTINGS 0xf000000f
 #define HOTKEY_TOGGLE_FRIENDS 0xf0000010
 #define HOTKEY_TOGGLE_FRAME_GENERATION 0xf0000011
-#define HOTKEY_TOGGLE_DLSS5 0xf0000012
 #define HOTKEY_FREEZE_FRAME 0xf0000013
 #define HOTKEY_SLOW_MOTION 0xf0000014
 #define HOTKEY_DUMP_FRAME_TARGETS 0xf0000015
@@ -187,7 +185,6 @@ const std::map<std::string, u32> string_to_hotkey_map = {
     {"hotkey_emulator_settings", HOTKEY_OPEN_EMULATOR_SETTINGS},
     {"hotkey_toggle_friends", HOTKEY_TOGGLE_FRIENDS},
     {"hotkey_toggle_frame_generation", HOTKEY_TOGGLE_FRAME_GENERATION},
-    {"hotkey_toggle_dlss5", HOTKEY_TOGGLE_DLSS5},
     {"hotkey_freeze_frame", HOTKEY_FREEZE_FRAME},
     {"hotkey_slow_motion_1fps", HOTKEY_SLOW_MOTION},
     {"hotkey_dump_frame_targets", HOTKEY_DUMP_FRAME_TARGETS},
@@ -557,7 +554,7 @@ public:
 
 class ControllerAllOutputs {
 public:
-    static constexpr u64 output_count = 48;
+    static constexpr u64 output_count = 47;
     std::array<ControllerOutput, output_count> data = {
         // Important: these have to be the first, or else they will update in the wrong order
         ControllerOutput(LEFTJOYSTICK_HALFMODE),
@@ -613,7 +610,6 @@ public:
         ControllerOutput(HOTKEY_OPEN_EMULATOR_SETTINGS),
         ControllerOutput(HOTKEY_TOGGLE_FRIENDS),
         ControllerOutput(HOTKEY_TOGGLE_FRAME_GENERATION),
-        ControllerOutput(HOTKEY_TOGGLE_DLSS5),
         ControllerOutput(HOTKEY_FREEZE_FRAME),
         ControllerOutput(HOTKEY_SLOW_MOTION),
         ControllerOutput(HOTKEY_DUMP_FRAME_TARGETS),

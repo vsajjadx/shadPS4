@@ -184,7 +184,6 @@ std::filesystem::path GetInputConfigFile(const std::string& game_id) {
             {"hotkey_emulator_settings", "f3"},
             {"hotkey_toggle_friends", "f2"},
             {"hotkey_toggle_frame_generation", "1"},
-            {"hotkey_toggle_dlss5", "2"},
             {"hotkey_freeze_frame", "9"},
             {"hotkey_slow_motion_1fps", "0"},
             {"hotkey_dump_frame_targets", "8"},
@@ -851,9 +850,6 @@ void ControllerOutput::FinalizeUpdate(u8 gamepad_index) {
             break;
         case HOTKEY_TOGGLE_FRAME_GENERATION:
             PushSDLEvent(SDL_EVENT_TOGGLE_FRAME_GENERATION);
-            break;
-        case HOTKEY_TOGGLE_DLSS5:
-            PushSDLEvent(SDL_EVENT_TOGGLE_DLSS5);
             break;
         case HOTKEY_FREEZE_FRAME:
             PushSDLEvent(SDL_EVENT_TOGGLE_FREEZE_FRAME);

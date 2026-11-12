@@ -337,19 +337,6 @@ jobs:
         name: launcher-win64
         path: bundle
 
-    # DLSS5: the renderer runs NVIDIA's neural rendering itself. Only the RTX 30 build of
-    # nvngx_dlssnr.dll (lmxxf/DLSS5-RTX-3080-laptop v0.4.0) is taken from the release package.
-    - name: Embed DLSS5
-      run: |
-        curl -fL --retry 3 -o dlss5.zip \
-          "https://github.com/vsajjadx/shadPS4/releases/download/dlss5-runtime/DLSS5-nvngx_dlssnr.zip"
-        echo "053cd5cfa74b52e668bbdfc56e5b9be7944df2879f2584f47f7936e83e22707f  dlss5.zip" | sha256sum -c -
-        mkdir -p bundle/qtplugins/DLSS5
-        unzip -q -j dlss5.zip nvngx_dlssnr.dll -d bundle/qtplugins/DLSS5
-        rm dlss5.zip
-        test -f bundle/qtplugins/DLSS5/nvngx_dlssnr.dll
-        echo "DLSS5 embedded: $(du -sh bundle/qtplugins/DLSS5 | cut -f1)"
-
     - name: Upload the package
       uses: actions/upload-artifact@v7
       with:

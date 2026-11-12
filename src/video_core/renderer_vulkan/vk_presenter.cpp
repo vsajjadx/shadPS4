@@ -10,7 +10,6 @@
 #include "common/thread.h"
 #include "core/debug_state.h"
 #include "core/devtools/layer.h"
-#include "core/dlss5.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/system/systemservice.h"
 #include "imgui/friends_layer.h"
@@ -22,7 +21,6 @@
 #include "sdl_window.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/renderdoc.h"
-#include "video_core/renderer_vulkan/vk_dlss5.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
@@ -496,7 +494,6 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
         static_cast<float>(EmulatorSettings.GetRcasAttenuation() / 1000.f);
 
     fsr_pass.Create(device, instance.GetAllocator(), num_images);
-    dlss5_pass = std::make_unique<Dlss5Pass>(instance, draw_scheduler);
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
     FrameGeneration::SetBackend(
         FrameGeneration::BackendFromSetting(EmulatorSettings.GetFrameGenerationBackend()));
@@ -863,28 +860,6 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     pp_settings.brightness = std::clamp(EmulatorSettings.GetBrightness(), 25, 400) / 100.0f;
     pp_settings.contrast = std::clamp(EmulatorSettings.GetContrast(), 25, 400) / 100.0f;
     pp_pass.Render(cmdbuf, image_view, image_size, *frame, pp_settings);
-    // A frame now and then without the scene found (a loading frame, a menu) keeps the scene mode
-    // instead of switching to the final picture and back, which rebuilds DLSS5 at each switch.
-    constexpr u32 SceneModeFrames = 120;
-    if (rasterizer->TakeDlss5BeforeHud()) {
-        frames_without_dlss5_scene = 0;
-    } else if (frames_without_dlss5_scene < SceneModeFrames) {
-        ++frames_without_dlss5_scene;
-    }
-    ::Dlss5::ReloadIfChanged();
-    const bool on_scene = frames_without_dlss5_scene < SceneModeFrames;
-    if (on_scene != dlss5_on_scene && ::Dlss5::GetSettings().enabled) {
-        dlss5_on_scene = on_scene;
-        LOG_INFO(Render_Vulkan, "DLSS5: running on {}",
-                 on_scene ? "the scene before the HUD" : "the final picture");
-    }
-    if (frames_without_dlss5_scene >= SceneModeFrames && dlss5_pass->IsAvailable() &&
-        ::Dlss5::GetSettings().enabled) {
-        const auto dlss5_depth = rasterizer->PrepareDlss5Depth(image_size.width, image_size.height);
-        dlss5_pass->Render(cmdbuf, frame->image, frame->image_view,
-                           swapchain.GetSurfaceFormat().format, frame->width, frame->height,
-                           dlss5_depth ? &*dlss5_depth : nullptr);
-    }
     texture_cache.ResetSceneDepth();
 
     frame->prepared_at = std::chrono::steady_clock::now();
@@ -1065,8 +1040,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame,
         const auto t = std::chrono::steady_clock::now();
         const double elapsed = std::chrono::duration<double>(t - window_start).count();
         if (elapsed >= 5.0) {
-            LOG_INFO(Render_Vulkan, "Game FPS {:.1f} (DLSS5 {})", frames / elapsed,
-                     ::Dlss5::GetSettings().enabled ? "on" : "off");
+            LOG_INFO(Render_Vulkan, "Game FPS {:.1f}", frames / elapsed);
             window_start = t;
             frames = 0;
         }

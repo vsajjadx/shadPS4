@@ -322,9 +322,6 @@ bool Instance::CreateDevice() {
             add_extension(VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME);
     }
     provoking_vertex = add_extension(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME);
-    neural_rendering = add_extension(VK_NVX_BINARY_IMPORT_EXTENSION_NAME) &&
-                       add_extension(VK_NVX_IMAGE_VIEW_HANDLE_EXTENSION_NAME) &&
-                       add_extension(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
     shader_stencil_export = add_extension(VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME);
     image_load_store_lod = add_extension(VK_AMD_SHADER_IMAGE_LOAD_STORE_LOD_EXTENSION_NAME);
     amd_gcn_shader = add_extension(VK_AMD_GCN_SHADER_EXTENSION_NAME);

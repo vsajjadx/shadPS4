@@ -17,7 +17,6 @@
 #include "common/logging/log.h"
 #include "common/string_util.h"
 #include "common/thread.h"
-#include "core/dlss5.h"
 #include "core/emulator_settings.h"
 #include "core/ipc/ipc.h"
 #ifdef ENABLE_DISCORD_RPC

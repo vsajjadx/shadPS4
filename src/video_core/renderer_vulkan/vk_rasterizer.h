@@ -14,7 +14,6 @@
 #include "common/shared_first_mutex.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/page_manager.h"
-#include "video_core/renderer_vulkan/vk_dlss5.h"
 #include "video_core/renderer_vulkan/vk_occlusion_counter.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -119,12 +118,6 @@ public:
         }
     }
 
-    /// Whether DLSS5 already ran on the scene this frame, before post-processing and the HUD.
-    /// Starts watching the next frame.
-    bool TakeDlss5BeforeHud();
-
-    /// The scene depth of this frame for DLSS5, in the general layout, when its aspect matches.
-    std::optional<Dlss5Depth> PrepareDlss5Depth(u32 width, u32 height);
 
     std::thread::id GetGpuCommandProcessorThread();
 #ifdef __linux__
@@ -287,28 +280,9 @@ private:
     u32 frame_targets_order{};
     bool indirect_clamp_failed{};
 
-    void NoteSceneDraw(VideoCore::ImageId depth_id, bool reversed);
-    void NoteSampledImage(VideoCore::ImageId image_id, bool written);
-    void FollowMultisampledScene();
 
     bool attachment_feedback_loop{};
     bool needs_barrier{};
-    struct SceneTarget {
-        VAddr address;
-        u32 draws;
-        u64 area;
-        bool hdr;
-    };
-    boost::container::static_vector<SceneTarget, 16> scene_targets;
-    VideoCore::ImageId dlss5_scene_color{};
-    VideoCore::ImageId dlss5_scene_depth{};
-    bool dlss5_scene_reversed{};
-    VAddr dlss5_scene_address{};
-    VAddr dlss5_sampled_address{};
-    VideoCore::ImageId dlss5_pass_output{};
-    bool dlss5_pass_reads_scene{};
-    bool dlss5_scene_drawn{};
-    bool dlss5_before_hud{};
     bool binding_compute{};
 };
 
