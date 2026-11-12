@@ -74,13 +74,15 @@ void Semaphore::Wait(u64 tick) {
             break;
         }
         if (result == vk::Result::eErrorDeviceLost) {
+            instance.LogHangCheckpoints();
             instance.LogDeviceFault();
+            Common::Log::Flush();
         }
         ASSERT_MSG(result == vk::Result::eTimeout, "Failed to wait for the GPU: vk::Result={}",
                    vk::to_string(result));
         waited_s += 2;
         Refresh();
-        if (waited_s == 4 || (waited_s > 4 && waited_s % 30 == 0)) {
+        if (waited_s == 2 || (waited_s > 2 && waited_s % 30 == 0)) {
             instance.LogHangCheckpoints();
         }
         LOG_WARNING(Render_Vulkan,
