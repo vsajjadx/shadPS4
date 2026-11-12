@@ -31,6 +31,21 @@ per-game settings. The default settings work.
 
 ## What's new
 
+### Latest: NHL 24 lights and lines fixed, FC 27 freeze fixed
+
+Release: [**NHL 24 lights and lines fixed, FC 27 freeze fixed, synced with official shadPS4**](https://github.com/vsajjadx/shadPS4/releases/tag/nhl24-fc27-2026-11-12)
+
+- **Synced with the official shadPS4.** The latest official changes are in, and every fix of this
+  fork is kept. NHL 24 still does not run correctly on the official version.
+- **NHL 24: no more flickering lights, lines on the fog or GPU hang.** When the game changed its
+  render size, the new image started from stale memory full of huge brightness values. It now
+  starts clean.
+- **EA SPORTS FC 27 no longer freezes.** A GPU deadlock in one of its compute shaders is fixed.
+- **Less stutter while shaders compile** the first time.
+- **Launcher:** the game list shows name, serial, region flag and version together; About has a
+  **Recent** section that always describes the latest build.
+- **Window title:** game – PKG / Extracted – build name – version.
+
 ### Direct PKG execution: launch games faster than on the console
 
 No installation. No extraction. No waiting. Launch your PS4 games straight from PKG files,
