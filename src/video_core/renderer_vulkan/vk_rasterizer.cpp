@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <cstdlib>
+#include <fstream>
 #include <sstream>
 #include <unordered_set>
 #include <xxhash.h>
@@ -150,6 +151,7 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
         image_id = bound_images.emplace_back(texture_cache.FindImage(desc));
         auto& image = texture_cache.GetImage(image_id);
         image.binding.is_target = 1u;
+        NoteFrameTarget(image_id, "rt", pipeline->GetStageHash(Shader::SwStage::Fragment));
     }
 
     const auto depth_stencil = GetEffectiveDepthStencilState(regs);
@@ -535,6 +537,119 @@ std::optional<std::pair<vk::Buffer, u64>> Rasterizer::ClampIndirectDispatch(
     };
     cmdbuf.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &after});
     return std::make_pair(indirect_clamp_buffer->Handle(), slot_offset);
+}
+
+void Rasterizer::NoteFrameTarget(VideoCore::ImageId image_id, const char* kind, u64 shader) {
+    const u32 frame = DebugState.GetFrameNum();
+    if (frame != frame_targets_frame) {
+        last_frame_targets = std::move(frame_targets);
+        frame_targets.clear();
+        frame_targets_frame = frame;
+        frame_targets_order = 0;
+    }
+    ++frame_targets_order;
+    for (const auto& target : frame_targets) {
+        if (target.image_id == image_id) {
+            return;
+        }
+    }
+    frame_targets.push_back({image_id, kind, shader, frame_targets_order});
+}
+
+static u32 DumpBytesPerPixel(vk::Format format) {
+    switch (format) {
+    case vk::Format::eR8Unorm:
+        return 1;
+    case vk::Format::eR8G8Unorm:
+    case vk::Format::eR16Sfloat:
+    case vk::Format::eR16Unorm:
+        return 2;
+    case vk::Format::eR8G8B8A8Unorm:
+    case vk::Format::eR8G8B8A8Srgb:
+    case vk::Format::eB8G8R8A8Unorm:
+    case vk::Format::eB8G8R8A8Srgb:
+    case vk::Format::eA2B10G10R10UnormPack32:
+    case vk::Format::eA2R10G10B10UnormPack32:
+    case vk::Format::eB10G11R11UfloatPack32:
+    case vk::Format::eR16G16Sfloat:
+    case vk::Format::eR32Sfloat:
+        return 4;
+    case vk::Format::eR16G16B16A16Sfloat:
+    case vk::Format::eR32G32Sfloat:
+        return 8;
+    case vk::Format::eR32G32B32A32Sfloat:
+        return 16;
+    default:
+        return 0;
+    }
+}
+
+void Rasterizer::DumpFrameTargets(const std::filesystem::path& dir) {
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    struct Pending {
+        FrameTarget target;
+        u32 frame_slot;
+        u32 width;
+        u32 height;
+        vk::Format format;
+        std::unique_ptr<VideoCore::Buffer> buffer;
+    };
+    std::vector<Pending> pending;
+    const auto add = [&](const std::vector<FrameTarget>& list, u32 frame_slot) {
+        for (const auto& target : list) {
+            if (!texture_cache.HasImage(target.image_id)) {
+                continue;
+            }
+            auto& image = texture_cache.GetImage(target.image_id);
+            const auto& info = image.info;
+            const u32 bpp = DumpBytesPerPixel(info.pixel_format);
+            if (bpp == 0 || info.num_samples > 1 || info.size.width < 16 || info.size.height < 16) {
+                continue;
+            }
+            auto buffer = std::make_unique<VideoCore::Buffer>(
+                instance, 0, u64{info.size.width} * info.size.height * bpp,
+                VideoCore::MemoryType::HostCached, "Frame target dump");
+            const vk::BufferImageCopy region = {
+                .bufferOffset = 0,
+                .bufferRowLength = 0,
+                .bufferImageHeight = 0,
+                .imageSubresource =
+                    {
+                        .aspectMask = vk::ImageAspectFlagBits::eColor,
+                        .mipLevel = 0,
+                        .baseArrayLayer = 0,
+                        .layerCount = 1,
+                    },
+                .imageOffset = {0, 0, 0},
+                .imageExtent = {info.size.width, info.size.height, 1},
+            };
+            runtime.DownloadImage(&image, buffer.get(), std::span{&region, 1});
+            pending.push_back({target, frame_slot, info.size.width, info.size.height,
+                               info.pixel_format, std::move(buffer)});
+        }
+    };
+    add(last_frame_targets, 0);
+    add(frame_targets, 1);
+    scheduler.Finish();
+
+    std::ofstream index(dir / "index.txt");
+    index << "file frame order kind shader width height vkformat guest_address\n";
+    u32 n = 0;
+    for (auto& p : pending) {
+        p.buffer->Invalidate(0, p.buffer->SizeBytes());
+        const auto name = fmt::format("t{:03}.raw", n++);
+        std::ofstream out(dir / name, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(p.buffer->mapped_data.data()),
+                  static_cast<std::streamsize>(p.buffer->SizeBytes()));
+        const VAddr address = texture_cache.HasImage(p.target.image_id)
+                                  ? texture_cache.GetImage(p.target.image_id).info.guest_address
+                                  : 0;
+        index << fmt::format("{} {} {} {} {:#x} {} {} {} {:#x}\n", name, p.frame_slot,
+                             p.target.order, p.target.kind, p.target.shader, p.width, p.height,
+                             static_cast<u32>(p.format), address);
+    }
+    LOG_INFO(Render_Vulkan, "Dumped {} frame targets to {}", n, dir.string());
 }
 
 std::optional<u32> Rasterizer::SnapshotIndirectDispatchArgs(VAddr address) {
@@ -1467,6 +1582,9 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
     for (u32 i = 0; i < num_images; ++i) {
         auto& [image_id, desc] = image_bindings[i];
         bool is_storage = desc.type == VideoCore::TextureCache::BindingType::Storage;
+        if (is_storage && image_id) {
+            NoteFrameTarget(image_id, "storage", stage.pgm_hash);
+        }
         if (!image_id) {
             image_infos.emplace_back(VK_NULL_HANDLE, VK_NULL_HANDLE, vk::ImageLayout::eGeneral);
         } else {

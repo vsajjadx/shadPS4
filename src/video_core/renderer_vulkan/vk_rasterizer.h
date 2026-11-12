@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <filesystem>
 #include <optional>
 
 #include <atomic>
@@ -66,6 +67,10 @@ public:
     /// a DISPATCH_DIRECT packet when the guest patches one with DMA_DATA. Returns the slot, to be
     /// passed to DispatchIndirect, or nothing when snapshots are unavailable.
     std::optional<u32> SnapshotIndirectDispatchArgs(VAddr address);
+
+    /// Writes every color image the last two guest frames rendered or wrote to, in the order
+    /// they were first written, as raw files plus an index.txt. Diagnostic, GPU thread only.
+    void DumpFrameTargets(const std::filesystem::path& dir);
 
     void ScopeMarker(fmt::string_view fmt, fmt::format_args args, auto&& func) {
         if (host_markers_enabled) {
@@ -168,6 +173,7 @@ private:
     std::optional<std::pair<vk::Buffer, u64>> ClampIndirectDispatch(const VideoCore::Buffer* buffer,
                                                                     u64 offset);
     bool InitIndirectClamp();
+    void NoteFrameTarget(VideoCore::ImageId image_id, const char* kind, u64 shader);
 
     bool IsComputeMetaClear(const Pipeline* pipeline);
     bool IsComputeImageCopy(const Pipeline* pipeline);
@@ -265,6 +271,16 @@ private:
     vk::UniquePipelineLayout indirect_clamp_layout;
     vk::UniquePipeline indirect_clamp_pipeline;
     u32 indirect_clamp_slot{};
+    struct FrameTarget {
+        VideoCore::ImageId image_id;
+        const char* kind;
+        u64 shader;
+        u32 order;
+    };
+    std::vector<FrameTarget> frame_targets;
+    std::vector<FrameTarget> last_frame_targets;
+    u32 frame_targets_frame{~0u};
+    u32 frame_targets_order{};
     bool indirect_clamp_failed{};
 
     void NoteSceneDraw(VideoCore::ImageId depth_id, bool reversed);

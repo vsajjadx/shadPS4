@@ -196,6 +196,11 @@ public:
                                          bool samples_mipmaps);
 
     /// Retrieves the image with the specified id.
+    /// True while id still names a live image.
+    [[nodiscard]] bool HasImage(ImageId id) const {
+        return id && slot_images.IsAllocated(id);
+    }
+
     [[nodiscard]] Image& GetImage(ImageId id) {
         auto& image = slot_images[id];
         TouchImage(image);

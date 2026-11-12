@@ -187,6 +187,7 @@ std::filesystem::path GetInputConfigFile(const std::string& game_id) {
             {"hotkey_toggle_dlss5", "2"},
             {"hotkey_freeze_frame", "9"},
             {"hotkey_slow_motion_1fps", "0"},
+            {"hotkey_dump_frame_targets", "8"},
         };
         std::string legacy_capture_binding;
         bool legacy_capture_binding_found = false;
@@ -859,6 +860,9 @@ void ControllerOutput::FinalizeUpdate(u8 gamepad_index) {
             break;
         case HOTKEY_SLOW_MOTION:
             PushSDLEvent(SDL_EVENT_TOGGLE_SLOW_MOTION);
+            break;
+        case HOTKEY_DUMP_FRAME_TARGETS:
+            PushSDLEvent(SDL_EVENT_DUMP_FRAME_TARGETS);
             break;
         case KEY_TOGGLE:
             // noop

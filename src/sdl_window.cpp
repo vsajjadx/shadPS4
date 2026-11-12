@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_hints.h>
 #include <SDL3/SDL_init.h>
@@ -13,6 +14,7 @@
 #include "common/assert.h"
 #include "common/elf_info.h"
 #include "common/io_file.h"
+#include "common/path_util.h"
 #include "common/logging/formatter.h"
 #include "common/scope_exit.h"
 #include "core/debug_state.h"
@@ -34,6 +36,8 @@
 #include "input/input_mouse.h"
 #include "sdl_window.h"
 #include "video_core/renderdoc.h"
+#include "video_core/amdgpu/liverpool.h"
+#include "video_core/renderer_vulkan/vk_rasterizer.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -49,6 +53,8 @@
 
 CMRC_DECLARE(res);
 
+
+extern std::unique_ptr<AmdGpu::Liverpool> liverpool;
 namespace Frontend {
 
 using namespace Libraries::Pad;
@@ -380,6 +386,25 @@ void WindowSDL::WaitEvent() {
         LOG_INFO(Frontend, "{}", message);
         shadNotifications::QueueNotification(message, 2.0f,
                                              shadNotifications::position::BottomRight);
+        break;
+    }
+    case SDL_EVENT_DUMP_FRAME_TARGETS: {
+        // Every render stage of the frame on screen, for finding the pass a glitch comes from.
+        // Meant to be used while the frame is frozen (hotkey 9).
+        if (liverpool) {
+            const auto stamp = std::chrono::duration_cast<std::chrono::seconds>(
+                                   std::chrono::system_clock::now().time_since_epoch())
+                                   .count();
+            const auto dir = Common::FS::GetUserPath(Common::FS::PathType::ScreenshotsDir) /
+                             fmt::format("stages_{}", stamp);
+            liverpool->SendCommand([dir] {
+                if (auto* rasterizer = liverpool->GetRasterizer()) {
+                    rasterizer->DumpFrameTargets(dir);
+                }
+            });
+            shadNotifications::QueueNotification("Dumping frame stages to " + dir.string(), 3.0f,
+                                                 shadNotifications::position::BottomRight);
+        }
         break;
     }
     case SDL_EVENT_RELOAD_INPUTS:
