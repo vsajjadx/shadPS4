@@ -877,7 +877,18 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
             if (!exact) {
                 exact = slot_images.Insert(instance, runtime, slot_image_views, info);
                 RegisterImage(exact);
-                RefreshImage(slot_images[exact]);
+                if (slot_images[newest].HasGpuValidData()) {
+                    // The surface lives on the GPU: guest memory holds stale data laid out for
+                    // another size. Uploading it filled the area the copy below does not cover
+                    // (the rows and columns a larger size adds) with huge HDR values, which NHL
+                    // 24's bloom turned into the flickering lights and the lines on the fog.
+                    // Start from zero instead (no light), then take over the shared area.
+                    auto& created = slot_images[exact];
+                    runtime.ClearImage(&created, SubresourceRange{.base = {}, .extent = created.info.resources},
+                                      vk::ClearValue{});
+                } else {
+                    RefreshImage(slot_images[exact]);
+                }
                 TrackImage(exact);
             }
             auto& target = slot_images[exact];

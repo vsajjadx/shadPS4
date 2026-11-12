@@ -576,12 +576,6 @@ void PipelineCache::NoteGpuThreadStall(std::chrono::steady_clock::time_point sta
 }
 
 bool PipelineCache::IsDrawSkippable() {
-    // NHL's repeated render targets include persistent lighting/exposure passes.
-    // A target streak and an index count do not prove a draw has no future consumers.
-    // Preserve guest work, including on a cold cache; warm-up amortizes compilation.
-    if (Common::HackFeatures::isNhl24) {
-        return false;
-    }
     constexpr u32 MinIndices = 12;
 
     const auto& regs = liverpool->regs;
