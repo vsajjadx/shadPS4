@@ -260,8 +260,18 @@ void Runtime::CopyImage(VideoCore::Image* src, VideoCore::Image* dst) {
     const bool is_same_type = !is_2d_to_3d && !is_3d_to_2d;
 
     for (u32 mip = 0; mip < num_mips; ++mip) {
-        const u32 mip_w = std::max(base_width >> mip, 1u);
-        const u32 mip_h = std::max(base_height >> mip, 1u);
+        // A copy between two sizes of the same surface (dynamic resolution) covers the part both
+        // have; the source extent alone would run past a smaller destination.
+        const u32 mip_w = std::max(std::min(base_width, src_is_2d && dst_is_2d
+                                                            ? dst->info.size.width
+                                                            : base_width) >>
+                                       mip,
+                                   1u);
+        const u32 mip_h = std::max(std::min(base_height, src_is_2d && dst_is_2d
+                                                             ? dst->info.size.height
+                                                             : base_height) >>
+                                       mip,
+                                   1u);
         const u32 mip_d = std::max(base_depth >> mip, 1u);
 
         const auto [src_layers, dst_layers] = SanitizeCopyLayers(src->info, dst->info, mip_d);

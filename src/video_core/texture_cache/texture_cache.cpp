@@ -821,6 +821,74 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     ForEachImageInRegion(info.guest_address, info.guest_size,
                          [&](ImageId image_id, Image& image) { image_ids.push_back(image_id); });
 
+    // Dynamic resolution: the game describes the same surface (same address, format and layout)
+    // with a new width and height from one frame to the next. Each size used to get an image of
+    // its own, both stayed alive, and passes that wrote one size were read through the other, so
+    // stale contents flickered in at the right and bottom edges. Keep a single image per surface:
+    // a request for another size takes over the contents of the most recently used one.
+    {
+        const auto is_resize_of = [&info](const ImageInfo& other) {
+            return other.guest_address == info.guest_address && other.size != info.size &&
+                   other.pixel_format == info.pixel_format && other.type == info.type &&
+                   other.tile_mode == info.tile_mode && other.size.depth == 1 &&
+                   info.size.depth == 1 && other.resources.levels == info.resources.levels &&
+                   other.resources.layers == info.resources.layers &&
+                   other.num_samples == info.num_samples && !info.props.is_block &&
+                   !info.props.is_depth;
+        };
+        ImageId exact{};
+        SmallVector<ImageId, 4> resized;
+        for (const auto& cache_id : image_ids) {
+            const auto& cache_info = slot_images[cache_id].info;
+            if (cache_info.guest_address == info.guest_address && cache_info.size == info.size &&
+                cache_info.pixel_format == info.pixel_format && cache_info.type == info.type &&
+                cache_info.tile_mode == info.tile_mode) {
+                exact = cache_id;
+            } else if (is_resize_of(cache_info)) {
+                resized.push_back(cache_id);
+            }
+        }
+        if (!resized.empty()) {
+            ImageId newest{};
+            for (const auto& id : resized) {
+                if (!newest ||
+                    slot_images[id].tick_accessed_last > slot_images[newest].tick_accessed_last) {
+                    newest = id;
+                }
+            }
+            if (!exact) {
+                exact = slot_images.Insert(instance, runtime, slot_image_views, info);
+                RegisterImage(exact);
+                RefreshImage(slot_images[exact]);
+                TrackImage(exact);
+            }
+            auto& target = slot_images[exact];
+            auto& source = slot_images[newest];
+            if (source.tick_accessed_last >= target.tick_accessed_last &&
+                source.HasGpuValidData()) {
+                runtime.CopyImage(&source, &target);
+                InheritAliasSeq(target, source);
+                target.flags &= ~ImageFlagBits::Dirty;
+            }
+            for (const auto& id : resized) {
+                auto& stale = slot_images[id];
+                if (stale.binding.is_bound || stale.binding.is_target) {
+                    stale.binding.needs_rebind = 1u;
+                }
+                FreeImage(id);
+            }
+            image_ids.erase(std::remove_if(image_ids.begin(), image_ids.end(),
+                                           [&](ImageId id) {
+                                               return std::ranges::find(resized, id) !=
+                                                      resized.end();
+                                           }),
+                            image_ids.end());
+            if (std::ranges::find(image_ids, exact) == image_ids.end()) {
+                image_ids.push_back(exact);
+            }
+        }
+    }
+
     ImageId image_id{};
     bool perfect_match = false;
 
