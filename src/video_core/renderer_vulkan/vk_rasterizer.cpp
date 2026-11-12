@@ -563,8 +563,10 @@ void Rasterizer::NoteFrameTarget(VideoCore::ImageId image_id, const char* kind, 
 static u32 DumpBytesPerPixel(vk::Format format) {
     switch (format) {
     case vk::Format::eR8Unorm:
+    case vk::Format::eR8Uint:
         return 1;
     case vk::Format::eR8G8Unorm:
+    case vk::Format::eR8G8Uint:
     case vk::Format::eR16Sfloat:
     case vk::Format::eR16Unorm:
         return 2;
@@ -1586,8 +1588,10 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
     for (u32 i = 0; i < num_images; ++i) {
         auto& [image_id, desc] = image_bindings[i];
         bool is_storage = desc.type == VideoCore::TextureCache::BindingType::Storage;
-        if (is_storage && image_id) {
-            NoteFrameTarget(image_id, "storage", stage.pgm_hash);
+        if (image_id) {
+            // Sampled textures too: a glitch can come from what a pass reads (e.g. a decoded
+            // video plane) rather than from what it writes.
+            NoteFrameTarget(image_id, is_storage ? "storage" : "tex", stage.pgm_hash);
         }
         if (!image_id) {
             image_infos.emplace_back(VK_NULL_HANDLE, VK_NULL_HANDLE, vk::ImageLayout::eGeneral);
