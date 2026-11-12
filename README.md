@@ -17,101 +17,83 @@ A PlayStation 4 emulator for Windows, built to crash less and run more games.
 
 ## Download and play
 
-1. Download the latest zip from [**Releases**](https://github.com/vsajjadx/shadPS4/releases).
+1. Download the latest zip from [**Releases**](https://github.com/vsajjadx/shadPS4/releases/latest)
+   (about 56 MB).
 2. Unzip it and run `shadPS4QtLauncher.exe`.
 3. Add your games folder and play.
 
-**No separate launcher is needed.** The launcher and the emulator come together in one zip.
+The launcher and the emulator come together in one zip, and the default settings work: there is
+nothing to configure, per game or otherwise.
 
-**No extra settings are needed.** You don't have to change anything in the config or make
-per-game settings. The default settings work.
+Already using the official launcher with a `user` folder next to it? Unzip into that same folder
+and replace the files. Your games, saves and settings stay as they are.
 
-> The first time you start a game it can be a little slower while shaders are built. After
-> that it runs normally.
+> The first time you start a game, shaders are built and it can stutter for a while. They are
+> saved, so the next start is smooth.
 
 ## What's new
 
-### Latest: NHL 24 lights and lines fixed, FC 27 freeze fixed
+Latest release: [**DLSS5 removed, They Always Run and Giana Sisters fixed, 56 MB download**](https://github.com/vsajjadx/shadPS4/releases/tag/no-dlss5-2026-11-12)
 
-Release: [**NHL 24 lights and lines fixed, FC 27 freeze fixed, synced with official shadPS4**](https://github.com/vsajjadx/shadPS4/releases/tag/nhl24-fc27-2026-11-12)
-
-- **Synced with the official shadPS4.** The latest official changes are in, and every fix of this
-  fork is kept. NHL 24 still does not run correctly on the official version.
 - **NHL 24: no more flickering lights, lines on the fog or GPU hang.** When the game changed its
-  render size, the new image started from stale memory full of huge brightness values. It now
-  starts clean.
+  render size, the new image started from leftover memory full of huge brightness values. It now
+  starts clean. NHL 24 still does not run correctly on the official shadPS4.
 - **EA SPORTS FC 27 no longer freezes.** A GPU deadlock in one of its compute shaders is fixed.
-- **Less stutter while shaders compile** the first time.
-- **Launcher:** the game list shows name, serial, region flag and version together; About has a
-  **Recent** section that always describes the latest build.
-- **Window title:** game – PKG / Extracted – build name – version.
-- **DLSS5 removed.** It cut the frame rate to a third and caused blur, ghosting and flicker, so
-  it is gone from the emulator and the launcher, including its `2` key.
+- **They Always Run** no longer stays on a black screen, and **Giana Sisters: Twisted Dreams** no
+  longer crashes when loading the first level.
+- **DLSS5 removed.** It cut the frame rate to a third and caused blur, ghosting and flicker. The
+  download shrank from 238 MB to 56 MB.
+- **Synced with the official shadPS4.** The latest official changes are in, and every fix of this
+  fork is kept.
+- **Less stutter** while shaders compile the first time.
+- **Launcher:** a cleaner game list and an About → Recent section that always describes the
+  latest build.
 
-### Direct PKG execution: launch games faster than on the console
+## Direct PKG execution
 
-No installation. No extraction. No waiting. Launch your PS4 games straight from PKG files,
-even faster than the console's usual installation process.
+Launch PS4 games straight from their PKG files: no installation, no extraction, no converting to
+ZAR.
 
-You no longer need to extract game files, create installation folders, or convert anything to
-ZAR:
-
-1. Put your **Base Game PKG**, **Update PKG** and **DLC PKG** files together in one folder.
+1. Put the **Base Game**, **Update** and **DLC** PKG files together in one folder.
 2. Select that folder in the launcher.
 3. Launch the game.
 
-The emulator reads the original PKG files directly and handles the base game, updates and DLCs
-separately.
+The emulator reads the original PKG files directly and keeps the base game, updates and DLCs
+separate. It saves preparation time and disk space, with no duplicate game files and no
+noticeable FPS loss in play.
 
-- Much less preparation time.
-- Much less storage space needed, with no duplicate game files.
-- No waiting for large games to finish extracting.
-- Updates and DLCs stay separate.
-- No noticeable FPS loss during gameplay in my tests.
+## Game notes
 
-### FC 27 runs smoothly
+- **EA SPORTS FC 27** runs from its PKG files. Set **Readbacks** (Settings) to `Precise` for the best
+  image quality. If the pitch colors look wrong, set the stadium weather to `Sunny (Summer)` for
+  now. Some cutscenes can still be too bright or show lines.
+- **NHL 24, The Order: 1886, The Grand Tour Game and Need for Speed Hot Pursuit Remastered** run
+  here but not on the official version.
 
-FC 27 was tested with direct PKG execution and runs remarkably smoothly.
+## Hotkeys
 
-Recommended settings:
-
-- **Redback Mode:** set it to `Precise` for the best image quality.
-- **Pitch colors:** if the pitch colors look wrong, set the stadium weather to
-  `Sunny (Summer)` for now.
-
-You may still see some visual issues in cutscenes, such as excessive brightness or visible lines.
-These and the pitch color problem are expected to be fixed in upcoming updates. Gameplay itself
-stays smooth, with no noticeable FPS loss from direct PKG execution.
-
-### More performance optimizations
-
-This update also improves performance and compatibility in several games, including
-**The Order: 1886**, **UFC 4**, **NHL 24** and many others. The goal is not only to run more
-games, but to make the playable ones run better and more consistently.
-
-### Frame generation
-
-- **Frame Generation** on `1`: smoother motion. Its switch is in **Settings → Graphics**, and it
-  starts off.
-- **Alt+Enter** gives a borderless fullscreen window when a game runs in a window.
+| Key | Action |
+| :---: | --- |
+| `1` | Frame generation on/off (off by default; also in **Settings → Graphics**) |
+| `Alt+Enter` | Borderless fullscreen |
+| `F12` | Screenshot |
+| `0` | Slow motion (one frame per second) |
+| `9` | Freeze the frame |
+| `8` | Save every render stage of the frozen frame to `user/screenshots/stages_<time>` (for bug reports; convert with `stages_to_png.py`) |
 
 ## The launcher
 
-The zip includes the latest official shadPS4 Qt launcher, with a few additions:
+The official shadPS4 Qt launcher, with additions for this fork:
 
-- **Automatic updates.** When a new version is released here, the launcher tells you.
-- **Your saves are safe.** The launcher uses the save and settings folders you already have.
-  It only makes new ones if none exist, and updates never touch them.
-- **Easy window size.** Pick the size from a list (720p, 1080p, 1440p, 4K and more) instead of
-  typing numbers.
-- **Frame generation switch** in **Settings → Graphics**.
-- **Compatibility list.** Shows the official list, plus the games this build runs that the
-  official one doesn't.
-- **Direct PKG execution.** Point it at a folder with your base game, update and DLC PKGs and
-  launch, with no extraction.
+- **Automatic updates** from this page's releases. Your saves and settings are never touched.
+- **Game list:** each game shows its name, and under it the serial, region flag and game version.
+- **About → Recent:** what the build you have changed and fixed.
+- **Direct PKG execution:** point it at a folder with the base game, update and DLC PKGs.
+- **Easy window size:** pick 720p, 1080p, 1440p, 4K and more from a list.
+- **Compatibility list:** the official list, plus the games this build runs that the official one
+  doesn't.
 
-> Already using the official launcher with a `user` folder next to it? Unzip into that same
-> folder and replace the files. Your games, saves and settings stay as they are.
+Launcher source: [vsajjadx/shadps4-qtlauncher](https://github.com/vsajjadx/shadps4-qtlauncher).
 
 ## Screenshots
 
@@ -155,6 +137,14 @@ The zip includes the latest official shadPS4 Qt launcher, with a few additions:
   Hot Pursuit Remastered, which do not run on the official version, work here.
 - **Launcher included.** One download, with automatic updates.
 - **Always up to date.** The latest changes from the official shadPS4 are included.
+
+## Author
+
+- GitHub: [vsajjadx](https://github.com/vsajjadx)
+- Reddit: [u/Unhappy_Advantage_10](https://www.reddit.com/user/Unhappy_Advantage_10/)
+
+Found a bug? Open an [issue](https://github.com/vsajjadx/shadPS4/issues) with the log file
+(`user/log`), and if it is a graphics glitch, a stage dump made with `9` then `8`.
 
 ## Made with the help of Claude
 
