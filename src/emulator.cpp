@@ -821,7 +821,12 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     }
     std::string build_version = fmt::format("v{}", Common::g_version);
     if (!Common::g_is_release && Common::g_scm_desc[0] != ' ') {
-        build_version += fmt::format(" ({})", Common::g_scm_desc);
+        // The commit; "-dirty" only reflects local changes in submodules.
+        std::string_view desc{Common::g_scm_desc};
+        if (desc.ends_with("-dirty")) {
+            desc.remove_suffix(6);
+        }
+        build_version += fmt::format(" ({})", desc);
     }
     const std::string window_title = fmt::format("{} - {} - shadPS4 {} - {}", title, run_mode,
                                                  Common::g_build_name, build_version);
