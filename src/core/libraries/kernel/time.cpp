@@ -403,6 +403,22 @@ s32 PS4_SYSV_ABI sceKernelClockGetres(const u32 clock_id, OrbisKernelTimespec* r
     return ORBIS_OK;
 }
 
+// DST offset of the host for a UTC time; 0 when the host cannot convert it (Windows rejects
+// negative and far-future times, which mktime probes while searching).
+static s32 HostDstSeconds(time_t t) {
+    struct tm tm_val {};
+#ifdef _WIN32
+    if (localtime_s(&tm_val, &t) != 0) {
+        return 0;
+    }
+#else
+    if (localtime_r(&t, &tm_val) == nullptr) {
+        return 0;
+    }
+#endif
+    return tm_val.tm_isdst > 0 ? 3600 : 0;
+}
+
 s32 PS4_SYSV_ABI posix_gettimeofday(OrbisKernelTimeval* tp, OrbisKernelTimezone* tz) {
 #ifdef _WIN64
     if (tp) {
@@ -478,18 +494,18 @@ s32 PS4_SYSV_ABI sceKernelConvertLocaltimeToUtc(time_t param_1, int64_t param_2,
                                                 OrbisKernelTimezone* timezone, s32* dst_seconds) {
     if (timezone) {
         sceKernelGettimezone(timezone);
-        // Daylight saving time of the converted time, not of the current one: libc's mktime
-        // converts back and forth with sceKernelConvertUtcToLocaltime until both agree, and a
-        // date whose DST state differs from today's never did (They Always Run, issue #13).
-        time_t utc = param_1 - timezone->tz_minuteswest * 60;
-        struct tm tm_val {};
-#ifdef _WIN32
-        localtime_s(&tm_val, &utc);
-#else
-        localtime_r(&utc, &tm_val);
-#endif
-        const s32 dst_sec_val = tm_val.tm_isdst > 0 ? 3600 : 0;
-        utc -= dst_sec_val;
+        // Pick the DST state that makes this the exact inverse of
+        // sceKernelConvertUtcToLocaltime; anything else makes mktime loop forever
+        // (They Always Run #13, Desperados III #14, Rustler #19).
+        const time_t base = param_1 - timezone->tz_minuteswest * 60;
+        s32 dst_sec_val = 0;
+        for (const s32 d : {0, 3600}) {
+            if (HostDstSeconds(base - d) == d) {
+                dst_sec_val = d;
+                break;
+            }
+        }
+        const time_t utc = base - dst_sec_val;
         timezone->tz_dsttime = dst_sec_val / 60;
         if (seconds) {
             *seconds = utc;
@@ -518,11 +534,7 @@ s32 PS4_SYSV_ABI sceKernelConvertUtcToLocaltime(time_t time, time_t* local_time,
                                                 struct OrbisTimesec* st, u64* dst_sec) {
     LOG_TRACE(Kernel, "Called");
 #ifdef _WIN32
-    time_t t = time;
-    struct tm tm_val;
-    localtime_s(&tm_val, &t);
-    s32 is_dst = (tm_val.tm_isdst > 0) ? 1 : 0;
-    s32 dst_sec_val = is_dst ? 3600 : 0;
+    s32 dst_sec_val = HostDstSeconds(time);
     _tzset();
     s32 west_sec_val = -static_cast<s32>(_timezone);
 
