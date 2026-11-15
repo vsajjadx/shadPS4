@@ -19,6 +19,7 @@
 #include "input/input_handler.h"
 #include "sdl_window.h"
 #include "src/core/libraries/usbd/usbd.h"
+#include "video_core/renderer_vulkan/vk_frame_generation.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
 
 extern std::unique_ptr<Vulkan::Presenter> presenter;
@@ -82,6 +83,7 @@ void IPC::Init() {
     std::cerr << ";#IPC_ENABLED\n";
     std::cerr << ";ENABLE_MEMORY_PATCH\n";
     std::cerr << ";ENABLE_EMU_CONTROL\n";
+    std::cerr << ";ENABLE_FRAME_GENERATION_CONTROL\n";
     std::cerr << ";#IPC_END\n";
     std::cerr.flush();
 
@@ -160,6 +162,11 @@ void IPC::InputLoop() {
             bool use_fsr = next_u64() != 0;
             if (presenter) {
                 presenter->GetFsrSettingsRef().enable = use_fsr;
+            }
+        } else if (cmd == "SET_FRAME_GENERATION") {
+            const bool enable = next_u64() != 0;
+            if (presenter) {
+                Vulkan::FrameGeneration::SetEnabled(enable);
             }
         } else if (cmd == "SET_RCAS") {
             bool use_rcas = next_u64() != 0;

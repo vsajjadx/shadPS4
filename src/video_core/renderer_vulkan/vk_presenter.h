@@ -176,6 +176,11 @@ private:
     std::chrono::nanoseconds flip_interval{};
     std::atomic_bool generation_wanted{false};
     u32 generated_frames{1};
+    std::chrono::steady_clock::time_point fg_stats_start{};
+    u32 fg_stats_real{};
+    u32 fg_stats_generated{};
+    u32 fg_stats_repeated{};
+    u32 fg_stats_dropped{};
 };
 
 } // namespace Vulkan

@@ -320,11 +320,19 @@ std::map<s32, std::string> ExtractTrophies(std::string_view npbind_guest,
                 } else {
                     // Archive-backed: dump bytes to a temp file for TRP.
                     if (auto bytes = mnt->ReadFile(entry_guest)) {
-                        temp_extract = std::filesystem::temp_directory_path() /
+                        temp_extract = Common::FS::GetUserPath(Common::FS::PathType::TempDataDir) /
                                        (np_comm_id + "_" + entry.name);
-                        Common::FS::IOFile out(temp_extract, Common::FS::FileAccessMode::Create);
-                        out.WriteRaw<u8>(bytes->data(), bytes->size());
-                        out.Close();
+                        std::ofstream out(temp_extract, std::ios::binary);
+                        out.write(reinterpret_cast<const char*>(bytes->data()),
+                                  static_cast<std::streamsize>(bytes->size()));
+                        out.close();
+                        if (!out) {
+                            LOG_ERROR(Loader, "Couldn't write temporary trophy file {}",
+                                      temp_extract.string());
+                            std::error_code ec;
+                            std::filesystem::remove(temp_extract, ec);
+                            continue;
+                        }
                         trp_source = temp_extract;
                     }
                 }

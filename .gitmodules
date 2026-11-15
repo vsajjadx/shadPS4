@@ -171,4 +171,4 @@
 	url = https://github.com/xiph/opus.git
 [submodule "externals/fsr-vulkan"]
 	path = externals/fsr-vulkan
-	url = https://github.com/FireBurn/FSR-Vulkan.git
+	url = https://github.com/vsajjadx/UniversalScalers-Vulkan.git

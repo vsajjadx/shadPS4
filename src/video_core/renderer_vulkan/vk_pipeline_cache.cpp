@@ -775,9 +775,12 @@ bool PipelineCache::RefreshGraphicsKey() {
     key.logic_op = regs.color_control.rop3;
     key.depth_samples = db_enabled ? regs.depth_buffer.NumSamples() : 1;
     key.num_samples = key.depth_samples;
-    key.sample_mask = 0;
-    for (const u16 pixel_mask : regs.aa_mask.pixel) {
-        key.sample_mask |= pixel_mask;
+    key.sample_mask = ~0U;
+    if (regs.mode_control.msaa_enable) {
+        key.sample_mask = 0;
+        for (const u16 pixel_mask : regs.aa_mask.pixel) {
+            key.sample_mask |= pixel_mask;
+        }
     }
     key.cb_shader_mask = regs.color_shader_mask;
 

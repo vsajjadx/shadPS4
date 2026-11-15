@@ -15,6 +15,7 @@
 #include "core/devtools/layer.h"
 #include "imgui/imgui_std.h"
 #include "settings_dialog_imgui.h"
+#include "video_core/renderer_vulkan/vk_frame_generation.h"
 
 CMRC_DECLARE(res);
 
@@ -491,6 +492,9 @@ void SettingsWindow::DrawMainContent(bool* open, const std::function<void()>& ap
             } else {
                 ImGui::CloseCurrentPopup();
             }
+            if (isGameRunning) {
+                Vulkan::FrameGeneration::SetEnabled(EmulatorSettings.IsFrameGenerationEnabled());
+            }
             if (applySettings) {
                 applySettings();
             }
@@ -775,6 +779,17 @@ void SettingsWindow::DrawSettingsTable(SettingsCategory category) {
             }
 
             AddSettingCombo("Frame Generation", frameGenerationSetting, frameGenerationOptions);
+            if (isGameRunning) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextWrapped("On/off applies when saved. Restart the game to change the "
+                                   "method, multiplier or quality.");
+            }
+            if (frameGenerationSetting != 0) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextWrapped("Frame generation requires SDR output.");
+            }
             if (frameGenerationSetting == 2) {
                 AddSettingCombo("Multi FG Multiplier", lemonFgMultiplierSetting,
                                 lemonFgMultiplierOptions);

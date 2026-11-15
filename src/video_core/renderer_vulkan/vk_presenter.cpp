@@ -33,6 +33,7 @@
 #include <chrono>
 #include <cmath>
 #include <csetjmp>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
@@ -1064,6 +1065,9 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame,
     const bool scene_cut = IsSceneCut(frame);
     bool flip_reported = false;
     const u32 num_generated = std::exchange(frame->num_generated, 0);
+    if (num_generated > 0 && (!paceable || !steady_cadence || behind || scene_cut)) {
+        fg_stats_dropped += num_generated;
+    }
     if (num_generated > 0 && paceable && steady_cadence && !behind && !scene_cut) {
         // The game's flip is done once its frame is accepted. Holding it back until the
         // generated frames are on screen would add most of a game frame to every flip, and a
@@ -1140,7 +1144,8 @@ void Presenter::PresentImage(Frame* frame, bool is_reusing_frame, bool is_game_f
                    vk::to_string(reset_result));
     }
 
-    ImGuiID dockId = ImGui::Core::NewFrame(is_reusing_frame);
+    ImGuiID dockId =
+        ImGui::Core::NewFrame(is_reusing_frame || generated != nullptr || !is_game_frame);
 
     const vk::Image swapchain_image = swapchain.Image();
     const vk::ImageView swapchain_image_view = swapchain.ImageView();
@@ -1345,10 +1350,40 @@ void Presenter::PresentImage(Frame* frame, bool is_reusing_frame, bool is_game_f
     scheduler.Flush(info);
 
     // Present to swapchain.
+    bool present_accepted = false;
     {
         std::scoped_lock submit_lock{Scheduler::submit_mutex};
-        if (!swapchain.Present()) {
+        if (!swapchain.Present(&present_accepted)) {
             swapchain.Recreate(window.GetWidth(), window.GetHeight());
+        }
+    }
+
+    static const bool log_fg_stats = std::getenv("SHADPS4_FG_STATS") != nullptr;
+    if (log_fg_stats && is_game_frame) {
+        if (present_accepted) {
+            if (generated) {
+                ++fg_stats_generated;
+            } else if (is_reusing_frame) {
+                ++fg_stats_repeated;
+            } else {
+                ++fg_stats_real;
+            }
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (fg_stats_start.time_since_epoch().count() == 0) {
+            fg_stats_start = now;
+        }
+        const double elapsed = std::chrono::duration<double>(now - fg_stats_start).count();
+        if (elapsed >= 5.0) {
+            LOG_INFO(Render_Vulkan,
+                     "FG stats: {} {}x enabled={} real={:.1f}/s generated={:.1f}/s "
+                     "repeated={:.1f}/s dropped={} accepted={:.1f}/s",
+                     FrameGeneration::BackendName(FrameGeneration::GetBackend()),
+                     generated_frames + 1, FrameGeneration::IsEnabled(), fg_stats_real / elapsed,
+                     fg_stats_generated / elapsed, fg_stats_repeated / elapsed, fg_stats_dropped,
+                     (fg_stats_real + fg_stats_generated + fg_stats_repeated) / elapsed);
+            fg_stats_start = now;
+            fg_stats_real = fg_stats_generated = fg_stats_repeated = fg_stats_dropped = 0;
         }
     }
 

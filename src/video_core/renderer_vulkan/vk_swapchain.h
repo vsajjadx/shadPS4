@@ -32,7 +32,7 @@ public:
     bool AcquireNextImage();
 
     /// Presents the current image and move to the next one
-    bool Present();
+    bool Present(bool* accepted = nullptr);
 
     vk::SurfaceKHR GetSurface() const {
         return surface;

@@ -287,7 +287,7 @@ void L::DrawSimple() {
     } else {
         PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f)); // White
     }
-    Text("%d FPS (%.1f ms)", static_cast<int>(std::round(frameRate)), 1000.0f / frameRate);
+    Text("Game: %d FPS (%.1f ms)", static_cast<int>(std::round(frameRate)), 1000.0f / frameRate);
     PopStyleColor();
 }
 
