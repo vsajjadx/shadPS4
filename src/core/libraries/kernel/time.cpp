@@ -494,17 +494,13 @@ s32 PS4_SYSV_ABI sceKernelConvertLocaltimeToUtc(time_t param_1, int64_t param_2,
                                                 OrbisKernelTimezone* timezone, s32* dst_seconds) {
     if (timezone) {
         sceKernelGettimezone(timezone);
-        // Pick the DST state that makes this the exact inverse of
-        // sceKernelConvertUtcToLocaltime; anything else makes mktime loop forever
-        // (They Always Run #13, Desperados III #14, Rustler #19).
+        // DST of the current time, as in v0.20: Unity/Mono scans the time zone for DST
+        // transitions through these calls, and a DST state that follows the converted date
+        // made that scan run millions of times (They Always Run #13, Desperados III #14,
+        // Rustler #19). sceKernelConvertUtcToLocaltime uses the same state, so the two stay
+        // exact inverses.
         const time_t base = param_1 - timezone->tz_minuteswest * 60;
-        s32 dst_sec_val = 0;
-        for (const s32 d : {0, 3600}) {
-            if (HostDstSeconds(base - d) == d) {
-                dst_sec_val = d;
-                break;
-            }
-        }
+        const s32 dst_sec_val = HostDstSeconds(std::time(nullptr));
         const time_t utc = base - dst_sec_val;
         timezone->tz_dsttime = dst_sec_val / 60;
         if (seconds) {
@@ -534,7 +530,7 @@ s32 PS4_SYSV_ABI sceKernelConvertUtcToLocaltime(time_t time, time_t* local_time,
                                                 struct OrbisTimesec* st, u64* dst_sec) {
     LOG_TRACE(Kernel, "Called");
 #ifdef _WIN32
-    s32 dst_sec_val = HostDstSeconds(time);
+    s32 dst_sec_val = HostDstSeconds(std::time(nullptr));
     _tzset();
     s32 west_sec_val = -static_cast<s32>(_timezone);
 
