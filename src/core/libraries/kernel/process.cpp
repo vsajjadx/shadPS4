@@ -7,6 +7,7 @@
 #include "core/file_sys/fs.h"
 #include "core/libraries/kernel/orbis_error.h"
 #include "core/libraries/kernel/process.h"
+#include "core/memory.h"
 #include "core/libraries/libs.h"
 #include "core/linker.h"
 
@@ -101,6 +102,13 @@ void* PS4_SYSV_ABI sceKernelGetProcParam() {
 
 s32 PS4_SYSV_ABI sceKernelLoadStartModule(const char* moduleFileName, u64 args, const void* argp,
                                           u32 flags, const void* pOpt, s32* pRes) {
+    // Nobody Saves the World (#24) passes an invalid name pointer; the kernel returns EFAULT
+    // instead of crashing.
+    if (moduleFileName == nullptr ||
+        !Core::Memory::Instance()->IsValidMapping(reinterpret_cast<VAddr>(moduleFileName), 1)) {
+        LOG_ERROR(Lib_Kernel, "invalid filename pointer {}", fmt::ptr(moduleFileName));
+        return ORBIS_KERNEL_ERROR_EFAULT;
+    }
     LOG_INFO(Lib_Kernel, "called filename = {}, args = {}", moduleFileName, args);
     ASSERT(flags == 0);
 
