@@ -17,6 +17,7 @@
 #include "common/logging/log.h"
 #include "common/string_util.h"
 #include "common/thread.h"
+#include "common/windows_process.h"
 #include "core/emulator_settings.h"
 #include "core/ipc/ipc.h"
 #ifdef ENABLE_DISCORD_RPC
@@ -827,7 +828,7 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         run_mode = archive_path.extension() == ".zar" ? "ZAR" : "PKG";
     }
     std::string build_version = fmt::format("v{}", Common::g_version);
-    if (!Common::g_is_release && Common::g_scm_desc[0] != ' ') {
+    if (!Common::g_is_release && Common::g_scm_desc[0] != '\0') {
         // The commit; "-dirty" only reflects local changes in submodules.
         std::string_view desc{Common::g_scm_desc};
         if (desc.ends_with("-dirty")) {
@@ -1056,9 +1057,15 @@ void Emulator::Restart(std::filesystem::path eboot_path,
 
     STARTUPINFOW si{};
     si.cb = sizeof(si);
+    Common::WindowsProcessStartupInfo attributes;
+    if (attributes.Error() != ERROR_SUCCESS) {
+        std::cerr << "Failed to prepare process address space: " << attributes.Error() << std::endl;
+        std::quick_exit(1);
+    }
     PROCESS_INFORMATION pi{};
-    bool success = CreateProcessW(executable.c_str(), cmdline.data(), nullptr, nullptr, TRUE, 0,
-                                  nullptr, nullptr, &si, &pi);
+    bool success =
+        CreateProcessW(executable.c_str(), cmdline.data(), nullptr, nullptr, TRUE,
+                       EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr, attributes.Apply(si), &pi);
 
     if (!success) {
         std::cerr << "Failed to restart game: {}" << GetLastError() << std::endl;

@@ -285,8 +285,8 @@ s32 Linker::LoadAndStartModule(const std::filesystem::path& path, u64 args, cons
 
 Module* Linker::FindByAddress(VAddr address) {
     for (auto& module : m_modules) {
-        const VAddr base = module->GetBaseAddress();
-        if (address >= base && address < base + module->aligned_base_size) {
+        const VAddr base = module->GetMappedAddress();
+        if (address >= base && address - base < module->GetMappedSize()) {
             return module.get();
         }
     }

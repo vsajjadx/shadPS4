@@ -93,7 +93,7 @@ static PS4_SYSV_ABI void stack_chk_fail() {
     // process, as with other recovered guest faults.
     if (mod) {
         if (const auto resume = Core::GuestFaultRecovery::FindStackCheckPassPath(
-                reinterpret_cast<u64>(caller), mod->GetBaseAddress())) {
+                reinterpret_cast<u64>(caller), mod->GetMappedAddress())) {
             static std::atomic<u32> recoveries{0};
             const u32 n = recoveries.fetch_add(1, std::memory_order_relaxed);
             if (n < 64 || (n & (n - 1)) == 0) {

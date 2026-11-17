@@ -97,7 +97,34 @@ enum class TransferOption : s32 {
     Nothing,
     SdlCancelled = -1,
 };
+static bool HasLegacyUserData() {
+    const auto user_dir = Common::FS::GetUserPath(Common::FS::PathType::UserDir);
+    const auto old_save_dir = user_dir / "savedata" / "1";
+    if (fs::is_directory(old_save_dir) && !fs::is_empty(old_save_dir)) {
+        return true;
+    }
+    const auto old_game_data = user_dir / "game_data";
+    if (!fs::is_directory(old_game_data)) {
+        return false;
+    }
+    for (const auto& game : fs::directory_iterator(old_game_data)) {
+        const auto trophies = game.path() / "TrophyFiles";
+        if (!game.is_directory() || !fs::is_directory(trophies)) {
+            continue;
+        }
+        for (const auto& trophy : fs::directory_iterator(trophies)) {
+            if (trophy.is_directory() && fs::is_regular_file(trophy.path() / "Xml" / "TROP.XML")) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 TransferOption AskMigrationOption() {
+    if (!HasLegacyUserData()) {
+        return TransferOption::Nothing;
+    }
     TransferOption user_choice = TransferOption::Nothing;
 #ifndef _WIN32
     SDL_MessageBoxButtonData btns[4]
@@ -146,6 +173,9 @@ static void MoveFolder(fs::path const& _from, fs::path const& _to) {
 }
 
 static void CheckAndMigrateSaves(TransferOption option) {
+    if (option == TransferOption::Nothing || option == TransferOption::SdlCancelled) {
+        return;
+    }
     auto const new_save_dir = EmulatorSettings.GetHomeDir() / "1000" / "savedata";
     auto const old_save_dir =
         Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "savedata" / "1";
@@ -175,6 +205,9 @@ static void CheckAndMigrateSaves(TransferOption option) {
 }
 
 static void CheckAndMigrateTrophies(TransferOption option) {
+    if (option == TransferOption::Nothing || option == TransferOption::SdlCancelled) {
+        return;
+    }
     auto const user_dir = EmulatorSettings.GetHomeDir() / "1000";
     auto const old_trophy_base_dir =
         Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "game_data";
@@ -292,7 +325,7 @@ Users UserManager::CreateDefaultUsers() {
         const auto user_dir = EmulatorSettings.GetHomeDir() / std::to_string(u.user_id);
 
         if (!std::filesystem::exists(user_dir)) {
-            std::filesystem::create_directory(user_dir);
+            std::filesystem::create_directories(user_dir);
             std::filesystem::create_directory(user_dir / "savedata");
             std::filesystem::create_directory(user_dir / "trophy");
             std::filesystem::create_directory(user_dir / "inputs");

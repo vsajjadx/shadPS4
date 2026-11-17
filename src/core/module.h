@@ -149,6 +149,14 @@ public:
         return base_virtual_addr;
     }
 
+    VAddr GetMappedAddress() const noexcept {
+        return mapped_virtual_addr;
+    }
+
+    u64 GetMappedSize() const noexcept {
+        return base_virtual_addr + aligned_base_size - mapped_virtual_addr;
+    }
+
     VAddr GetEntryAddress() const noexcept {
         return base_virtual_addr + elf.GetElfEntry();
     }
@@ -158,7 +166,7 @@ public:
     }
 
     bool IsValid() const noexcept {
-        return base_virtual_addr != 0;
+        return mapped_virtual_addr != 0;
     }
 
     bool IsSharedLib() const noexcept {
@@ -236,6 +244,7 @@ public:
     s32 id{};
     u64 aligned_base_size{};
     VAddr base_virtual_addr{};
+    VAddr mapped_virtual_addr{};
     VAddr proc_param_virtual_addr{};
     VAddr module_param_virtual_addr{};
     std::string interpreter_path{};

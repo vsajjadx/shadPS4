@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <limits>
 #include <map>
 #include <span>
 #include <vector>
@@ -10,6 +11,7 @@
 #include "common/assert.h"
 #include "common/elf_info.h"
 #include "common/error.h"
+#include "common/scope_exit.h"
 #include "core/address_space.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/kernel/memory.h"
@@ -64,6 +66,61 @@ static constexpr u64 UserSize = USER_MAX - USER_MIN + 1;
 static u64 BackingSize = ORBIS_KERNEL_TOTAL_MEM_DEV_PRO + ORBIS_KERNEL_FLEXIBLE_MEMORY_SIZE;
 
 #ifdef _WIN32
+
+static DWORD ReadFileRange(HANDLE source, void* destination, u64 offset, u64 size) {
+    if (size == 0) {
+        return ERROR_SUCCESS;
+    }
+    if (offset > std::numeric_limits<u64>::max() - size) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    const HANDLE file =
+        ReOpenFile(source, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                   FILE_FLAG_OVERLAPPED);
+    if (file == INVALID_HANDLE_VALUE) {
+        return GetLastError();
+    }
+    SCOPE_EXIT {
+        CloseHandle(file);
+    };
+    const HANDLE event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!event) {
+        return GetLastError();
+    }
+    SCOPE_EXIT {
+        CloseHandle(event);
+    };
+
+    auto* output = static_cast<u8*>(destination);
+    u64 completed = 0;
+    while (completed < size) {
+        const u64 position = offset + completed;
+        OVERLAPPED operation{};
+        operation.Offset = static_cast<DWORD>(position);
+        operation.OffsetHigh = static_cast<DWORD>(position >> 32);
+        operation.hEvent = event;
+        if (!ResetEvent(event)) {
+            return GetLastError();
+        }
+        const DWORD count = static_cast<DWORD>(std::min<u64>(size - completed, 1ull << 30));
+        if (!ReadFile(file, output + completed, count, nullptr, &operation)) {
+            const DWORD error = GetLastError();
+            if (error != ERROR_IO_PENDING) {
+                return error == ERROR_HANDLE_EOF && completed != 0 ? ERROR_SUCCESS : error;
+            }
+        }
+        DWORD transferred = 0;
+        if (!GetOverlappedResult(file, &operation, &transferred, TRUE)) {
+            const DWORD error = GetLastError();
+            return error == ERROR_HANDLE_EOF && completed != 0 ? ERROR_SUCCESS : error;
+        }
+        if (transferred == 0) {
+            break;
+        }
+        completed += transferred;
+    }
+    return ERROR_SUCCESS;
+}
 
 [[nodiscard]] constexpr u64 ToWindowsProt(Core::MemoryProt prot) {
     const bool read =
@@ -153,25 +210,22 @@ struct AddressSpace::Impl {
             ASSERT_MSG(VirtualQuery(reinterpret_cast<PVOID>(next_addr), &info, sizeof(info)),
                        "Failed to query memory information for address {:#x}", next_addr);
 
-            // Ensure logic uses values aligned to bage boundaries.
-            next_addr = reinterpret_cast<VAddr>(info.BaseAddress) + info.RegionSize;
-            next_addr = Common::AlignUp(next_addr, alignment);
+            const VAddr region_base = reinterpret_cast<VAddr>(info.BaseAddress);
+            const VAddr region_end = region_base + info.RegionSize;
+            ASSERT_MSG(region_end > next_addr, "Invalid virtual memory region at {:#x}", next_addr);
+            next_addr = region_end;
 
-            // Prevent size from going past supported_user_max
-            u64 size = info.RegionSize;
-            if (next_addr > supported_user_max) {
-                size -= (next_addr - supported_user_max);
-            }
-            size = Common::AlignDown(size, alignment);
-
-            // Check for free memory areas
-            // Restrict region size to avoid overly fragmenting the virtual memory space.
-            if (info.State == MEM_FREE && info.RegionSize > 0x1000000) {
-                VAddr addr = Common::AlignUp(reinterpret_cast<VAddr>(info.BaseAddress), alignment);
-                regions.emplace(addr,
-                                MemoryRegion{addr, PAddr(-1), size, PAGE_NOACCESS, -1, false});
+            const VAddr begin =
+                Common::AlignUp(std::max(region_base, SYSTEM_MANAGED_MIN), alignment);
+            const VAddr end =
+                Common::AlignDown(std::min(region_end, supported_user_max + 1), alignment);
+            if (info.State == MEM_FREE && end > begin && end - begin > 0x1000000) {
+                regions.emplace(
+                    begin, MemoryRegion{begin, PAddr(-1), end - begin, PAGE_NOACCESS, -1, false});
             }
         }
+
+        ASSERT_MSG(!regions.empty(), "No usable guest virtual address ranges");
 
         // Reserve all detected free regions.
         for (auto region : regions) {
@@ -252,23 +306,13 @@ struct AddressSpace::Impl {
                                     MEM_RESERVE | MEM_COMMIT | MEM_REPLACE_PLACEHOLDER,
                                     PAGE_READWRITE, nullptr, 0);
 
-                // Use ReadFile to read file contents into the memory area.
-                // Create an OVERLAPPED with the file offset, then supply that to ReadFile
-                OVERLAPPED param{};
-                // Offset is the least-significant 32 bits, OffsetHigh is the most-significant.
-                param.Offset = phys_addr & 0xffffffffull;
-                param.OffsetHigh = (phys_addr & 0xffffffff00000000ull) >> 32;
-                bool ret = ReadFile(backing, ptr, size, &resultvar, &param);
-                ASSERT_MSG(ret, "ReadFile failed. {}", Common::GetLastErrorMsg());
-
-                // ReadFile moves the file pointer, restore it with SetFilePointer
-                s64 size_to_move = -size;
-                LONG size_low = size_to_move & 0xffffffffull;
-                LONG size_high = (size_to_move & 0xffffffff00000000ull) >> 32;
-                ret = SetFilePointer(backing, size_low, &size_high, FILE_CURRENT);
+                ASSERT_MSG(ptr, "VirtualAlloc2 failed. {}", Common::GetLastErrorMsg());
+                const DWORD read_error = ReadFileRange(backing, ptr, phys_addr, size);
+                ASSERT_MSG(read_error == ERROR_SUCCESS, "ReadFile failed with error {}",
+                           read_error);
 
                 // Protect the memory area appropriately
-                ret = VirtualProtect(ptr, size, prot, &resultvar);
+                const bool ret = VirtualProtect(ptr, size, prot, &resultvar);
                 ASSERT_MSG(ret, "VirtualProtect failed. {}", Common::GetLastErrorMsg());
             } else {
                 if (prot == PAGE_NOACCESS) {

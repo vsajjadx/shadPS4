@@ -118,15 +118,35 @@ void Module::LoadModuleToMemory(u32& max_tls_index) {
     // Reserve memory area for module
     const bool is_executable =
         elf_header.e_type == ET_SCE_EXEC || elf_header.e_type == ET_SCE_DYNEXEC;
-    const u64 load_base = is_executable   ? ExecutableLoadBase
-                          : IsSystemLib() ? SystemModuleLoadBase
-                                          : GameModuleLoadBase;
-    void** out_addr = reinterpret_cast<void**>(&base_virtual_addr);
-    s32 result =
-        memory->MapMemory(out_addr, load_base, aligned_base_size + TrampolineSize,
-                          MemoryProt::NoAccess, MemoryMapFlags::NoFlags, VMAType::Reserved, name);
-    ASSERT_MSG(result == ORBIS_OK, "Failed to reserve memory for module {}", name);
-    LOG_INFO(Core_Linker, "Loading module {} to {}", name, fmt::ptr(*out_addr));
+    const bool is_fixed_executable = elf_header.e_type == ET_SCE_EXEC;
+    u64 load_base = is_executable   ? ExecutableLoadBase
+                    : IsSystemLib() ? SystemModuleLoadBase
+                                    : GameModuleLoadBase;
+    u64 mapping_size = aligned_base_size;
+    auto mapping_flags = MemoryMapFlags::NoFlags;
+    if (is_fixed_executable) {
+        load_base = base_size;
+        for (const auto& phdr : elf_pheader) {
+            if (phdr.p_memsz != 0 && (phdr.p_type == PT_LOAD || phdr.p_type == PT_SCE_RELRO)) {
+                load_base = std::min(load_base, phdr.p_vaddr);
+            }
+        }
+        load_base = Common::AlignDown(load_base, GUEST_PAGE_SIZE);
+        aligned_base_size = Common::AlignUp(base_size, GUEST_PAGE_SIZE);
+        ASSERT_MSG(load_base != 0 && load_base < aligned_base_size,
+                   "Invalid fixed executable address range for {}", name);
+        mapping_size = aligned_base_size - load_base;
+        mapping_flags = MemoryMapFlags::Fixed | MemoryMapFlags::NoOverwrite;
+    }
+    void* mapped_address = nullptr;
+    s32 result = memory->MapMemory(&mapped_address, load_base, mapping_size + TrampolineSize,
+                                   MemoryProt::NoAccess, mapping_flags, VMAType::Reserved, name);
+    ASSERT_MSG(result == ORBIS_OK, "Failed to reserve module {} at {:#x} (fixed={}, error={:#x})",
+               name, load_base, is_fixed_executable, result);
+    mapped_virtual_addr = reinterpret_cast<VAddr>(mapped_address);
+    base_virtual_addr = is_fixed_executable ? 0 : mapped_virtual_addr;
+    LOG_INFO(Core_Linker, "Loading module {} to {} (load bias {:#x})", name,
+             fmt::ptr(mapped_address), base_virtual_addr);
 
 #ifdef ARCH_X86_64
     // Initialize trampoline generator.
@@ -136,7 +156,7 @@ void Module::LoadModuleToMemory(u32& max_tls_index) {
                                MemoryProt::CpuReadWrite | MemoryProt::CpuExec,
                                MemoryMapFlags::Fixed, VMAType::Code, name);
     ASSERT_MSG(result == ORBIS_OK, "Failed to map trampoline area for module {}", name);
-    RegisterPatchModule(*out_addr, aligned_base_size, trampoline_addr, TrampolineSize);
+    RegisterPatchModule(mapped_address, GetMappedSize(), trampoline_addr, TrampolineSize);
 #endif
 
     LOG_INFO(Core_Linker, "======== Load Module to Memory ========");
@@ -371,8 +391,9 @@ void Module::LoadModuleToMemory(u32& max_tls_index) {
         std::ranges::transform(lower_name, lower_name.begin(),
                                [](unsigned char c) { return std::tolower(c); });
         if (lower_name == "eboot.bin" || lower_name.ends_with(".elf")) {
-            MemoryPatcher::g_eboot_address = base_virtual_addr;
-            MemoryPatcher::g_eboot_image_size = base_size;
+            MemoryPatcher::g_eboot_address = mapped_virtual_addr;
+            MemoryPatcher::g_eboot_image_size =
+                base_size - (mapped_virtual_addr - base_virtual_addr);
             MemoryPatcher::g_eboot_name = name;
             MemoryPatcher::OnGameLoaded();
         }

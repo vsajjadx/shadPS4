@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -17,6 +18,7 @@
 #include "common/logging/log.h"
 #include "common/memory_patcher.h"
 #include "common/path_util.h"
+#include "common/windows_process.h"
 #include "core/crash_monitor.h"
 #include "core/debugger.h"
 #include "core/emulator_settings.h"
@@ -33,6 +35,59 @@
 #include <sys/sysctl.h>
 #endif
 
+#ifdef _WIN32
+static std::optional<int> RelaunchWithGuestAddressSpace() {
+    PROCESS_MITIGATION_ASLR_POLICY policy{};
+    if (!GetProcessMitigationPolicy(GetCurrentProcess(), ProcessASLRPolicy, &policy,
+                                    sizeof(policy))) {
+        std::cerr << "Cannot query process ASLR policy: " << GetLastError() << '\n';
+        return EXIT_FAILURE;
+    }
+    if (policy.EnableBottomUpRandomization && policy.EnableHighEntropy) {
+        return std::nullopt;
+    }
+    const char* ipc = std::getenv("SHADPS4_ENABLE_IPC");
+    if (ipc && std::string_view(ipc) == "true") {
+        return std::nullopt;
+    }
+    Common::WindowsProcessStartupInfo attributes;
+    if (attributes.Error() != ERROR_SUCCESS) {
+        std::cerr << "Cannot prepare guest address space: " << attributes.Error() << '\n';
+        return EXIT_FAILURE;
+    }
+    std::wstring executable(32768, L'\0');
+    const DWORD length = GetModuleFileNameW(nullptr, executable.data(), executable.size());
+    if (length == 0 || length >= executable.size()) {
+        std::cerr << "Cannot determine emulator executable path\n";
+        return EXIT_FAILURE;
+    }
+    executable.resize(length);
+    std::wstring command_line = GetCommandLineW();
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    startup.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+    startup.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+    const auto valid = [](HANDLE handle) { return handle && handle != INVALID_HANDLE_VALUE; };
+    if (valid(startup.hStdInput) && valid(startup.hStdOutput) && valid(startup.hStdError)) {
+        startup.dwFlags |= STARTF_USESTDHANDLES;
+    }
+    PROCESS_INFORMATION child{};
+    if (!CreateProcessW(executable.c_str(), command_line.data(), nullptr, nullptr, TRUE,
+                        EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr, attributes.Apply(startup),
+                        &child)) {
+        std::cerr << "Cannot launch with a free guest address space: " << GetLastError() << '\n';
+        return EXIT_FAILURE;
+    }
+    CloseHandle(child.hThread);
+    DWORD exit_code = EXIT_FAILURE;
+    if (WaitForSingleObject(child.hProcess, INFINITE) == WAIT_OBJECT_0) {
+        GetExitCodeProcess(child.hProcess, &exit_code);
+    }
+    CloseHandle(child.hProcess);
+    return static_cast<int>(exit_code);
+}
+#endif
 
 int main(int argc, char* argv[]) {
 #ifdef _WIN32
@@ -151,6 +206,14 @@ int main(int argc, char* argv[]) {
     } catch (const CLI::ParseError& e) {
         return app.exit(e);
     }
+
+#ifdef _WIN32
+    if (gamePath.has_value() || bigPicture) {
+        if (const auto result = RelaunchWithGuestAddressSpace()) {
+            return *result;
+        }
+    }
+#endif
 
     if (waitPid)
         Core::Debugger::WaitForPid(*waitPid);
