@@ -110,16 +110,18 @@ s32 VdecDecoder::Decode(const OrbisVideodecInputData& pInputDataIn,
     pPictureInfoOut.ptsData = frame->pts;
     pPictureInfoOut.attachedData = reinterpret_cast<u64>(frame->opaque);
 
-    // pPictureInfoOut.codec.avc.numUnitsInTick;
-    // pPictureInfoOut.codec.avc.timeScale;
-    // pPictureInfoOut.codec.avc.fixedFrameRateFlag;
-    // pPictureInfoOut.codec.avc.aspectRatioIdc;
-    // pPictureInfoOut.codec.avc.sarWidth;
-    // pPictureInfoOut.codec.avc.sarHeight;
+    const u32 fps_num =
+        mCodecContext->framerate.num > 0 ? static_cast<u32>(mCodecContext->framerate.num) : 30000;
+    const u32 fps_den =
+        mCodecContext->framerate.den > 0 ? static_cast<u32>(mCodecContext->framerate.den) : 1001;
+    pPictureInfoOut.codec.avc.numUnitsInTick = fps_den;
+    pPictureInfoOut.codec.avc.timeScale = fps_num * 2;
+    pPictureInfoOut.codec.avc.fixedFrameRateFlag = 1;
+    pPictureInfoOut.codec.avc.sarWidth =
+        frame->sample_aspect_ratio.num > 0 ? static_cast<u16>(frame->sample_aspect_ratio.num) : 1;
+    pPictureInfoOut.codec.avc.sarHeight =
+        frame->sample_aspect_ratio.den > 0 ? static_cast<u16>(frame->sample_aspect_ratio.den) : 1;
     pPictureInfoOut.codec.avc.colourPrimaries = static_cast<u8>(frame->color_primaries);
-    // pPictureInfoOut.codec.avc.transferCharacteristics;
-    // pPictureInfoOut.codec.avc.matrixCoefficients;
-    // pPictureInfoOut.codec.avc.videoFullRangeFlag;
     pPictureInfoOut.codec.avc.frameCropLeftOffset = 0;
     pPictureInfoOut.codec.avc.frameCropRightOffset = pitch - frame->width;
     pPictureInfoOut.codec.avc.frameCropTopOffset = 0;
@@ -179,16 +181,18 @@ s32 VdecDecoder::Flush(OrbisVideodecFrameBuffer& pFrameBufferInOut,
     pPictureInfoOut.ptsData = frame->pts;
     pPictureInfoOut.attachedData = reinterpret_cast<u64>(frame->opaque);
 
-    // pPictureInfoOut.codec.avc.numUnitsInTick;
-    // pPictureInfoOut.codec.avc.timeScale;
-    // pPictureInfoOut.codec.avc.fixedFrameRateFlag;
-    // pPictureInfoOut.codec.avc.aspectRatioIdc;
-    // pPictureInfoOut.codec.avc.sarWidth;
-    // pPictureInfoOut.codec.avc.sarHeight;
+    const u32 fps_num =
+        mCodecContext->framerate.num > 0 ? static_cast<u32>(mCodecContext->framerate.num) : 30000;
+    const u32 fps_den =
+        mCodecContext->framerate.den > 0 ? static_cast<u32>(mCodecContext->framerate.den) : 1001;
+    pPictureInfoOut.codec.avc.numUnitsInTick = fps_den;
+    pPictureInfoOut.codec.avc.timeScale = fps_num * 2;
+    pPictureInfoOut.codec.avc.fixedFrameRateFlag = 1;
+    pPictureInfoOut.codec.avc.sarWidth =
+        frame->sample_aspect_ratio.num > 0 ? static_cast<u16>(frame->sample_aspect_ratio.num) : 1;
+    pPictureInfoOut.codec.avc.sarHeight =
+        frame->sample_aspect_ratio.den > 0 ? static_cast<u16>(frame->sample_aspect_ratio.den) : 1;
     pPictureInfoOut.codec.avc.colourPrimaries = static_cast<u8>(frame->color_primaries);
-    // pPictureInfoOut.codec.avc.transferCharacteristics;
-    // pPictureInfoOut.codec.avc.matrixCoefficients;
-    // pPictureInfoOut.codec.avc.videoFullRangeFlag;
     pPictureInfoOut.codec.avc.frameCropLeftOffset = 0;
     pPictureInfoOut.codec.avc.frameCropRightOffset = pitch - frame->width;
     pPictureInfoOut.codec.avc.frameCropTopOffset = 0;

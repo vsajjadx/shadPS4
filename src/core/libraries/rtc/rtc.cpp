@@ -72,11 +72,8 @@ int PS4_SYSV_ABI sceRtcConvertLocalTimeToUtc(OrbisRtcTick* pTickLocal, OrbisRtcT
     if (pTickLocal == nullptr)
         return ORBIS_RTC_ERROR_INVALID_POINTER;
 
-    time_t seconds;
-    Kernel::OrbisKernelTimezone timezone;
-
-    int convertValue = Kernel::sceKernelConvertLocaltimeToUtc(
-        (pTickLocal->tick - UNIX_EPOCH_TICKS) / 1000000, 0xffffffff, &seconds, &timezone, 0);
+    Kernel::OrbisKernelTimezone timezone{};
+    int convertValue = Kernel::sceKernelGettimezone(&timezone);
 
     if (convertValue >= 0) {
         convertValue = sceRtcTickAddMinutes(pTickUtc, pTickLocal,

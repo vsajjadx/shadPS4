@@ -100,10 +100,9 @@ void* PS4_SYSV_ABI sceKernelGetProcParam() {
     return linker->GetProcParam();
 }
 
-s32 PS4_SYSV_ABI sceKernelLoadStartModule(const char* moduleFileName, u64 args, const void* argp,
-                                          u32 flags, const void* pOpt, s32* pRes) {
-    // Nobody Saves the World (#24) passes an invalid name pointer; the kernel returns EFAULT
-    // instead of crashing.
+__attribute__((force_align_arg_pointer)) s32 PS4_SYSV_ABI
+sceKernelLoadStartModule(const char* moduleFileName, u64 args, const void* argp, u32 flags,
+                         const void* pOpt, s32* pRes) {
     if (moduleFileName == nullptr ||
         !Core::Memory::Instance()->IsValidMapping(reinterpret_cast<VAddr>(moduleFileName), 1)) {
         LOG_ERROR(Lib_Kernel, "invalid filename pointer {}", fmt::ptr(moduleFileName));

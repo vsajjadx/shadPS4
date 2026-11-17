@@ -403,22 +403,6 @@ s32 PS4_SYSV_ABI sceKernelClockGetres(const u32 clock_id, OrbisKernelTimespec* r
     return ORBIS_OK;
 }
 
-// DST offset of the host for a UTC time; 0 when the host cannot convert it (Windows rejects
-// negative and far-future times, which mktime probes while searching).
-static s32 HostDstSeconds(time_t t) {
-    struct tm tm_val {};
-#ifdef _WIN32
-    if (localtime_s(&tm_val, &t) != 0) {
-        return 0;
-    }
-#else
-    if (localtime_r(&t, &tm_val) == nullptr) {
-        return 0;
-    }
-#endif
-    return tm_val.tm_isdst > 0 ? 3600 : 0;
-}
-
 s32 PS4_SYSV_ABI posix_gettimeofday(OrbisKernelTimeval* tp, OrbisKernelTimezone* tz) {
 #ifdef _WIN64
     if (tp) {
@@ -491,26 +475,25 @@ s32 PS4_SYSV_ABI sceKernelGettimezone(OrbisKernelTimezone* tz) {
 }
 
 s32 PS4_SYSV_ABI sceKernelConvertLocaltimeToUtc(time_t param_1, int64_t param_2, time_t* seconds,
-                                                OrbisKernelTimezone* timezone, s32* dst_seconds) {
-    if (timezone) {
-        sceKernelGettimezone(timezone);
-        // DST of the current time, as in v0.20: Unity/Mono scans the time zone for DST
-        // transitions through these calls, and a DST state that follows the converted date
-        // made that scan run millions of times (They Always Run #13, Desperados III #14,
-        // Rustler #19). sceKernelConvertUtcToLocaltime uses the same state, so the two stay
-        // exact inverses.
-        const time_t base = param_1 - timezone->tz_minuteswest * 60;
-        const s32 dst_sec_val = HostDstSeconds(std::time(nullptr));
-        const time_t utc = base - dst_sec_val;
-        timezone->tz_dsttime = dst_sec_val / 60;
-        if (seconds) {
-            *seconds = utc;
-        }
-        if (dst_seconds) {
-            *dst_seconds = dst_sec_val;
-        }
-    } else {
-        return ORBIS_KERNEL_ERROR_EINVAL;
+                                                OrbisTimesec* st, s32* dst_seconds) {
+    LOG_TRACE(Kernel, "Called");
+    OrbisKernelTimezone tz{};
+    if (const s32 ret = sceKernelGettimezone(&tz); ret < 0) {
+        return ret;
+    }
+    const s32 west_sec_val = tz.tz_minuteswest * 60;
+    const s32 dst_sec_val = tz.tz_dsttime * 60;
+    const time_t utc = param_1 - static_cast<time_t>(west_sec_val + dst_sec_val);
+    if (seconds != nullptr) {
+        *seconds = utc;
+    }
+    if (st != nullptr) {
+        st->t = utc;
+        st->west_sec = west_sec_val;
+        st->dst_sec = dst_sec_val;
+    }
+    if (dst_seconds != nullptr) {
+        *dst_seconds = dst_sec_val;
     }
     return ORBIS_OK;
 }
@@ -527,49 +510,25 @@ Common::NativeClock* GetClock() {
 } // namespace Dev
 
 s32 PS4_SYSV_ABI sceKernelConvertUtcToLocaltime(time_t time, time_t* local_time,
-                                                struct OrbisTimesec* st, u64* dst_sec) {
+                                                struct OrbisTimesec* st, s32* dst_sec) {
     LOG_TRACE(Kernel, "Called");
-#ifdef _WIN32
-    s32 dst_sec_val = HostDstSeconds(std::time(nullptr));
-    _tzset();
-    s32 west_sec_val = -static_cast<s32>(_timezone);
-
-    if (local_time != nullptr) {
-        *local_time = time + west_sec_val + dst_sec_val;
+    OrbisKernelTimezone tz{};
+    if (const s32 ret = sceKernelGettimezone(&tz); ret < 0) {
+        return ret;
     }
-
+    const s32 west_sec_val = tz.tz_minuteswest * 60;
+    const s32 dst_sec_val = tz.tz_dsttime * 60;
+    if (local_time != nullptr) {
+        *local_time = time + static_cast<time_t>(west_sec_val + dst_sec_val);
+    }
     if (st != nullptr) {
         st->t = time;
         st->west_sec = west_sec_val;
         st->dst_sec = dst_sec_val;
     }
-
     if (dst_sec != nullptr) {
         *dst_sec = dst_sec_val;
     }
-#else
-    time_t t = time;
-    struct tm tm_val;
-    localtime_r(&t, &tm_val);
-    s32 is_dst = (tm_val.tm_isdst > 0) ? 1 : 0;
-    s32 dst_sec_val = is_dst ? 3600 : 0;
-    s32 west_sec_val = static_cast<s32>(tm_val.tm_gmtoff) - dst_sec_val;
-
-    if (local_time != nullptr) {
-        *local_time = time + tm_val.tm_gmtoff;
-    }
-
-    if (st != nullptr) {
-        st->t = time;
-        st->west_sec = west_sec_val;
-        st->dst_sec = dst_sec_val;
-    }
-
-    if (dst_sec != nullptr) {
-        *dst_sec = dst_sec_val;
-    }
-#endif // _WIN32
-
     return ORBIS_OK;
 }
 

@@ -154,6 +154,15 @@ s32 VdecDecoder::Decode(const OrbisVideodec2InputData& input_data,
         output_info.frame_pitch_in_bytes = pitch;
     }
 
+    const u32 fps_num =
+        m_codec_context->framerate.num > 0 ? static_cast<u32>(m_codec_context->framerate.num) : 30000;
+    const u32 fps_den =
+        m_codec_context->framerate.den > 0 ? static_cast<u32>(m_codec_context->framerate.den) : 1001;
+    const u16 sar_w =
+        frame->sample_aspect_ratio.num > 0 ? static_cast<u16>(frame->sample_aspect_ratio.num) : 1;
+    const u16 sar_h =
+        frame->sample_aspect_ratio.den > 0 ? static_cast<u16>(frame->sample_aspect_ratio.den) : 1;
+
     if (is_hevc) {
         auto& picture_info = *(OrbisVideodec2HevcPictureInfo*)((u8*)output_info.frame_buffer +
                                                                output_info.frame_buffer_size);
@@ -164,6 +173,14 @@ s32 VdecDecoder::Decode(const OrbisVideodec2InputData& input_data,
         picture_info.pts_data = frame->pts;
         picture_info.dts_data = frame->pkt_dts;
         picture_info.attached_data = reinterpret_cast<u64>(frame->opaque);
+
+        picture_info.pic_width_in_luma_samples = width;
+        picture_info.pic_height_in_luma_samples = height;
+        picture_info.timing_info_present_flag = 1;
+        picture_info.num_units_in_tick = fps_den;
+        picture_info.time_scale = fps_num;
+        picture_info.sar_width = sar_w;
+        picture_info.sar_height = sar_h;
 
         picture_info.frame_crop_top_offset = 0;
         picture_info.frame_crop_left_offset = 0;
@@ -179,6 +196,16 @@ s32 VdecDecoder::Decode(const OrbisVideodec2InputData& input_data,
         picture_info.pts_data = frame->pts;
         picture_info.dts_data = frame->pkt_dts;
         picture_info.attached_data = reinterpret_cast<u64>(frame->opaque);
+
+        picture_info.pic_width_in_mbs_minus1 = (width / 16) - 1;
+        picture_info.pic_height_in_map_units_minus1 = (height / 16) - 1;
+        picture_info.frame_mbs_only_flag = 1;
+        picture_info.timing_info_present_flag = 1;
+        picture_info.num_units_in_tick = fps_den;
+        picture_info.time_scale = fps_num * 2;
+        picture_info.fixed_frame_rate_flag = 1;
+        picture_info.sar_width = sar_w;
+        picture_info.sar_height = sar_h;
 
         picture_info.frame_crop_top_offset = 0;
         picture_info.frame_crop_left_offset = 0;
@@ -240,6 +267,15 @@ s32 VdecDecoder::Flush(OrbisVideodec2FrameBuffer& frame_buffer,
         output_info.frame_pitch_in_bytes = pitch;
     }
 
+    const u32 fps_num =
+        m_codec_context->framerate.num > 0 ? static_cast<u32>(m_codec_context->framerate.num) : 30000;
+    const u32 fps_den =
+        m_codec_context->framerate.den > 0 ? static_cast<u32>(m_codec_context->framerate.den) : 1001;
+    const u16 sar_w =
+        frame->sample_aspect_ratio.num > 0 ? static_cast<u16>(frame->sample_aspect_ratio.num) : 1;
+    const u16 sar_h =
+        frame->sample_aspect_ratio.den > 0 ? static_cast<u16>(frame->sample_aspect_ratio.den) : 1;
+
     if (is_hevc) {
         auto& picture_info = *(OrbisVideodec2HevcPictureInfo*)((u8*)output_info.frame_buffer +
                                                                output_info.frame_buffer_size);
@@ -250,6 +286,14 @@ s32 VdecDecoder::Flush(OrbisVideodec2FrameBuffer& frame_buffer,
         picture_info.pts_data = frame->pts;
         picture_info.dts_data = frame->pkt_dts;
         picture_info.attached_data = reinterpret_cast<u64>(frame->opaque);
+
+        picture_info.pic_width_in_luma_samples = width;
+        picture_info.pic_height_in_luma_samples = height;
+        picture_info.timing_info_present_flag = 1;
+        picture_info.num_units_in_tick = fps_den;
+        picture_info.time_scale = fps_num;
+        picture_info.sar_width = sar_w;
+        picture_info.sar_height = sar_h;
 
         picture_info.frame_crop_top_offset = 0;
         picture_info.frame_crop_left_offset = 0;
@@ -265,6 +309,16 @@ s32 VdecDecoder::Flush(OrbisVideodec2FrameBuffer& frame_buffer,
         picture_info.pts_data = frame->pts;
         picture_info.dts_data = frame->pkt_dts;
         picture_info.attached_data = reinterpret_cast<u64>(frame->opaque);
+
+        picture_info.pic_width_in_mbs_minus1 = (width / 16) - 1;
+        picture_info.pic_height_in_map_units_minus1 = (height / 16) - 1;
+        picture_info.frame_mbs_only_flag = 1;
+        picture_info.timing_info_present_flag = 1;
+        picture_info.num_units_in_tick = fps_den;
+        picture_info.time_scale = fps_num * 2;
+        picture_info.fixed_frame_rate_flag = 1;
+        picture_info.sar_width = sar_w;
+        picture_info.sar_height = sar_h;
 
         picture_info.frame_crop_top_offset = 0;
         picture_info.frame_crop_left_offset = 0;
