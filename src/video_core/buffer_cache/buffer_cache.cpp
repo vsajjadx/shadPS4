@@ -336,7 +336,7 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
 }
 
 std::pair<const Buffer*, u64> BufferCache::ObtainBufferForImage(VAddr device_addr, u32 size) {
-    if (IsRegionGpuModified(device_addr, size)) {
+    if (IsRegionGpuModified(device_addr, size) || IsRangeGpuWritten(device_addr, size)) {
         return ObtainBuffer(device_addr, size);
     }
     const auto staging = staging_pool.Request(size, VideoCore::MemoryType::HostUncached,
