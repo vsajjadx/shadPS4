@@ -452,8 +452,7 @@ void DefineEntryPoint(const Info& info, const RuntimeInfo& runtime_info, EmitCon
         execution_model = spv::ExecutionModel::Geometry;
         ctx.AddExecutionMode(main, GetInputPrimitiveType(ctx.runtime_info.hw.gs.in_primitive));
         ctx.AddExecutionMode(main, GetOutputPrimitiveType(ctx.runtime_info.hw.gs.out_primitive[0]));
-        ctx.AddExecutionMode(main, spv::ExecutionMode::OutputVertices,
-                             ctx.runtime_info.hw.gs.output_vertices);
+        ctx.AddExecutionMode(main, spv::ExecutionMode::OutputVertices, info.gs_output_vertices);
         ctx.AddExecutionMode(main, spv::ExecutionMode::Invocations,
                              ctx.runtime_info.hw.gs.num_invocations);
         break;
