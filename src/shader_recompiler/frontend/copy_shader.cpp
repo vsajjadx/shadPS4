@@ -38,7 +38,29 @@ CopyShaderData ParseCopyShader(std::span<const u32> code) {
             break;
         }
         case Gcn::Opcode::S_MOV_B32: {
-            sources[inst.dst[0].code] = inst.src[0].code;
+            const auto& src = inst.src[0];
+            auto& value = sources[inst.dst[0].code];
+            switch (src.field) {
+            case Gcn::OperandField::ConstZero:
+                value = 0;
+                break;
+            case Gcn::OperandField::SignedConstIntPos:
+                value = src.code - Gcn::OperandFieldRange::SignedConstIntPosMin + 1;
+                break;
+            case Gcn::OperandField::SignedConstIntNeg:
+                value =
+                    -static_cast<s32>(src.code - Gcn::OperandFieldRange::SignedConstIntNegMin + 1);
+                break;
+            case Gcn::OperandField::LiteralConst:
+                value = static_cast<s32>(src.code);
+                break;
+            case Gcn::OperandField::ScalarGPR:
+                value = sources[src.code];
+                break;
+            default:
+                value = -1;
+                break;
+            }
             break;
         }
         case Gcn::Opcode::S_ADDK_I32: {

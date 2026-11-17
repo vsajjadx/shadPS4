@@ -154,10 +154,10 @@ s32 VdecDecoder::Decode(const OrbisVideodec2InputData& input_data,
         output_info.frame_pitch_in_bytes = pitch;
     }
 
-    const u32 fps_num =
-        m_codec_context->framerate.num > 0 ? static_cast<u32>(m_codec_context->framerate.num) : 30000;
-    const u32 fps_den =
-        m_codec_context->framerate.den > 0 ? static_cast<u32>(m_codec_context->framerate.den) : 1001;
+    const auto framerate = m_codec_context->framerate;
+    const bool valid_framerate = framerate.num > 0 && framerate.den > 0;
+    const u32 fps_num = valid_framerate ? static_cast<u32>(framerate.num) : 30000;
+    const u32 fps_den = valid_framerate ? static_cast<u32>(framerate.den) : 1001;
     const u16 sar_w =
         frame->sample_aspect_ratio.num > 0 ? static_cast<u16>(frame->sample_aspect_ratio.num) : 1;
     const u16 sar_h =
@@ -267,10 +267,10 @@ s32 VdecDecoder::Flush(OrbisVideodec2FrameBuffer& frame_buffer,
         output_info.frame_pitch_in_bytes = pitch;
     }
 
-    const u32 fps_num =
-        m_codec_context->framerate.num > 0 ? static_cast<u32>(m_codec_context->framerate.num) : 30000;
-    const u32 fps_den =
-        m_codec_context->framerate.den > 0 ? static_cast<u32>(m_codec_context->framerate.den) : 1001;
+    const auto framerate = m_codec_context->framerate;
+    const bool valid_framerate = framerate.num > 0 && framerate.den > 0;
+    const u32 fps_num = valid_framerate ? static_cast<u32>(framerate.num) : 30000;
+    const u32 fps_den = valid_framerate ? static_cast<u32>(framerate.den) : 1001;
     const u16 sar_w =
         frame->sample_aspect_ratio.num > 0 ? static_cast<u16>(frame->sample_aspect_ratio.num) : 1;
     const u16 sar_h =

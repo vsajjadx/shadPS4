@@ -2057,6 +2057,8 @@ U8U16U32U64 IREmitter::UConvert(size_t result_bitsize, const U8U16U32U64& value)
             return Inst<U32>(Opcode::ConvertU32U8, value);
         case Type::U16:
             return Inst<U32>(Opcode::ConvertU32U16, value);
+        case Type::U64:
+            return U32{CompositeExtract(UnpackUint2x32(U64{value}), 0)};
         default:
             break;
         }
