@@ -542,7 +542,10 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
 
     if (recreate) {
         auto new_info = requested_info;
-        new_info.resources = std::max(requested_info.resources, cache_image.info.resources);
+        new_info.resources.levels =
+            std::max(requested_info.resources.levels, cache_image.info.resources.levels);
+        new_info.resources.layers =
+            std::max(requested_info.resources.layers, cache_image.info.resources.layers);
         new_info.UpdateSize();
         auto new_image_id = TakeParkedImage(new_info);
         if (!new_image_id) {
@@ -561,6 +564,7 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
         new_image.flags &= ~ImageFlagBits::Dirty;
         // When creating a depth buffer through overlap resolution don't clear it on first use.
         new_image.info.meta_info.htile_clear_mask = 0;
+        RefreshImage(cache_image);
         runtime.CopyColorAndDepth(&cache_image, &new_image);
         InheritAliasSeq(new_image, cache_image);
 
