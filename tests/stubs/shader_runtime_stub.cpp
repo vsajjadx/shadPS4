@@ -7,6 +7,9 @@
 namespace Common {
 // No game is loaded by the instruction/compiler unit tests.
 bool HackFeatures::isTheOrder1886 = false;
+bool HackFeatures::isNhl24 = false;
+bool HackFeatures::isCodColdWar = false;
+bool HackFeatures::isFc27 = false;
 } // namespace Common
 
 namespace Shader {

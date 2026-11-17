@@ -650,7 +650,7 @@ TEST_F(EmulatorSettingsTest, GetAllOverrideableKeysContainsRepresentativeKeys) {
     // GPU
     EXPECT_TRUE(has("window_width"));
     EXPECT_TRUE(has("null_gpu"));
-    EXPECT_TRUE(has("vblank_frequency"));
+    EXPECT_TRUE(has("vblank_limit"));
     // Vulkan
     EXPECT_TRUE(has("gpu_id"));
     EXPECT_TRUE(has("pipeline_cache_enabled"));
@@ -685,7 +685,7 @@ TEST_F(EmulatorSettingsTest, GetGPUOverrideableFieldsContainsWindowAndFullscreen
     EXPECT_TRUE(has("window_width"));
     EXPECT_TRUE(has("window_height"));
     EXPECT_TRUE(has("full_screen"));
-    EXPECT_TRUE(has("vblank_frequency"));
+    EXPECT_TRUE(has("vblank_limit"));
 }
 
 TEST_F(EmulatorSettingsTest, GetVulkanOverrideableFieldsContainsGpuId) {

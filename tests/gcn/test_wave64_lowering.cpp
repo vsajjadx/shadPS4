@@ -229,7 +229,7 @@ TEST_F(Wave64LoweringTest, MaskedBitCountsUseGuestLaneAndNeedNoScratch) {
     Lower();
     EXPECT_EQ(Count(IR::Opcode::MaskedBitCount32), 0);
     EXPECT_EQ(Count(IR::Opcode::Barrier), 0);
-    EXPECT_EQ(info.shared_memory_scratch_size, 0);
+    EXPECT_EQ(info.shared_scratch_segment.size, 0);
     const auto values = Execute(sink.Inst(), 64);
     ASSERT_EQ(values.size(), 64);
     for (u32 lane = 0; lane < 64; ++lane) {
@@ -248,7 +248,7 @@ TEST_F(Wave64LoweringTest, DivergentReadLaneNeverInjectsWorkgroupBarriers) {
     Lower();
     EXPECT_EQ(Count(IR::Opcode::ReadLane), 1);
     EXPECT_EQ(Count(IR::Opcode::Barrier), 0);
-    EXPECT_EQ(info.shared_memory_scratch_size, 0);
+    EXPECT_EQ(info.shared_scratch_segment.size, 0);
 }
 
 TEST_F(Wave64LoweringTest, LoadedConditionIsNotAssumedWorkgroupUniform) {
@@ -286,13 +286,14 @@ TEST_F(Wave64LoweringTest, NativeWave64NeedsNoEmulation) {
     EXPECT_EQ(Count(IR::Opcode::Barrier), 0);
 }
 
-TEST_F(Wave64LoweringTest, ScratchIsAlignedAfterGuestLdsAndNeverExceedsDeviceLimit) {
+TEST_F(Wave64LoweringTest, ScratchUsesItsOwnSegmentWithoutChangingGuestLds) {
     runtime.hw.cs.shared_memory_size = 17;
     IR::IREmitter ir{*block};
     const auto sink = ir.IAdd(ir.ReadLane(ir.Imm32(7), ir.Imm32(63)), ir.Imm32(0));
     (void)sink;
     Lower();
-    EXPECT_EQ(17 + info.shared_memory_scratch_size, 24 + 256);
+    EXPECT_EQ(runtime.hw.cs.shared_memory_size, 17);
+    EXPECT_EQ(info.shared_scratch_segment.size, 256);
 }
 
 TEST_F(Wave64LoweringTest, FullGuestLdsDoesNotGenerateOutOfRangeScratch) {
@@ -303,7 +304,7 @@ TEST_F(Wave64LoweringTest, FullGuestLdsDoesNotGenerateOutOfRangeScratch) {
     Lower();
     EXPECT_EQ(Count(IR::Opcode::ReadLane), 1);
     EXPECT_EQ(Count(IR::Opcode::Barrier), 0);
-    EXPECT_EQ(info.shared_memory_scratch_size, 0);
+    EXPECT_EQ(info.shared_scratch_segment.size, 0);
 }
 
 TEST_F(Wave64LoweringTest, SplitGuestWaveUsesWorkgroupLdsBarriersOnWave32Hosts) {

@@ -71,6 +71,7 @@ std::vector<u32> TranslateToSpirv(std::span<const u64> raw_gcn_insts) {
     Profile profile{};
     profile.supported_spirv = 0x00010600;
     profile.subgroup_size = 32;
+    profile.support_int64 = true;
 
     RuntimeInfo runtime_info{};
     runtime_info.Initialize(HwStage::Compute, SwStage::Compute);
@@ -97,6 +98,8 @@ std::vector<u32> TranslateToSpirv(std::span<const u64> raw_gcn_insts) {
 
     Shader::Optimization::SsaRewritePass(program);
     Shader::Optimization::ResourceTrackingPassStub(program, profile);
+    info.buffers.push_back({.used_types = IR::Type::U32, .buffer_type = BufferType::Flatbuf});
+    info.has_flatbuf = true;
     Shader::Optimization::ConstantPropagationPass(program.blocks);
     Shader::Optimization::DeadCodeEliminationPass(program);
     Shader::Optimization::CollectShaderInfoPass(program, profile);
