@@ -377,8 +377,9 @@ static u64 HashImageMemory(VAddr addr, u64 size) {
 }
 
 void TextureCache::MarkAsMaybeDirty(ImageId image_id, Image& image) {
-    if (image.cpu_hash == 0) {
-        // Initialize hash
+    if (False(image.flags & ImageFlagBits::Dirty)) {
+        // Capture the baseline for a new Maybe interval. Repeated invalidations must
+        // retain the bytes from before the image was untracked.
         image.cpu_hash = HashImageMemory(image.info.guest_address, image.info.guest_size);
     }
     image.flags |= ImageFlagBits::MaybeCpuDirty;
@@ -1242,23 +1243,14 @@ void TextureCache::RefreshImage(Image& image) {
     RENDERER_TRACE;
     TRACE_HINT(fmt::format("{:x}:{:x}", image.info.guest_address, image.info.guest_size));
 
-    if (True(image.flags & ImageFlagBits::MaybeCpuDirty) &&
-        False(image.flags & ImageFlagBits::CpuDirty)) {
-        // The image size should be less than page size to be considered MaybeCpuDirty
-        // So this calculation should be very uncommon and reasonably fast
-        // For now we'll just check up to 64 first pixels
-        const u32 w = std::min(image.info.size.width, u32(8));
-        const u32 h = std::min(image.info.size.height, u32(8));
-
-        const u32 s_w = image.info.props.is_block ? Common::DivCeil(w, 4u) : w;
-        const u32 s_h = image.info.props.is_block ? Common::DivCeil(h, 4u) : h;
-        const u32 size = s_w * s_h * (image.info.num_bits / 8);
-        const u64 hash = HashImageMemory(image.info.guest_address, size);
+    if ((image.flags & ImageFlagBits::Dirty) == ImageFlagBits::MaybeCpuDirty) {
+        // Only a Maybe-only interval can skip materialization. Definite CPU or GPU
+        // writes still need the actual buffer source, even if CPU backing is unchanged.
+        const u64 hash = HashImageMemory(image.info.guest_address, image.info.guest_size);
         if (image.cpu_hash == hash) {
             image.flags &= ~ImageFlagBits::MaybeCpuDirty;
             return;
         }
-        image.cpu_hash = hash;
     }
 
     image.gpu_hash = 0;

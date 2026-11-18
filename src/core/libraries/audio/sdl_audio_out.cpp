@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <thread>
 #include <SDL3/SDL_audio.h>
@@ -59,8 +60,8 @@ enum ChannelPos : u8 {
 class SDLPortBackend : public PortBackend {
 public:
     explicit SDLPortBackend(const PortOut& port)
-        : frame_size(port.format_info.FrameSize()), guest_buffer_size(port.BufferSize()),
-          buffer_frames(port.buffer_frames), sample_rate(port.sample_rate),
+        : frame_size(port.format_info.FrameSize()), buffer_frames(port.buffer_frames),
+          sample_rate(port.sample_rate),
           num_channels(port.format_info.num_channels), is_float(port.format_info.is_float),
           is_std(port.format_info.is_std), channel_layout(port.format_info.channel_layout) {
 
@@ -269,12 +270,19 @@ private:
     }
 
     void ManageAudioQueue() {
-        const auto queued = SDL_GetAudioStreamQueued(stream);
+        const int queued = SDL_GetAudioStreamQueued(stream);
+        if (queued < 0) [[unlikely]] {
+            LOG_ERROR(Lib_AudioOut, "Failed to query SDL audio queue: {}", SDL_GetError());
+            return;
+        }
 
-        if (queued >= queue_threshold) [[unlikely]] {
-            LOG_DEBUG(Lib_AudioOut, "Clearing backed up audio queue ({} >= {})", queued,
+        if (static_cast<u32>(queued) >= queue_threshold) [[unlikely]] {
+            if (!SDL_ClearAudioStream(stream)) {
+                LOG_ERROR(Lib_AudioOut, "Failed to clear SDL audio queue: {}", SDL_GetError());
+                return;
+            }
+            LOG_DEBUG(Lib_AudioOut, "Cleared backed up audio queue ({} >= {})", queued,
                       queue_threshold);
-            SDL_ClearAudioStream(stream);
             CalculateQueueThreshold();
         }
     }
@@ -509,18 +517,29 @@ private:
             return;
         }
 
-        SDL_AudioSpec discard;
+        SDL_AudioSpec device_spec{};
         int sdl_buffer_frames = 0;
-
-        if (!SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(stream), &discard,
+        u64 input_frames = buffer_frames;
+        if (!SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(stream), &device_spec,
                                       &sdl_buffer_frames)) {
             LOG_WARNING(Lib_AudioOut, "Failed to get SDL buffer size: {}", SDL_GetError());
+        } else if (sdl_buffer_frames <= 0 || device_spec.freq <= 0) {
+            LOG_WARNING(Lib_AudioOut, "Invalid SDL buffer format: {} frames at {} Hz",
+                        sdl_buffer_frames, device_spec.freq);
+        } else {
+            const u64 scaled_frames = static_cast<u64>(sdl_buffer_frames) * sample_rate;
+            const u64 device_rate = static_cast<u64>(device_spec.freq);
+            input_frames = std::max(input_frames, (scaled_frames + device_rate - 1) / device_rate);
         }
 
-        const u32 sdl_buffer_size = sdl_buffer_frames * sizeof(float) * num_channels;
-        queue_threshold = std::max(guest_buffer_size, sdl_buffer_size) * QUEUE_MULTIPLIER;
+        // SDL reports queued input bytes, after our F32 conversion and optional stereo downmix.
+        const u64 threshold_frame_bytes =
+            sizeof(float) * (ps4_downmix ? 2u : num_channels) * QUEUE_MULTIPLIER;
+        const u64 max_frames = std::numeric_limits<int>::max() / threshold_frame_bytes;
+        queue_threshold =
+            static_cast<u32>(std::min(input_frames, max_frames) * threshold_frame_bytes);
 
-        LOG_DEBUG(Lib_AudioOut, "Audio queue threshold: {} bytes (SDL buffer: {} frames)",
+        LOG_DEBUG(Lib_AudioOut, "Audio queue threshold: {} input bytes (SDL buffer: {} frames)",
                   queue_threshold, sdl_buffer_frames);
     }
 
@@ -648,7 +667,6 @@ private:
 
     // Audio format parameters
     const u32 frame_size;
-    const u32 guest_buffer_size;
     const u32 buffer_frames;
     const u32 sample_rate;
     const u32 num_channels;
