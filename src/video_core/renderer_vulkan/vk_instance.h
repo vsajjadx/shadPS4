@@ -6,6 +6,7 @@
 #include <span>
 #include <unordered_map>
 
+#include "video_core/renderer_vulkan/vk_compute_subgroup.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 
 #define TRACY_VK_USE_SYMBOL_TABLE
@@ -262,6 +263,22 @@ public:
     /// Returns true if the subgroup size can be set to match guest subgroup size
     bool IsSubgroupSize64Supported() const {
         return vk13_features.subgroupSizeControl && vk13_props.maxSubgroupSize >= 64;
+    }
+
+    ComputeSubgroupLimits GetComputeSubgroupLimits() const {
+        return {
+            .size_control_enabled = subgroup_size_control_enabled,
+            .compute_required_size =
+                bool(vk13_props.requiredSubgroupSizeStages & vk::ShaderStageFlagBits::eCompute),
+            .default_size = vk11_props.subgroupSize,
+            .min_size = vk13_props.minSubgroupSize,
+            .max_size = vk13_props.maxSubgroupSize,
+            .max_workgroup_subgroups = vk13_props.maxComputeWorkgroupSubgroups,
+            .max_workgroup_invocations = properties.limits.maxComputeWorkGroupInvocations,
+            .max_workgroup_size = {properties.limits.maxComputeWorkGroupSize[0],
+                                   properties.limits.maxComputeWorkGroupSize[1],
+                                   properties.limits.maxComputeWorkGroupSize[2]},
+        };
     }
 
     /// Returns true when VK_KHR_workgroup_memory_explicit_layout is supported.
@@ -566,6 +583,7 @@ private:
     std::unordered_map<vk::Format, vk::FormatProperties3> format_properties;
     TracyVkCtx profiler_context{};
     u32 queue_family_index{0};
+    bool subgroup_size_control_enabled{};
     bool custom_border_color{};
     bool fragment_shader_barycentric{};
     bool amd_shader_explicit_vertex_parameter{};

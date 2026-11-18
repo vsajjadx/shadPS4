@@ -4,7 +4,9 @@
 #pragma once
 
 #include <atomic>
+#include <vector>
 #include "common/build_completion.h"
+#include "shader_recompiler/runtime_info.h"
 #include "video_core/renderer_vulkan/vk_common.h"
 #include "video_core/renderer_vulkan/vk_pipeline_common.h"
 
@@ -49,7 +51,8 @@ public:
     ComputePipeline(const Instance& instance, Scheduler& scheduler, DescriptorHeap& desc_heap,
                     const Shader::Profile& profile, vk::PipelineCache pipeline_cache,
                     ComputePipelineKey compute_key, const Shader::Info& info,
-                    vk::ShaderModule module, SerializationSupport& sdata, bool preloading,
+                    vk::ShaderModule module, const Shader::HwComputeRuntimeInfo& cs_info,
+                    std::vector<u32> spirv, SerializationSupport& sdata, bool preloading,
                     bool defer_build = false);
     ~ComputePipeline();
 
@@ -69,8 +72,12 @@ public:
 
 private:
     void Build();
+    void LogBuildFailure(vk::Result result) const;
 
     ComputePipelineKey compute_key;
+    Shader::HwComputeRuntimeInfo cs_info;
+    u64 shader_hash{};
+    std::vector<u32> stage_spirv;
     vk::ShaderModule stage_module{};
     vk::PipelineCache pipeline_cache_handle{};
     std::atomic<bool> build_started{false};

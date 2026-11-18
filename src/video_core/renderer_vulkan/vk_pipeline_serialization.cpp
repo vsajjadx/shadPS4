@@ -11,13 +11,13 @@
 #include "shader_recompiler/info.h"
 #include "video_core/cache_storage.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
-#include "video_core/renderer_vulkan/vk_pipeline_cache.h"
+#include "video_core/renderer_vulkan/vk_pipeline_serialization.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-static constexpr u32 ShaderBinaryVersion = 21u;
-static constexpr u32 ShaderMetaVersion = 10u;
+static constexpr u32 ShaderBinaryVersion = 22u;
+static constexpr u32 ShaderMetaVersion = 11u;
 static constexpr u32 PipelineKeyVersion = 4u;
 } // namespace Serialization
 
@@ -151,6 +151,10 @@ bool PipelineCache::LoadComputePipeline(Serialization::Archive& ar) {
         return false;
     }
 
+    if (compute_pipelines.contains(compute_key)) {
+        return false;
+    }
+
     std::vector<u8> meta_blob;
     Storage::DataBase::Instance().Load(Storage::BlobType::ShaderMeta,
                                        fmt::format("{:#018x}", compute_key.value), meta_blob);
@@ -160,7 +164,7 @@ bool PipelineCache::LoadComputePipeline(Serialization::Archive& ar) {
 
     Serialization::Archive meta_ar{std::move(meta_blob)};
 
-    if (!LoadPipelineStage(meta_ar, 0)) {
+    if (!LoadPipelineStage(meta_ar, 0, compute_key)) {
         return false;
     }
 
@@ -173,9 +177,10 @@ bool PipelineCache::LoadComputePipeline(Serialization::Archive& ar) {
         return false;
     }
 
-    it.value() =
-        std::make_unique<ComputePipeline>(instance, scheduler, desc_heap, profile, *pipeline_cache,
-                                          compute_key, *infos[0], modules[0], sdata, true);
+    it.value() = std::make_unique<ComputePipeline>(
+        instance, scheduler, desc_heap, profile, *pipeline_cache, compute_key, *infos[0],
+        modules[0], runtime_infos[u32(Shader::SwStage::Compute)].hw.cs,
+        TakeComputeShaderBinary(infos[0]->pgm_hash, modules[0], compute_key), sdata, true);
 
     infos.fill(nullptr);
     modules.fill(nullptr);
@@ -272,13 +277,36 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar) {
     return true;
 }
 
-bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage) {
+bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage,
+                                      std::optional<ComputePipelineKey> expected_compute_key) {
     auto program = std::make_unique<Program>();
     Shader::StageSpecialization spec{};
     spec.info = &program->info;
     size_t perm_idx{};
     if (!LoadShaderMeta(ar, program->info, spec, perm_idx)) {
         return false;
+    }
+
+    const bool is_compute = expected_compute_key.has_value();
+    const auto expected_key =
+        is_compute ? std::optional<u64>{expected_compute_key->value} : std::nullopt;
+    if (!IsShaderCacheEntryCompatible(program->info, spec.runtime_info, perm_idx, expected_key,
+                                      instance.GetComputeSubgroupLimits())) {
+        LOG_WARNING(Render_Vulkan,
+                    "Cached shader {:#x} has an incompatible stage or subgroup policy",
+                    program->info.pgm_hash);
+        return false;
+    }
+    const auto it_existing = program_cache.find(program->info.pgm_hash);
+    if (it_existing != program_cache.end() &&
+        (it_existing.value()->info.hw_stage != program->info.hw_stage ||
+         it_existing.value()->info.sw_stage != program->info.sw_stage)) {
+        LOG_WARNING(Render_Vulkan, "Cached shader {:#x} conflicts with an existing shader stage",
+                    program->info.pgm_hash);
+        return false;
+    }
+    if (is_compute) {
+        runtime_infos[u32(Shader::SwStage::Compute)] = spec.runtime_info;
     }
 
     std::vector<u32> spv{};
@@ -301,6 +329,8 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage) 
     if (new_program) {
         module = CompileSPV(spv, instance.GetDevice());
         it_pgm.value() = std::move(program);
+    } else if (is_compute) {
+        module = CompileSPV(spv, instance.GetDevice());
     } else {
         // An equal specialization at another index is the same permutation compiled again in an
         // earlier session. Its pipelines name this index, so it is kept here as well instead of
@@ -312,7 +342,9 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage) 
             module = CompileSPV(spv, instance.GetDevice());
         }
     }
-    it_pgm.value()->InsertPermut(module, std::move(spec), perm_idx);
+    spec.info = &it_pgm.value()->info;
+    it_pgm.value()->InsertPermut(module, std::move(spec), perm_idx,
+                                 is_compute ? std::move(spv) : std::vector<u32>{});
 
     infos[stage] = &it_pgm.value()->info;
     modules[stage] = module;

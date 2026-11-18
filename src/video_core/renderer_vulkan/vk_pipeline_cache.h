@@ -54,6 +54,7 @@ struct Program {
     struct Module {
         vk::ShaderModule module;
         Shader::StageSpecialization spec;
+        std::vector<u32> compute_spirv;
     };
     static constexpr size_t MaxPermutations = 8;
     using ModuleList = boost::container::small_vector<Module, MaxPermutations>;
@@ -69,10 +70,10 @@ struct Program {
         modules.emplace_back(module, std::move(spec));
     }
 
-    void InsertPermut(vk::ShaderModule module, Shader::StageSpecialization&& spec,
-                      size_t perm_idx) {
+    void InsertPermut(vk::ShaderModule module, Shader::StageSpecialization&& spec, size_t perm_idx,
+                      std::vector<u32>&& compute_spirv = {}) {
         modules.resize(std::max(modules.size(), perm_idx + 1)); // <-- beware of realloc
-        modules[perm_idx] = {module, std::move(spec)};
+        modules[perm_idx] = {module, std::move(spec), std::move(compute_spirv)};
     }
 };
 
@@ -117,7 +118,8 @@ public:
 
     bool LoadComputePipeline(Serialization::Archive& ar);
     bool LoadGraphicsPipeline(Serialization::Archive& ar);
-    bool LoadPipelineStage(Serialization::Archive& ar, size_t stage);
+    bool LoadPipelineStage(Serialization::Archive& ar, size_t stage,
+                           std::optional<ComputePipelineKey> expected_compute_key = std::nullopt);
 
     const GraphicsPipeline* GetGraphicsPipeline(const DrawIndirectParams params = {});
 
@@ -156,6 +158,7 @@ private:
         vk::ShaderModule module{};
         std::vector<u32> spv;
         std::optional<std::vector<u32>> patch;
+        bool patched{};
         bool failed{};
         std::string error;
     };
@@ -168,12 +171,16 @@ private:
                                                    std::string_view ext);
     vk::ShaderModule CompileModule(Shader::Info& info, Shader::RuntimeInfo& runtime_info,
                                    const std::span<const u32>& code, size_t perm_idx,
-                                   Shader::Backend::Bindings& binding);
+                                   Shader::Backend::Bindings& binding,
+                                   std::vector<u32>& compute_spirv);
     ModuleBuild BuildModule(Shader::Pools& build_pools, Shader::Info& info,
                             Shader::RuntimeInfo& runtime_info, std::span<const u32> code,
                             size_t perm_idx, Shader::Backend::Bindings& binding);
     vk::ShaderModule FinishModule(const Shader::Info& info, std::span<const u32> code,
-                                  size_t perm_idx, ModuleBuild&& build);
+                                  size_t perm_idx, ModuleBuild&& build,
+                                  std::vector<u32>& compute_spirv);
+    std::vector<u32> TakeComputeShaderBinary(u64 hash, vk::ShaderModule module,
+                                             const ComputePipelineKey& key);
     void SubmitTranslation(Shader::HwStage hw_stage, Shader::SwStage sw_stage,
                            const Shader::ShaderParams& params,
                            const Shader::RuntimeInfo& runtime_info,

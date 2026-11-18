@@ -11,6 +11,7 @@
 #include "common/path_util.h"
 #include "common/polyfill_thread.h"
 #include "common/recoverable.h"
+#include "common/scm_rev.h"
 #include "common/thread.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
@@ -723,9 +724,11 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
         LOG_INFO(Render_Vulkan, "Compiling compute pipeline {:#x}", pipeline_hash);
 
         ComputePipeline::SerializationSupport sdata{};
-        it.value() = std::make_unique<ComputePipeline>(instance, scheduler, desc_heap, profile,
-                                                       *pipeline_cache, compute_key, *infos[0],
-                                                       modules[0], sdata, false, skippable);
+        it.value() = std::make_unique<ComputePipeline>(
+            instance, scheduler, desc_heap, profile, *pipeline_cache, compute_key, *infos[0],
+            modules[0], runtime_infos[u32(SwStage::Compute)].hw.cs,
+            TakeComputeShaderBinary(infos[0]->pgm_hash, modules[0], compute_key), sdata, false,
+            skippable);
         if (skippable) {
             auto* pipeline = it.value().get();
             compile_workers.Submit([pipeline] { pipeline->TryBuild(); });
@@ -1064,9 +1067,11 @@ bool PipelineCache::RefreshComputeKey(bool async) {
 
 vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::RuntimeInfo& runtime_info,
                                               const std::span<const u32>& code, size_t perm_idx,
-                                              Shader::Backend::Bindings& binding) {
+                                              Shader::Backend::Bindings& binding,
+                                              std::vector<u32>& compute_spirv) {
     return FinishModule(info, code, perm_idx,
-                        BuildModule(pools, info, runtime_info, code, perm_idx, binding));
+                        BuildModule(pools, info, runtime_info, code, perm_idx, binding),
+                        compute_spirv);
 }
 
 PipelineCache::ModuleBuild PipelineCache::BuildModule(Shader::Pools& build_pools,
@@ -1078,6 +1083,10 @@ PipelineCache::ModuleBuild PipelineCache::BuildModule(Shader::Pools& build_pools
              perm_idx != 0 ? "(permutation)" : "");
     DumpShader(code, info.pgm_hash, info.hw_stage, perm_idx, "bin");
 
+    auto module_profile = profile;
+    if (info.hw_stage == HwStage::Compute) {
+        module_profile.subgroup_size = runtime_info.hw.cs.subgroup_size;
+    }
     ModuleBuild build{};
     try {
         // A shader the translator cannot handle no longer stops the emulator: a failed ASSERT or
@@ -1085,8 +1094,9 @@ PipelineCache::ModuleBuild PipelineCache::BuildModule(Shader::Pools& build_pools
         // dispatches that use it are skipped. (From shadGT FIX-034.)
         Common::RecoverableScope recoverable;
         const auto ir_program =
-            Shader::TranslateProgram(code, build_pools, info, runtime_info, profile);
-        build.spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, ir_program, binding);
+            Shader::TranslateProgram(code, build_pools, info, runtime_info, module_profile);
+        build.spv =
+            Shader::Backend::SPIRV::EmitSPIRV(module_profile, runtime_info, ir_program, binding);
     } catch (const Common::RecoverableFailure& e) {
         build.failed = true;
         build.error = e.what();
@@ -1095,7 +1105,8 @@ PipelineCache::ModuleBuild PipelineCache::BuildModule(Shader::Pools& build_pools
     DumpShader(build.spv, info.pgm_hash, info.hw_stage, perm_idx, "spv");
 
     build.patch = GetShaderPatch(info.pgm_hash, info.hw_stage, perm_idx, "spv");
-    if (build.patch && EmulatorSettings.IsPatchShaders()) {
+    build.patched = build.patch && EmulatorSettings.IsPatchShaders();
+    if (build.patched) {
         LOG_INFO(Loader, "Loaded patch for {} shader {:#x}", info.hw_stage, info.pgm_hash);
         build.module = CompileSPV(*build.patch, instance.GetDevice());
     } else {
@@ -1107,7 +1118,8 @@ PipelineCache::ModuleBuild PipelineCache::BuildModule(Shader::Pools& build_pools
 }
 
 vk::ShaderModule PipelineCache::FinishModule(const Shader::Info& info, std::span<const u32> code,
-                                             size_t perm_idx, ModuleBuild&& build) {
+                                             size_t perm_idx, ModuleBuild&& build,
+                                             std::vector<u32>& compute_spirv) {
     if (build.failed) {
         if (failed_shaders.insert(info.pgm_hash).second) {
             LOG_ERROR(Render_Vulkan,
@@ -1118,16 +1130,33 @@ vk::ShaderModule PipelineCache::FinishModule(const Shader::Info& info, std::span
         return {};
     }
 
+    if (info.hw_stage == HwStage::Compute) {
+        compute_spirv = build.patched ? *build.patch : build.spv;
+    }
     const auto& spv = build.spv;
     RegisterShaderBinary(std::move(build.spv), info.pgm_hash, perm_idx);
 
     if (EmulatorSettings.IsShaderCollect()) {
-        const bool is_patched = build.patch && EmulatorSettings.IsPatchShaders();
+        const bool is_patched = build.patched;
         DebugState.CollectShader(GetShaderName(info.hw_stage, info.pgm_hash, perm_idx),
                                  info.sw_stage, build.module, spv, code,
                                  build.patch ? *build.patch : std::span<const u32>{}, is_patched);
     }
     return build.module;
+}
+
+std::vector<u32> PipelineCache::TakeComputeShaderBinary(u64 hash, vk::ShaderModule module,
+                                                        const ComputePipelineKey& key) {
+    auto& program = *program_cache.at(hash);
+    for (size_t perm_idx = 0; perm_idx < program.modules.size(); ++perm_idx) {
+        if (HashCombine(hash, perm_idx) == key.value) {
+            auto& permutation = program.modules[perm_idx];
+            ASSERT(permutation.module == module);
+            ASSERT(!permutation.compute_spirv.empty());
+            return std::move(permutation.compute_spirv);
+        }
+    }
+    UNREACHABLE_MSG("Missing compute shader binary for pipeline {:#x}", key.value);
 }
 
 void PipelineCache::SubmitTranslation(HwStage hw_stage, SwStage sw_stage,
@@ -1202,8 +1231,10 @@ void PipelineCache::CollectTranslations() {
         while (!queue.empty() && queue.front()->done.IsReady()) {
             auto& translation = *queue.front();
             const u64 hash = it->first;
-            const auto module = FinishModule(*translation.info, translation.code,
-                                             translation.perm_idx, std::move(translation.build));
+            std::vector<u32> compute_spirv;
+            const auto module =
+                FinishModule(*translation.info, translation.code, translation.perm_idx,
+                             std::move(translation.build), compute_spirv);
 
             auto [it_pgm, new_program] = program_cache.try_emplace(hash);
             if (new_program) {
@@ -1217,7 +1248,8 @@ void PipelineCache::CollectTranslations() {
                                    *translation.spec, HashCombine(hash, translation.perm_idx),
                                    translation.perm_idx);
             }
-            program.InsertPermut(module, std::move(*translation.spec), translation.perm_idx);
+            program.InsertPermut(module, std::move(*translation.spec), translation.perm_idx,
+                                 std::move(compute_spirv));
             program.info.user_data = {};
             queue.pop_front();
         }
@@ -1233,6 +1265,26 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
                                                 const Shader::ShaderParams& params,
                                                 Shader::Backend::Bindings& binding, bool async) {
     auto runtime_info = BuildRuntimeInfo(hw_stage, sw_stage);
+    if (hw_stage == HwStage::Compute) {
+        const auto limits = instance.GetComputeSubgroupLimits();
+        auto& cs_info = runtime_info.hw.cs;
+        const auto subgroup = SelectComputeSubgroupPolicy(limits, cs_info.workgroup_size);
+        ASSERT_MSG(
+            subgroup.has_value(),
+            "No valid compute subgroup policy: revision={} shader_cache={} GPU={} driver={} "
+            "shader={:#x} SPIR-V={:#x} local={}x{}x{} profile={} enabled={} compute_stage={} "
+            "range={}..{} max_subgroups={} max_invocations={} max_local={}x{}x{}",
+            Common::g_scm_rev, Common::g_shader_cache_hash, instance.GetModelName(),
+            instance.GetDriverVersion(), params.hash, profile.supported_spirv,
+            cs_info.workgroup_size[0], cs_info.workgroup_size[1], cs_info.workgroup_size[2],
+            profile.subgroup_size, limits.size_control_enabled, limits.compute_required_size,
+            limits.min_size, limits.max_size, limits.max_workgroup_subgroups,
+            limits.max_workgroup_invocations, limits.max_workgroup_size[0],
+            limits.max_workgroup_size[1], limits.max_workgroup_size[2]);
+        cs_info.subgroup_size = subgroup->effective_size;
+        cs_info.required_subgroup_size = subgroup->required_size;
+        runtime_infos[u32(sw_stage)] = runtime_info;
+    }
     if (!async) {
         // A shader built now must not race a translation already queued for it.
         WaitTranslations(params.hash);
@@ -1254,15 +1306,16 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
         auto& program = it_pgm.value();
         auto start = binding;
         const size_t perm_idx = NewPermutationIndex(params.hash, 0);
-        const auto module =
-            CompileModule(program->info, runtime_info, params.code, perm_idx, binding);
+        std::vector<u32> compute_spirv;
+        const auto module = CompileModule(program->info, runtime_info, params.code, perm_idx,
+                                          binding, compute_spirv);
         auto spec = Shader::StageSpecialization(program->info, runtime_info, profile, start);
         const auto perm_hash = HashCombine(params.hash, perm_idx);
 
         if (module) {
             RegisterShaderMeta(program->info, spec.fetch_shader_data, spec, perm_hash, perm_idx);
         }
-        program->InsertPermut(module, std::move(spec), perm_idx);
+        program->InsertPermut(module, std::move(spec), perm_idx, std::move(compute_spirv));
         if (auto& fetch = program->modules[perm_idx].spec.fetch_shader_data; !fetch.Empty()) {
             fetch_shader = &fetch;
         }
@@ -1332,12 +1385,14 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
                         program->modules.back().spec.DescribeDifference(spec));
         }
         auto new_info = Shader::Info(hw_stage, sw_stage, params);
-        module = CompileModule(new_info, runtime_info, params.code, perm_idx, binding);
+        std::vector<u32> compute_spirv;
+        module =
+            CompileModule(new_info, runtime_info, params.code, perm_idx, binding, compute_spirv);
 
         if (module) {
             RegisterShaderMeta(info, spec.fetch_shader_data, spec, perm_hash, perm_idx);
         }
-        program->InsertPermut(module, std::move(spec), perm_idx);
+        program->InsertPermut(module, std::move(spec), perm_idx, std::move(compute_spirv));
     } else {
         info.AddBindings(binding);
         module = it->module;
@@ -1360,6 +1415,9 @@ std::optional<vk::ShaderModule> PipelineCache::ReplaceShader(vk::ShaderModule mo
                 const auto& d = instance.GetDevice();
                 d.destroyShaderModule(m.module);
                 m.module = CompileSPV(spv_code, d);
+                if (program->info.hw_stage == HwStage::Compute) {
+                    m.compute_spirv.assign(spv_code.begin(), spv_code.end());
+                }
                 new_module = m.module;
             }
         }

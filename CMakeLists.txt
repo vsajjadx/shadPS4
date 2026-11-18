@@ -235,6 +235,7 @@ file(GLOB_RECURSE SHADER_CACHE_SOURCES CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/src/video_core/renderer_vulkan/vk_pipeline_*.h"
      "${CMAKE_CURRENT_SOURCE_DIR}/src/video_core/renderer_vulkan/vk_graphics_pipeline.*"
      "${CMAKE_CURRENT_SOURCE_DIR}/src/video_core/renderer_vulkan/vk_compute_pipeline.*"
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/video_core/renderer_vulkan/vk_compute_subgroup.h"
      "${CMAKE_CURRENT_SOURCE_DIR}/src/video_core/renderer_vulkan/liverpool_to_vk.*"
      "${CMAKE_CURRENT_SOURCE_DIR}/src/common/hack_features.*")
 # The command processor submits work but does not shape the shaders or pipelines a build caches.

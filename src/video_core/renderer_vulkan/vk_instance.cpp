@@ -662,6 +662,8 @@ bool Instance::CreateDevice() {
         return false;
     }
     device = std::move(dev);
+    subgroup_size_control_enabled =
+        device_chain.get<vk::PhysicalDeviceVulkan13Features>().subgroupSizeControl != VK_FALSE;
 
     VULKAN_HPP_DEFAULT_DISPATCHER.init(*device);
 
