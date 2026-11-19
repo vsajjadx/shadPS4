@@ -212,7 +212,8 @@ jobs:
     - name: Print CPU Info
       run: bash -c "cat /proc/cpuinfo"
 
-    - name: Select compatible Visual Studio Clang for Windows SDL
+    - &windows-clang
+      name: Select compatible Visual Studio Clang
       shell: pwsh
       run: |
         $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
@@ -296,6 +297,8 @@ jobs:
       with:
         append-timestamp: false
         key: ${{ env.cache-name }}-${{ hashFiles('launcher/**') }}
+
+    - *windows-clang
 
     - name: Build and run launcher IPC regressions
       working-directory: qtlauncher
