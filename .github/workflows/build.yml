@@ -201,6 +201,23 @@ jobs:
       with:
         submodules: recursive
 
+    - name: Apply OpenAL MSVC STL compatibility patch
+      shell: pwsh
+      run: |
+        $submodule = Join-Path $env:GITHUB_WORKSPACE 'externals/openal-soft'
+        $trackedPatch = Join-Path $env:GITHUB_WORKSPACE '.github/workflows/patches/openal-msvc-14.52.patch'
+        $patch = Join-Path $env:RUNNER_TEMP 'shadps4-openal-msvc-14.52.patch'
+        $patchText = [IO.File]::ReadAllText($trackedPatch).Replace([string][char]13 + [char]10, [string][char]10)
+        [IO.File]::WriteAllText($patch, $patchText, [Text.UTF8Encoding]::new($false))
+        $head = git -C $submodule rev-parse HEAD
+        if ($LASTEXITCODE -ne 0 -or $head -ne '83ea7236c6f23fc98e2b62eb9c5b3abfd4b2be86') {
+          throw 'Unexpected OpenAL source revision; review the compatibility patch'
+        }
+        git -C $submodule apply --check --whitespace=error-all $patch
+        if ($LASTEXITCODE -ne 0) { throw 'OpenAL compatibility patch did not apply cleanly' }
+        git -C $submodule apply --whitespace=error-all $patch
+        if ($LASTEXITCODE -ne 0) { throw 'OpenAL compatibility patch failed' }
+
     - name: Cache CMake Build
       uses: hendrikmuhs/ccache-action@v1.2.21
       env:
