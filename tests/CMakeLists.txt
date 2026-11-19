@@ -570,3 +570,7 @@ target_link_libraries(shadps4_net_kernel_test PRIVATE
     tsl::robin_map         # fs.h
     miniupnpc::miniupnpc   # UPnP forwarding of the P2P port
 )
+
+add_executable(shadps4_font_mount_diagnostics_test loader/font_mount_diagnostics_test.cpp)
+target_include_directories(shadps4_font_mount_diagnostics_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME shadps4_font_mount_diagnostics_test COMMAND shadps4_font_mount_diagnostics_test)

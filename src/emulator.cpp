@@ -9,6 +9,7 @@
 #include <iostream>
 #include <set>
 #include <sstream>
+#include <string_view>
 #include <fmt/core.h>
 #include <fmt/xchar.h>
 #include <hwinfo/hwinfo.h>
@@ -39,6 +40,7 @@
 #include "core/file_format/psf.h"
 #include "core/file_format/trp.h"
 #include "core/file_sys/fs.h"
+#include "core/font_mount_diagnostics.h"
 #include "core/guest_fault_recovery.h"
 #include "core/libraries/app_content/app_content.h"
 #include "core/libraries/kernel/kernel.h"
@@ -905,9 +907,21 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         mnt->Mount(mount_pair.first, mount_pair.second);
     }
 
-    if (std::filesystem::is_empty(host_font_dir) || std::filesystem::is_empty(host_font2_dir)) {
-        LOG_WARNING(Loader, "No dumped system fonts, expect missing text or instability");
-    }
+    const auto log_font_mount = [](const std::filesystem::path& dir, std::string_view mount) {
+        switch (InspectFontMount(dir)) {
+        case FontMountState::Empty:
+            LOG_WARNING(Loader, "System font mount {} is empty; some guest text may be missing",
+                        mount);
+            break;
+        case FontMountState::Unavailable:
+            LOG_WARNING(Loader, "Could not inspect system font mount {}", mount);
+            break;
+        case FontMountState::Populated:
+            break;
+        }
+    };
+    log_font_mount(host_font_dir, "font");
+    log_font_mount(host_font2_dir, "font2");
 
     auto env_max = std::min<u64>(env_vars.size(), 63);
     for (int i = 0; i < env_max; i++) {
