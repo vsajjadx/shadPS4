@@ -212,6 +212,28 @@ jobs:
     - name: Print CPU Info
       run: bash -c "cat /proc/cpuinfo"
 
+    - name: Select compatible Visual Studio Clang for Windows SDL
+      shell: pwsh
+      run: |
+        $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+        $vsPath = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Llvm.Clang -property installationPath
+        if ($LASTEXITCODE -ne 0 -or -not $vsPath) { throw 'Visual Studio with bundled Clang was not found' }
+        $llvmBin = Join-Path $vsPath 'VC/Tools/Llvm/x64/bin'
+        $clang = Join-Path $llvmBin 'clang-cl.exe'
+        $version = & $clang --version | Out-String
+        if ($LASTEXITCODE -ne 0 -or $version -notmatch 'clang version (\d+)' -or [int]$Matches[1] -lt 22) {
+          throw "Bundled Clang 22 or newer is required by the Windows runner STL: $version"
+        }
+        Write-Output $version.Trim()
+        $source = Join-Path $env:RUNNER_TEMP 'shadps4-stl-smoke.cpp'
+        $probe = Join-Path $env:RUNNER_TEMP 'shadps4-stl-smoke.exe'
+        Set-Content -LiteralPath $source -Encoding ascii -Value '#include <string>', 'int main() { return std::string("test").size() != 4; }'
+        & $clang /nologo /std:c++20 /W4 /WX $source "/Fo:$env:RUNNER_TEMP/shadps4-stl-smoke.obj" "/Fe:$probe"
+        if ($LASTEXITCODE -ne 0) { throw 'Bundled Clang failed the Windows STL compile/link check' }
+        & $probe
+        if ($LASTEXITCODE -ne 0) { throw 'Bundled Clang failed the Windows STL run check' }
+        $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
     - name: Configure CMake
       run: cmake --fresh -G Ninja -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=ON -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
