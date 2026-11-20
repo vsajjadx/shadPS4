@@ -279,7 +279,7 @@ void L::DrawAdvanced() {
 }
 
 void L::DrawSimple() {
-    const float frameRate = DebugState.Framerate;
+    const float frameRate = Vulkan::GetPresentedFps();
     if (frameRate < 10) {
         PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.0f, 0.0f, 1.0f)); // Red
     } else if (frameRate >= 10 && frameRate < 20) {
@@ -287,7 +287,11 @@ void L::DrawSimple() {
     } else {
         PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f)); // White
     }
-    Text("Game: %d FPS (%.1f ms)", static_cast<int>(std::round(frameRate)), 1000.0f / frameRate);
+    if (frameRate > 0.0f) {
+        Text("FPS: %d (%.1f ms)", static_cast<int>(std::round(frameRate)), 1000.0f / frameRate);
+    } else {
+        TextUnformatted("FPS: --");
+    }
     PopStyleColor();
 }
 

@@ -32,6 +32,8 @@ struct Liverpool;
 
 namespace Vulkan {
 
+float GetPresentedFps();
+
 struct GeneratedImage {
     VmaAllocation allocation{};
     vk::Image image{};

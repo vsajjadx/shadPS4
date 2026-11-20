@@ -52,6 +52,27 @@
 
 namespace Vulkan {
 
+static std::atomic<float> presented_fps{0.0f};
+
+float GetPresentedFps() {
+    return presented_fps.load(std::memory_order_relaxed);
+}
+
+// Called under the submission lock, once per accepted, distinct game image.
+static void CountPresentedFrame() {
+    using Clock = std::chrono::steady_clock;
+    const auto now = Clock::now();
+    static auto start = now;
+    static unsigned frames = 0;
+    ++frames;
+    const float seconds = std::chrono::duration<float>(now - start).count();
+    if (seconds >= 0.5f) {
+        presented_fps.store(frames / seconds, std::memory_order_relaxed);
+        frames = 0;
+        start = now;
+    }
+}
+
 bool CanBlitToSwapchain(const vk::PhysicalDevice physical_device, vk::Format format) {
     const vk::FormatProperties props{physical_device.getFormatProperties(format)};
     return static_cast<bool>(props.optimalTilingFeatures & vk::FormatFeatureFlagBits::eBlitDst);
@@ -1355,6 +1376,9 @@ void Presenter::PresentImage(Frame* frame, bool is_reusing_frame, bool is_game_f
         std::scoped_lock submit_lock{Scheduler::submit_mutex};
         if (!swapchain.Present(&present_accepted)) {
             swapchain.Recreate(window.GetWidth(), window.GetHeight());
+        }
+        if (present_accepted && is_game_frame && !is_reusing_frame) {
+            CountPresentedFrame();
         }
     }
 
