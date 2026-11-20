@@ -241,6 +241,7 @@ file(GLOB_RECURSE SHADER_CACHE_SOURCES CONFIGURE_DEPENDS
 # The command processor submits work but does not shape the shaders or pipelines a build caches.
 list(REMOVE_ITEM SHADER_CACHE_SOURCES
      "${CMAKE_CURRENT_SOURCE_DIR}/src/video_core/amdgpu/liverpool.cpp")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${SHADER_CACHE_SOURCES})
 list(SORT SHADER_CACHE_SOURCES)
 set(SHADER_CACHE_DIGESTS "")
 foreach(SHADER_CACHE_SOURCE ${SHADER_CACHE_SOURCES})
