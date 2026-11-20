@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <optional>
 #include "common/assert.h"
 #include "shader_recompiler/ir/ir_emitter.h"
 #include "shader_recompiler/ir/opcodes.h"
@@ -13,6 +14,47 @@
 #include "shader_recompiler/runtime_info.h"
 
 namespace Shader::Optimization {
+
+// The GS-VS ring stores a channel's vertices consecutively. Lower to a static export
+// only when every possible byte address belongs to the same channel.
+static std::optional<u32> StaticRingStoreOffset(IR::U32 address, u32 offset, u32 channel_bytes) {
+    u32 scale = 1;
+    while (!address.IsImmediate()) {
+        const auto* inst = address.Inst();
+        const auto op = inst->GetOpcode();
+        if (op != IR::Opcode::IAdd32 && op != IR::Opcode::ShiftLeftLogical32 &&
+            op != IR::Opcode::BitwiseAnd32 && op != IR::Opcode::UMin32) {
+            return std::nullopt;
+        }
+        auto lhs = inst->Arg(0);
+        auto rhs = inst->Arg(1);
+        if (op != IR::Opcode::ShiftLeftLogical32 && lhs.IsImmediate()) {
+            std::swap(lhs, rhs);
+        }
+        if (!rhs.IsImmediate()) {
+            return std::nullopt;
+        }
+        const u32 k = rhs.U32();
+        if (op == IR::Opcode::IAdd32) {
+            offset += k * scale;
+        } else if (op == IR::Opcode::ShiftLeftLogical32) {
+            if (k >= 32) {
+                return std::nullopt;
+            }
+            scale <<= k;
+        } else {
+            // x & k and min(x,k) both have unsigned bounds [0,k].
+            const u64 max_extra = u64{k} * scale;
+            if (max_extra < channel_bytes - offset % channel_bytes &&
+                u64{offset} + max_extra <= UINT32_MAX) {
+                return offset;
+            }
+            return std::nullopt;
+        }
+        address = IR::U32{lhs};
+    }
+    return offset + address.U32() * scale;
+}
 
 void RingAccessElimination(const IR::Program& program, const RuntimeInfo& runtime_info) {
     auto& info = program.info;
@@ -147,9 +189,21 @@ void RingAccessElimination(const IR::Program& program, const RuntimeInfo& runtim
                 const auto output_size =
                     std::max<u32>(gs_info.output_vertices * dwords_per_vertex, 1) * sizeof(u32);
 
-                const auto vc_read_ofs = (((offset / comp_ofs) * comp_ofs) % output_size) * 16u;
-                const auto& it = info.gs_copy_data.attr_map.find(vc_read_ofs);
-                ASSERT(it != info.gs_copy_data.attr_map.cend());
+                const auto& map = info.gs_copy_data.attr_map;
+                const auto find_export = [&](u32 ring_offset) {
+                    return map.find((((ring_offset / comp_ofs) * comp_ofs) % output_size) * 16u);
+                };
+                auto it = find_export(offset);
+                if (buffer_info.voffset_enable && !buffer_info.index_enable) {
+                    const auto effective =
+                        StaticRingStoreOffset(IR::GetBufferVOffsetArg(&inst), offset, comp_ofs);
+                    if (effective) {
+                        if (const auto dest = find_export(*effective); dest != map.end()) {
+                            it = dest;
+                        }
+                    }
+                }
+                ASSERT(it != map.end());
                 const auto& [attr, comp] = it->second;
 
                 inst.Invalidate();

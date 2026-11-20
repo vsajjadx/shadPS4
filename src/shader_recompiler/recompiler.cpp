@@ -195,6 +195,9 @@ IR::Program TranslateProgram(const std::span<const u32>& code, Pools& pools, Inf
         Shader::Optimization::TessellationPreprocess(program, runtime_info);
         Shader::Optimization::DomainShaderTransform(program, runtime_info);
     }
+    if (info.hw_stage == HwStage::Geometry) {
+        Shader::IR::DumpProgram(program, info, "pre-ring.");
+    }
     Shader::Optimization::RingAccessElimination(program, runtime_info);
     Shader::IR::DumpProgram(program, info, "pre-res-discover.");
     auto resources = Shader::Optimization::ResourceDiscoverPass(program, profile);
