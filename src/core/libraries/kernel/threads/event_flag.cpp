@@ -102,7 +102,7 @@ public:
         }
 
         auto it = m_waiters.begin();
-        while (it != m_waiters.end() && (*it)->priority >= waiter.priority) {
+        while (it != m_waiters.end() && (*it)->priority <= waiter.priority) {
             ++it;
         }
         m_waiters.insert(it, &waiter);

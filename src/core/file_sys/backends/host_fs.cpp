@@ -44,10 +44,11 @@ FileStat MakeFileStat(const Common::FS::FileInfo& info, u32 inode) {
 } // namespace
 
 // Guest code expects POSIX sharing: opening a file already open for writing must not fail.
-HostFile::HostFile(std::filesystem::path host_path, Common::FS::FileAccessMode mode, bool read_only)
+HostFile::HostFile(std::filesystem::path host_path, Common::FS::FileAccessMode mode, bool read_only,
+                   const std::shared_ptr<RecycledFiles>& recycle_cache)
     : m_path(std::move(host_path)), m_file(m_path, mode, Common::FS::FileType::BinaryFile,
                                            Common::FS::FileShareFlag::ShareReadWrite),
-      m_read_only(read_only) {
+      m_read_only(read_only), m_recycle_cache(recycle_cache) {
     if (const auto info = m_file.GetInfo()) {
         m_inode = GetGuestInode(FileIdentity{.host = info->identity}).value_or(0);
     }
@@ -228,8 +229,39 @@ void HostDirectory::Rewind() {
     m_it = std::filesystem::directory_iterator(m_root, ec);
 }
 
+// Games open and close the same archive files over and over while streaming; reopening a
+// host file costs a path lookup and an fopen each time.
+class RecycledFiles {
+public:
+    void Park(std::unique_ptr<HostFile> file) {
+        std::scoped_lock lk{mutex};
+        files.push_front(std::move(file));
+        if (files.size() > Capacity) {
+            files.pop_back();
+        }
+    }
+
+    std::unique_ptr<HostFile> Take(const std::filesystem::path& path) {
+        std::scoped_lock lk{mutex};
+        for (auto it = files.begin(); it != files.end(); ++it) {
+            if ((*it)->Path() == path) {
+                auto file = std::move(*it);
+                files.erase(it);
+                return file;
+            }
+        }
+        return nullptr;
+    }
+
+private:
+    static constexpr size_t Capacity = 64;
+    std::mutex mutex;
+    std::list<std::unique_ptr<HostFile>> files;
+};
+
 HostFsBackend::HostFsBackend(std::filesystem::path root, bool read_only)
-    : m_root(std::move(root)), m_read_only(read_only) {}
+    : m_root(std::move(root)), m_read_only(read_only),
+      m_recycle_cache(read_only ? std::make_shared<RecycledFiles>() : nullptr) {}
 
 std::filesystem::path HostFsBackend::Resolve(std::string_view rel_path) const {
     if (rel_path.empty()) {
@@ -307,51 +339,14 @@ bool HostFsBackend::IsDirectory(std::string_view rel_path) {
     return std::filesystem::is_directory(Resolve(rel_path), ec);
 }
 
-namespace {
-
-// Games open and close the same archive files over and over while streaming; reopening a
-// host file costs a path lookup and an fopen each time.
-class RecycledFiles {
-public:
-    static RecycledFiles& Instance() {
-        static RecycledFiles instance;
-        return instance;
-    }
-
-    void Park(std::unique_ptr<HostFile> file) {
-        std::scoped_lock lk{mutex};
-        files.push_front(std::move(file));
-        if (files.size() > Capacity) {
-            files.pop_back();
-        }
-    }
-
-    std::unique_ptr<HostFile> Take(const std::filesystem::path& path) {
-        std::scoped_lock lk{mutex};
-        for (auto it = files.begin(); it != files.end(); ++it) {
-            if ((*it)->Path() == path) {
-                auto file = std::move(*it);
-                files.erase(it);
-                return file;
-            }
-        }
-        return nullptr;
-    }
-
-private:
-    static constexpr size_t Capacity = 64;
-    std::mutex mutex;
-    std::list<std::unique_ptr<HostFile>> files;
-};
-
-} // Anonymous namespace
-
 void RecycleFile(std::unique_ptr<IFile> file) {
     if (!file || !file->IsRecyclable() || !file->Seek(0, Common::FS::SeekOrigin::SetOrigin)) {
         return;
     }
-    RecycledFiles::Instance().Park(
-        std::unique_ptr<HostFile>{static_cast<HostFile*>(file.release())});
+    auto host_file = std::unique_ptr<HostFile>{static_cast<HostFile*>(file.release())};
+    if (auto cache = host_file->GetRecycleCache()) {
+        cache->Park(std::move(host_file));
+    }
 }
 
 bool HostFsBackend::Stat(std::string_view rel_path, FileStat& out) {
@@ -374,8 +369,8 @@ std::unique_ptr<IFile> HostFsBackend::Open(std::string_view rel_path,
         return nullptr;
     }
     const auto path = Resolve(rel_path);
-    if (m_read_only) {
-        if (auto recycled = RecycledFiles::Instance().Take(path)) {
+    if (m_recycle_cache) {
+        if (auto recycled = m_recycle_cache->Take(path)) {
             return recycled;
         }
     }
@@ -383,12 +378,9 @@ std::unique_ptr<IFile> HostFsBackend::Open(std::string_view rel_path,
     if (mode != Common::FS::FileAccessMode::Create && !std::filesystem::is_regular_file(path, ec)) {
         return nullptr;
     }
-    auto handle = std::make_unique<HostFile>(path, mode, m_read_only || !writable);
+    auto handle = std::make_unique<HostFile>(path, mode, m_read_only || !writable, m_recycle_cache);
     if (!handle->IsOpen()) {
         return nullptr;
-    }
-    if (m_read_only) {
-        handle->SetRecyclable();
     }
     return handle;
 }

@@ -18,12 +18,14 @@
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/libs.h"
 #include "core/net/guest_net.h"
+#include "core/platform.h"
 
 namespace Libraries::Kernel {
 
 extern boost::asio::io_context io_context;
 extern void KernelSignalRequest();
 
+std::mutex equeue_registration_mutex;
 static std::unordered_map<s32, EqueueInternal*> kqueues;
 static constexpr auto HrTimerSpinlockThresholdNs = 1200000u;
 
@@ -448,6 +450,7 @@ bool EqueueInternal::EventExists(u64 id, s16 filter) {
 }
 
 s32 PS4_SYSV_ABI posix_kqueue() {
+    std::scoped_lock lock{equeue_registration_mutex};
     // Reserve a file handle for the kqueue
     auto* handles = Common::Singleton<Core::FileSys::HandleTable>::Instance();
     s32 kqueue_handle = handles->CreateHandle();
@@ -571,6 +574,7 @@ int PS4_SYSV_ABI sceKernelCreateEqueue(OrbisKernelEqueue* eq, const char* name) 
 
     LOG_INFO(Kernel_Event, "name = {}", name);
 
+    std::scoped_lock lock{equeue_registration_mutex};
     // Reserve a file handle for the kqueue
     auto* handles = Common::Singleton<Core::FileSys::HandleTable>::Instance();
     OrbisKernelEqueue kqueue_handle = handles->CreateHandle();
@@ -585,12 +589,14 @@ int PS4_SYSV_ABI sceKernelCreateEqueue(OrbisKernelEqueue* eq, const char* name) 
 }
 
 int PS4_SYSV_ABI sceKernelDeleteEqueue(OrbisKernelEqueue eq) {
+    std::scoped_lock lock{equeue_registration_mutex};
     if (!kqueues.contains(eq)) {
         return ORBIS_KERNEL_ERROR_EBADF;
     }
 
     auto* handles = Common::Singleton<Core::FileSys::HandleTable>::Instance();
     handles->DeleteHandle(eq);
+    Platform::IrqC::Instance()->UnregisterAll(kqueues[eq]);
     delete kqueues[eq];
     kqueues.erase(eq);
     return ORBIS_OK;

@@ -33,6 +33,11 @@ void* PS4_SYSV_ABI _runOnAnotherStack(void* arg, void* func, void* stackb) {
 }
 #endif
 
+#if defined(ARCH_X86_64)
+extern "C" void* PS4_SYSV_ABI _runPthreadOnAnotherStack(void* arg, void* func, void* stack)
+    asm("_runPthreadOnAnotherStack");
+#endif
+
 namespace Libraries::Kernel {
 
 // Guest priorities run from 256 (highest) to 767 (lowest), 700 being the default. Give the host
@@ -290,7 +295,11 @@ static void* RunThread(void* arg) {
     /* Run the current thread's start routine with argument: */
     auto* const stack =
         (void*)(((size_t)curthread->attr.stackaddr_attr + curthread->attr.stacksize_attr) & (~15));
+#ifdef ARCH_X86_64
+    void* ret = _runPthreadOnAnotherStack(curthread->arg, (void*)curthread->start_routine, stack);
+#else
     void* ret = _runOnAnotherStack(curthread->arg, (void*)curthread->start_routine, stack);
+#endif
 
     /* Remove thread from tracking */
     DebugState.RemoveCurrentThreadFromGuestList();

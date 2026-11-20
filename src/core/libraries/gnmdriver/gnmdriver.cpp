@@ -159,6 +159,7 @@ static inline bool IsValidEventType(Platform::InterruptId id) {
 }
 
 s32 PS4_SYSV_ABI sceGnmAddEqEvent(OrbisKernelEqueue eq, u64 id, void* udata) {
+    std::scoped_lock lock{equeue_registration_mutex};
     auto equeue = GetEqueue(eq);
     if (!equeue) {
         return ORBIS_KERNEL_ERROR_EBADF;
@@ -314,6 +315,7 @@ int PS4_SYSV_ABI sceGnmDebugHardwareStatus() {
 }
 
 s32 PS4_SYSV_ABI sceGnmDeleteEqEvent(OrbisKernelEqueue eq, u64 id) {
+    std::scoped_lock lock{equeue_registration_mutex};
     LOG_TRACE(Lib_GnmDriver, "called");
 
     auto equeue = GetEqueue(eq);

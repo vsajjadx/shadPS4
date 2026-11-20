@@ -19,6 +19,7 @@
 #include "core/file_sys/fs.h"
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/kernel/memory.h"
+#include "core/libraries/kernel/orbis_error.h"
 #include "core/libraries/kernel/threads.h"
 #include "core/libraries/libc_internal/libc_internal.h"
 #include "core/libraries/sysmodule/sysmodule.h"
@@ -80,12 +81,10 @@ void Linker::Execute(const std::vector<std::string>& args) {
     // Map libSceLibcInternal
     const auto& libc_internal_path =
         EmulatorSettings.GetSysModulesDir() / "libSceLibcInternal.sprx";
-    bool has_libcinternal = false;
-    if (std::filesystem::exists(libc_internal_path)) {
-        LoadModule(libc_internal_path);
-        has_libcinternal = true;
-    } else {
-        // Need to load HLE, LLE isn't present
+    const bool has_libcinternal =
+        std::filesystem::exists(libc_internal_path) && LoadModule(libc_internal_path) >= 0;
+    if (!has_libcinternal) {
+        // Use HLE when the system module is unavailable.
         LOG_INFO(Core_Linker, "Can't Load libSceLibcInternal.sprx switching to HLE");
         Libraries::LibcInternal::RegisterLib(&GetHLESymbols());
     }
@@ -184,7 +183,7 @@ void Linker::Execute(const std::vector<std::string>& args) {
             if (entry.is_regular_file()) {
                 LOG_INFO(Core_Linker, "Loading custom module: {}",
                          fmt::UTF(entry.path().u8string()));
-                if (LoadAndStartModule(entry.path(), 0, nullptr, nullptr) == -1) {
+                if (LoadAndStartModule(entry.path(), 0, nullptr, nullptr) < 0) {
                     LOG_ERROR(Core_Linker, "Failed to load custom module: {}",
                               fmt::UTF(entry.path().u8string()));
                 }
@@ -242,9 +241,10 @@ s32 Linker::LoadModule(const std::filesystem::path& elf_name, bool is_dynamic) {
     s32 mod_id = m_modules.size();
     auto module =
         std::make_unique<Module>(memory, elf_name, std::move(handle), max_tls_index, mod_id);
-    ASSERT_MSG(module->IsValid(),
-               "Provided file {} is not valid ELF file. This usually indicated a corrupted dump.",
-               elf_name.string());
+    if (!module->IsValid()) {
+        LOG_ERROR(Core_Linker, "Unsupported module format: {}", elf_name.string());
+        return ORBIS_KERNEL_ERROR_ENOEXEC;
+    }
 
     num_static_modules += !is_dynamic;
     m_modules.emplace_back(std::move(module));
@@ -256,13 +256,13 @@ s32 Linker::LoadModule(const std::filesystem::path& elf_name, bool is_dynamic) {
 
 s32 Linker::LoadAndStartModule(const std::filesystem::path& path, u64 args, const void* argp,
                                int* pRes) {
-    u32 handle = FindByName(path);
-    if (handle != -1) {
+    s32 handle = FindByName(path);
+    if (handle >= 0) {
         return handle;
     }
     handle = LoadModule(path, true);
-    if (handle == -1) {
-        return -1;
+    if (handle < 0) {
+        return handle;
     }
     auto* module = GetModule(handle);
     RelocateAnyImports(module);

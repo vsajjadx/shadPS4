@@ -8,6 +8,10 @@ asm(".att_syntax prefix");
 #if defined(__x86_64__)
 
 asm(R"(
+.global _runPthreadOnAnotherStack
+_runPthreadOnAnotherStack:
+  movq %rsi, %r11
+  leaq .Lstart_guest_pthread(%rip), %rsi
 .global _runOnAnotherStack
 _runOnAnotherStack:
   pushq %r12
@@ -58,6 +62,50 @@ asm(R"(
 asm(R"(
   popq %r13
   popq %r12
+  ret
+
+# The firmware clears these registers just before invoking a fresh pthread's start routine.
+# Keep the stack-switch bookkeeping and host callee-saved registers across the guest call.
+.Lstart_guest_pthread:
+  pushq %rbx
+  pushq %r12
+  pushq %r13
+  pushq %r14
+  pushq %r15
+  subq $16, %rsp
+  movq %r11, (%rsp)
+
+  pxor %mm0, %mm0
+  pxor %mm1, %mm1
+  pxor %mm2, %mm2
+  pxor %mm3, %mm3
+  pxor %mm4, %mm4
+  pxor %mm5, %mm5
+  pxor %mm6, %mm6
+  pxor %mm7, %mm7
+  emms
+  vzeroall
+  xorl %r15d, %r15d
+  xorl %r14d, %r14d
+  xorl %r13d, %r13d
+  xorl %r12d, %r12d
+  xorl %r11d, %r11d
+  xorl %r10d, %r10d
+  xorl %r9d, %r9d
+  xorl %r8d, %r8d
+  xorl %esi, %esi
+  xorl %edx, %edx
+  xorl %ecx, %ecx
+  xorl %ebx, %ebx
+  xorl %eax, %eax
+  callq *(%rsp)
+
+  addq $16, %rsp
+  popq %r15
+  popq %r14
+  popq %r13
+  popq %r12
+  popq %rbx
   ret
 )");
 

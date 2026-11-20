@@ -1,9 +1,12 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstring>
 #include <limits>
 #include <list>
 #include <memory>
@@ -26,13 +29,71 @@ namespace Libraries::Kernel {
 
 constexpr s32 ORBIS_KERNEL_SEM_VALUE_MAX = 0x7FFFFFFF;
 
+struct PthreadSemWaitQueue {
+    struct Waiter {
+        s32* value;
+        Pthread* thread;
+    };
+    std::mutex mutex;
+    std::list<Waiter> waiters;
+};
+
 struct PthreadSem {
     explicit PthreadSem(s32 value_) : value{value_} {}
 
-    std::atomic<s32> value;
-    std::mutex wait_mutex;
-    std::list<Pthread*> waiters;
+    alignas(std::atomic_ref<s32>::required_alignment) s32 value;
+    PthreadSemWaitQueue queue;
 };
+
+// Some libraries initialize sem_t in guest code, then import the POSIX wait/post functions.
+// Their timed-wait fast path atomically consumes the same count at byte offset 8.
+struct GuestPthreadSem {
+    u16 magic;
+    s16 id;
+    u32 has_waiters;
+    s32 count;
+    u32 shared;
+};
+static_assert(offsetof(GuestPthreadSem, count) == 8 && sizeof(GuestPthreadSem) == 16);
+
+struct PthreadSemRef {
+    s32* count;
+    PthreadSemWaitQueue* queue;
+    GuestPthreadSem* guest;
+
+    std::atomic_ref<s32> Value() const {
+        return std::atomic_ref(*count);
+    }
+
+    void UpdateWaiterFlag() const {
+        if (guest) {
+            const bool waiting = std::ranges::any_of(queue->waiters, [this](const auto& waiter) {
+                return waiter.value == count;
+            });
+            std::atomic_ref(guest->has_waiters).store(waiting, std::memory_order_release);
+        }
+    }
+};
+
+static PthreadSemRef ResolvePthreadSem(PthreadSem** storage) {
+    if (storage) {
+        // Test the immutable tag before reading the adjacent, concurrently updated waiter word.
+        // An aligned heap pointer from posix_sem_init cannot have this odd low halfword.
+        u16 tag;
+        std::memcpy(&tag, storage, sizeof(tag));
+        if (tag == 0x736d) {
+            auto* guest = reinterpret_cast<GuestPthreadSem*>(storage);
+            static std::array<PthreadSemWaitQueue, 64> queues;
+            auto& queue = queues[(reinterpret_cast<uintptr_t>(guest) >> 3) % queues.size()];
+            return {&guest->count, &queue, guest};
+        }
+        if (auto* handle = *storage) {
+            return {&handle->value, &handle->queue, nullptr};
+        }
+    }
+    *__Error() = POSIX_EINVAL;
+    return {};
+}
 
 class ScopedPthreadCritical {
 public:
@@ -57,10 +118,10 @@ private:
     Pthread* thread;
 };
 
-static bool PthreadSemTryAcquire(PthreadSem* sem) {
-    s32 value = sem->value.load(std::memory_order_acquire);
+static bool PthreadSemTryAcquire(PthreadSemRef sem) {
+    s32 value = sem.Value().load(std::memory_order_acquire);
     while (value > 0) {
-        if (sem->value.compare_exchange_weak(value, value - 1, std::memory_order_acq_rel,
+        if (sem.Value().compare_exchange_weak(value, value - 1, std::memory_order_acq_rel,
                                              std::memory_order_acquire)) {
             return true;
         }
@@ -68,11 +129,11 @@ static bool PthreadSemTryAcquire(PthreadSem* sem) {
     return false;
 }
 
-static s32 PthreadSemWait(PthreadSem* sem, const OrbisKernelTimespec* abstime, u64 usec = 0) {
+static s32 PthreadSemWait(PthreadSemRef sem, const OrbisKernelTimespec* abstime, u64 usec = 0) {
     const bool is_reltime = abstime == THR_RELTIME;
     auto reltime_deadline = std::chrono::steady_clock::time_point{};
     bool first_sleep = true;
-    HANG_DIAG_WAIT(PosixSem, sem);
+    HANG_DIAG_WAIT(PosixSem, sem.count);
 
     for (;;) {
         // libkernel checks and decrements the value before validating a timeout.
@@ -92,7 +153,7 @@ static s32 PthreadSemWait(PthreadSem* sem, const OrbisKernelTimespec* abstime, u
         bool cancel_before_wait = false;
         {
             ScopedPthreadCritical critical{curthread};
-            std::scoped_lock lock{sem->wait_mutex};
+            std::scoped_lock lock{sem.queue->mutex};
             if (PthreadSemTryAcquire(sem)) {
                 return 0;
             }
@@ -105,7 +166,10 @@ static s32 PthreadSemWait(PthreadSem* sem, const OrbisKernelTimespec* abstime, u
                 curthread->cancel_point = false;
                 cancel_before_wait = true;
             } else {
-                sem->waiters.push_back(curthread);
+                sem.queue->waiters.push_back({sem.count, curthread});
+                if (sem.guest) {
+                    std::atomic_ref(sem.guest->has_waiters).store(1, std::memory_order_release);
+                }
             }
         }
         if (cancel_before_wait) {
@@ -136,8 +200,11 @@ static s32 PthreadSemWait(PthreadSem* sem, const OrbisKernelTimespec* abstime, u
 
         {
             ScopedPthreadCritical critical{curthread};
-            std::scoped_lock lock{sem->wait_mutex};
-            sem->waiters.remove(curthread);
+            std::scoped_lock lock{sem.queue->mutex};
+            sem.queue->waiters.remove_if([&](const auto& waiter) {
+                return waiter.value == sem.count && waiter.thread == curthread;
+            });
+            sem.UpdateWaiterFlag();
             curthread->cancel_point = false;
         }
 
@@ -489,29 +556,42 @@ s32 PS4_SYSV_ABI posix_sem_init(PthreadSem** sem, s32 /*pshared*/, u32 value) {
 }
 
 s32 PS4_SYSV_ABI posix_sem_destroy(PthreadSem** sem) {
-    if (sem == nullptr || *sem == nullptr) {
-        *__Error() = POSIX_EINVAL;
+    const auto ref = ResolvePthreadSem(sem);
+    if (!ref.count) {
         return -1;
     }
-    delete *sem;
-    *sem = nullptr;
+    if (ref.guest) {
+        std::scoped_lock lock{ref.queue->mutex};
+        if (std::ranges::any_of(ref.queue->waiters, [&](const auto& waiter) {
+                return waiter.value == ref.count;
+            })) {
+            *__Error() = POSIX_EBUSY;
+            return -1;
+        }
+        ref.guest->magic = 0;
+        ref.guest->id = 0;
+        ref.guest->has_waiters = 0;
+    } else {
+        delete *sem;
+        *sem = nullptr;
+    }
     return 0;
 }
 
 s32 PS4_SYSV_ABI posix_sem_wait(PthreadSem** sem) {
-    if (sem == nullptr || *sem == nullptr) {
-        *__Error() = POSIX_EINVAL;
+    const auto ref = ResolvePthreadSem(sem);
+    if (!ref.count) {
         return -1;
     }
-    return PthreadSemWait(*sem, nullptr);
+    return PthreadSemWait(ref, nullptr);
 }
 
 s32 PS4_SYSV_ABI posix_sem_trywait(PthreadSem** sem) {
-    if (sem == nullptr || *sem == nullptr) {
-        *__Error() = POSIX_EINVAL;
+    const auto ref = ResolvePthreadSem(sem);
+    if (!ref.count) {
         return -1;
     }
-    if (!PthreadSemTryAcquire(*sem)) {
+    if (!PthreadSemTryAcquire(ref)) {
         *__Error() = POSIX_EAGAIN;
         return -1;
     }
@@ -519,55 +599,59 @@ s32 PS4_SYSV_ABI posix_sem_trywait(PthreadSem** sem) {
 }
 
 s32 PS4_SYSV_ABI posix_sem_timedwait(PthreadSem** sem, const OrbisKernelTimespec* t) {
-    if (sem == nullptr || *sem == nullptr) {
-        *__Error() = POSIX_EINVAL;
+    const auto ref = ResolvePthreadSem(sem);
+    if (!ref.count) {
         return -1;
     }
-    return PthreadSemWait(*sem, t);
+    return PthreadSemWait(ref, t);
 }
 
 s32 PS4_SYSV_ABI posix_sem_reltimedwait_np(PthreadSem** sem, u32 usec) {
-    if (sem == nullptr || *sem == nullptr) {
-        *__Error() = POSIX_EINVAL;
+    const auto ref = ResolvePthreadSem(sem);
+    if (!ref.count) {
         return -1;
     }
-    return PthreadSemWait(*sem, THR_RELTIME, usec);
+    return PthreadSemWait(ref, THR_RELTIME, usec);
 }
 
 s32 PS4_SYSV_ABI posix_sem_post(PthreadSem** sem) {
-    if (sem == nullptr || *sem == nullptr) {
-        *__Error() = POSIX_EINVAL;
+    const auto ref = ResolvePthreadSem(sem);
+    if (!ref.count) {
         return -1;
     }
     ScopedPthreadCritical critical{g_curthread};
     // Atomically check for overflow and increment in one step.
-    s32 current = (*sem)->value.load();
+    s32 current = ref.Value().load();
     do {
         if (current == ORBIS_KERNEL_SEM_VALUE_MAX) {
             *__Error() = POSIX_EOVERFLOW;
             return -1;
         }
-    } while (!(*sem)->value.compare_exchange_weak(current, current + 1));
+    } while (!ref.Value().compare_exchange_weak(current, current + 1));
 
     {
-        std::scoped_lock lock{(*sem)->wait_mutex};
+        std::scoped_lock lock{ref.queue->mutex};
         // libkernel wakes every waiter after incrementing the value. Only waiters that win the
         // value CAS return; the rest publish themselves again and continue waiting.
-        for (Pthread* waiter : (*sem)->waiters) {
-            waiter->wake_sema.release();
-        }
-        (*sem)->waiters.clear();
+        ref.queue->waiters.remove_if([&](const auto& waiter) {
+            if (waiter.value != ref.count) {
+                return false;
+            }
+            waiter.thread->wake_sema.release();
+            return true;
+        });
+        ref.UpdateWaiterFlag();
     }
     return 0;
 }
 
 s32 PS4_SYSV_ABI posix_sem_getvalue(PthreadSem** sem, s32* sval) {
-    if (sem == nullptr || *sem == nullptr) {
-        *__Error() = POSIX_EINVAL;
+    const auto ref = ResolvePthreadSem(sem);
+    if (!ref.count) {
         return -1;
     }
     if (sval) {
-        *sval = (*sem)->value;
+        *sval = ref.Value().load();
     }
     return 0;
 }

@@ -201,7 +201,9 @@ s32 loadModuleInternal(s32 index, s32 argc, const void* argv, s32* res_out) {
                          game_info->GameSerial());
                 s32 handle = linker->LoadAndStartModule(game_specific_module_path, argc, argv,
                                                         &start_result);
-                ASSERT_MSG(handle >= 0, "Failed to load module {}", mod_name);
+                if (handle < 0) {
+                    return handle;
+                }
                 mod.handle = handle;
                 mod.is_loaded++;
                 if (res_out != nullptr) {
@@ -270,7 +272,9 @@ s32 loadModuleInternal(s32 index, s32 argc, const void* argv, s32* res_out) {
         if (std::filesystem::exists(module_path)) {
             LOG_INFO(Loader, "Loading {}", mod_name);
             s32 handle = linker->LoadAndStartModule(module_path, argc, argv, &start_result);
-            ASSERT_MSG(handle >= 0, "Failed to load module {}", mod_name);
+            if (handle < 0) {
+                return handle;
+            }
             mod.handle = handle;
         } else {
             // Allowed LLE that isn't present, log message

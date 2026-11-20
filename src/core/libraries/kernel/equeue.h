@@ -201,6 +201,7 @@ private:
     std::unordered_map<u64, SmallTimer> m_small_timers;
 };
 
+extern std::mutex equeue_registration_mutex;
 EqueueInternal* GetEqueue(OrbisKernelEqueue eq);
 u64 PS4_SYSV_ABI sceKernelGetEventData(const OrbisKernelEvent* ev);
 

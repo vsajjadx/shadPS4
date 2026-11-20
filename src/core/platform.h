@@ -50,9 +50,7 @@ struct IrqController {
         auto& ctx = irq_contexts[static_cast<u32>(irq)];
 
         std::unique_lock lock{ctx.m_lock};
-        ASSERT_MSG(ctx.persistent_handlers.find(uid) == ctx.persistent_handlers.cend(),
-                   "The handler is already registered!");
-        ctx.persistent_handlers.emplace(uid, handler);
+        ctx.persistent_handlers.insert_or_assign(uid, std::move(handler));
     }
 
     void Unregister(InterruptId irq, void* uid) {
@@ -61,6 +59,13 @@ struct IrqController {
         auto& ctx = irq_contexts[static_cast<u32>(irq)];
         std::unique_lock lock{ctx.m_lock};
         ctx.persistent_handlers.erase(uid);
+    }
+
+    void UnregisterAll(void* uid) {
+        for (auto& ctx : irq_contexts) {
+            std::unique_lock lock{ctx.m_lock};
+            ctx.persistent_handlers.erase(uid);
+        }
     }
 
     void Signal(InterruptId irq) {

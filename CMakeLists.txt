@@ -119,6 +119,11 @@ endif()
 # generate git revision information
 include("${CMAKE_CURRENT_SOURCE_DIR}/externals/cmake-modules/GetGitRevisionDescription.cmake")
 get_git_head_revision(GIT_REF_SPEC GIT_REV)
+if(NOT GIT_REV)
+  execute_process(COMMAND git rev-parse --verify HEAD
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    OUTPUT_VARIABLE GIT_REV OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+endif()
 git_describe(GIT_DESC --always --long --dirty)
 git_branch_name(GIT_BRANCH)
 string(TIMESTAMP BUILD_DATE "%Y-%m-%d %H:%M:%S")
@@ -129,6 +134,7 @@ message("start git things")
 message("check for remote and branch")
 execute_process(
   COMMAND git rev-parse --abbrev-ref --symbolic-full-name @{u}
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
   OUTPUT_VARIABLE GIT_REMOTE_NAME
   RESULT_VARIABLE GIT_REMOTE_RESULT
   ERROR_QUIET
@@ -140,6 +146,7 @@ if (GIT_REMOTE_RESULT OR GIT_REMOTE_NAME STREQUAL "")
   message(STATUS "check default push")
   execute_process(
     COMMAND git config --get remote.pushDefault
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     OUTPUT_VARIABLE GIT_REMOTE_NAME
     RESULT_VARIABLE GIT_REMOTE_RESULT
     ERROR_QUIET
@@ -208,6 +215,7 @@ endif()
 message(STATUS "getting remote link")
 execute_process(
   COMMAND git config --get remote.${GIT_REMOTE_NAME}.url
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
   OUTPUT_VARIABLE GIT_REMOTE_URL
   OUTPUT_STRIP_TRAILING_WHITESPACE
 )

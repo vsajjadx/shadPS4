@@ -175,6 +175,7 @@ struct PsColorBuffer {
     AmdGpu::NumberConversion num_conversion : 3;
     AmdGpu::ShaderExportFormat export_format : 4;
     u32 blend_self_scale : 1;
+    u32 encode_srgb : 1;
     AmdGpu::CompMapping swizzle;
 
     bool operator==(const PsColorBuffer& other) const = default;

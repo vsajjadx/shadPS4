@@ -15,10 +15,13 @@
 
 namespace Core::FileSys {
 
+class RecycledFiles;
+
 /// IFile implementation backed by a real host file.
 class HostFile final : public IFile {
 public:
-    HostFile(std::filesystem::path host_path, Common::FS::FileAccessMode mode, bool read_only);
+    HostFile(std::filesystem::path host_path, Common::FS::FileAccessMode mode, bool read_only,
+             const std::shared_ptr<RecycledFiles>& recycle_cache = {});
     ~HostFile() override;
 
     s64 Read(void* dst, u64 size) override;
@@ -54,11 +57,11 @@ public:
     void Stat(FileStat& out) override;
 
     bool IsRecyclable() const override {
-        return m_recyclable;
+        return !m_recycle_cache.expired();
     }
 
-    void SetRecyclable() {
-        m_recyclable = true;
+    std::shared_ptr<RecycledFiles> GetRecycleCache() const {
+        return m_recycle_cache.lock();
     }
 
     const std::filesystem::path& Path() const {
@@ -74,7 +77,7 @@ private:
     bool m_read_only;
     std::once_flag m_positional_once;
     intptr_t m_positional_handle{-1};
-    bool m_recyclable{false};
+    std::weak_ptr<RecycledFiles> m_recycle_cache;
 };
 
 /// Keeps a closed recyclable file open for its next open, or destroys it otherwise.
@@ -128,6 +131,7 @@ private:
     std::optional<std::filesystem::path> ResolveCaseInsensitive(std::string_view rel_path) const;
     std::filesystem::path m_root;
     bool m_read_only;
+    std::shared_ptr<RecycledFiles> m_recycle_cache;
     mutable std::mutex m_case_cache_mutex;
     mutable tsl::robin_map<std::string, std::filesystem::path> m_case_cache;
 };

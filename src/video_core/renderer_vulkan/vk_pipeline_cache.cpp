@@ -808,6 +808,19 @@ bool PipelineCache::RefreshGraphicsKey() {
         color_buffer.swizzle = col_buf.Swizzle();
 
         const auto& bc = regs.blend_control[cb];
+        if (color_buffer.num_format == AmdGpu::NumberFormat::Srgb &&
+            (color_buffer.data_format == AmdGpu::DataFormat::Format8 ||
+             color_buffer.data_format == AmdGpu::DataFormat::Format8_8) &&
+            (!bc.enable || col_buf.info.blend_bypass) &&
+            key.logic_op == AmdGpu::ColorControl::LogicOp::Copy) {
+            // An unblended UNORM attachment cannot perform the guest's sRGB store conversion.
+            const auto format =
+                LiverpoolToVK::SurfaceFormat(color_buffer.data_format, color_buffer.num_format);
+            const auto target =
+                instance.GetSupportedFormat(format, vk::FormatFeatureFlagBits2::eColorAttachment);
+            color_buffer.encode_srgb =
+                target == vk::Format::eR8Unorm || target == vk::Format::eR8G8Unorm;
+        }
         color_buffer.blend_self_scale =
             bc.enable && !col_buf.info.blend_bypass &&
             (bc.color_func == AmdGpu::BlendControl::BlendFunc::Min ||

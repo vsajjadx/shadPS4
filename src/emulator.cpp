@@ -935,7 +935,7 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
 
     std::jthread init_thread{[&, this]() {
         // Load the module with the linker.
-        if (linker->LoadModule(guest_eboot_path) == -1) {
+        if (linker->LoadModule(guest_eboot_path) < 0) {
             LOG_CRITICAL(Loader, "Failed to load game's eboot.bin: {}", guest_eboot_path);
             std::quick_exit(0);
         }

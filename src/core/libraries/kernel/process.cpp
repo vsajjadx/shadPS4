@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
 #include "common/elf_info.h"
 #include "common/logging/log.h"
 #include "core/emulator_settings.h"
@@ -330,8 +331,8 @@ u32 PS4_SYSV_ABI posix_getuid() {
 }
 
 s32 PS4_SYSV_ABI exit(s32 status) {
-    UNREACHABLE_MSG("Exiting with status code {}", status);
-    return 0;
+    LOG_INFO(Lib_Kernel, "Guest exited with status {}", status);
+    std::quick_exit(status);
 }
 
 s32 PS4_SYSV_ABI sceKernelSetProcessProperty(u32 prop_type, const void* prop_data, size_t prop_size,

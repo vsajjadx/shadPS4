@@ -216,6 +216,15 @@ void Translator::ExportRenderTarget(const GcnInst& inst) {
             continue;
         }
         auto converted = ApplyWriteNumberConversion(ir, swizzled_comp, color_buffer.num_conversion);
+        if (color_buffer.encode_srgb && i < 2) {
+            const IR::F32 linear{ir.FPSaturate(converted)};
+            const auto low = ir.FPMul(linear, ir.Imm32(12.92f));
+            const auto high = ir.FPSub(ir.FPMul(ir.Imm32(1.055f),
+                                                ir.FPPow(linear, ir.Imm32(1.f / 2.4f))),
+                                       ir.Imm32(0.055f));
+            converted = IR::F32{ir.Select(ir.FPLessThanEqual(linear, ir.Imm32(0.0031308f)),
+                                          low, high)};
+        }
         if (needs_unorm_fixup) {
             // FIXME: Fix-up for GPUs where float-to-unorm rounding is off from expected.
             converted = ir.FPSub(converted, ir.Imm32(1.f / 127500.f));
