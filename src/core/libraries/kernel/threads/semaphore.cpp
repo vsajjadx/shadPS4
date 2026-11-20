@@ -432,11 +432,13 @@ bool GetSemaDiag(const void* sema, SemaDiag& out) {
         return false;
     }
     auto* s = const_cast<OrbisSem*>(static_cast<const OrbisSem*>(sema));
-    out.tokens = s->token_count.load(std::memory_order_relaxed);
     out.max_tokens = s->max_count;
-    if (s->mutex.try_lock()) {
-        out.waiters = static_cast<s32>(s->wait_list.size());
-        s->mutex.unlock();
+    {
+        std::unique_lock lock{s->mutex, std::try_to_lock};
+        out.tokens = s->token_count.load(std::memory_order_relaxed);
+        out.waiters = lock ? static_cast<s32>(s->wait_list.size()) : -1;
+        out.first_wait_tokens =
+            lock && !s->wait_list.empty() ? s->wait_list.front()->need_count : 0;
     }
     out.signals = s->signals.load(std::memory_order_relaxed);
     out.last_signaler = s->last_signaler.load(std::memory_order_relaxed);

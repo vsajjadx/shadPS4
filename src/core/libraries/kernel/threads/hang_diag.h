@@ -50,6 +50,7 @@ struct SemaDiag {
     s32 tokens{};
     s32 max_tokens{};
     s32 waiters{-1}; ///< -1 when the semaphore was busy.
+    s32 first_wait_tokens{}; ///< Positive when the first queued request was observed.
     u32 signals{};
     const Pthread* last_signaler{};
     u64 last_signal_caller{};

@@ -281,6 +281,9 @@ std::string DescribeWait(const ThreadSnapshot& snap, const std::vector<ThreadSna
                 DescribeThread(diag.last_signaler, all), DescribeAddress(diag.last_signal_caller),
                 DescribeAge(diag.last_signal_ms, now), DescribeThread(diag.last_taker, all),
                 DescribeAddress(diag.last_take_caller), DescribeAge(diag.last_take_ms, now));
+            if (diag.first_wait_tokens > 0) {
+                out += fmt::format(", first waiter requests {} tokens", diag.first_wait_tokens);
+            }
         }
     } else if (snap.wait_kind == WaitKind::Equeue && snap.wait_obj != nullptr) {
         out += fmt::format(", equeue '{}'",
