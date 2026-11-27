@@ -34,6 +34,8 @@ bool ar_is_read_only{true};
 
 namespace Storage {
 
+const std::string CacheEntryPrefix = "v" + std::to_string(ShaderBinaryVersion) + "_";
+
 void ProcessIO(const std::stop_token& stoken) {
     Common::SetCurrentThreadName("shadPS4:PipelineCacheIO");
 
@@ -167,7 +169,7 @@ bool WriteVector(const BlobType type, std::filesystem::path&& path_, std::vector
 }
 
 template <typename T>
-void LoadVector(BlobType type, std::filesystem::path& path, std::vector<T>& v) {
+void LoadVector(BlobType type, std::filesystem::path path, std::vector<T>& v) {
     using namespace Common::FS;
     path.replace_extension(GetBlobFileExtension(type));
     if (EmulatorSettings.IsPipelineCacheArchived()) {
@@ -188,14 +190,18 @@ void LoadVector(BlobType type, std::filesystem::path& path, std::vector<T>& v) {
     }
 }
 
+std::filesystem::path DataBase::GetEntryPath(const std::string& name) const {
+    const auto entry = CacheEntryPrefix + name;
+    return EmulatorSettings.IsPipelineCacheArchived() ? std::filesystem::path{entry}
+                                                      : cache_path / entry;
+}
+
 bool DataBase::Save(BlobType type, const std::string& name, std::vector<u8>&& data) {
     if (!opened) {
         return false;
     }
 
-    auto path = EmulatorSettings.IsPipelineCacheArchived() ? std::filesystem::path{name}
-                                                           : cache_path / name;
-    return WriteVector(type, std::move(path), std::move(data));
+    return WriteVector(type, GetEntryPath(name), std::move(data));
 }
 
 bool DataBase::Save(BlobType type, const std::string& name, std::vector<u32>&& data) {
@@ -203,9 +209,7 @@ bool DataBase::Save(BlobType type, const std::string& name, std::vector<u32>&& d
         return false;
     }
 
-    auto path = EmulatorSettings.IsPipelineCacheArchived() ? std::filesystem::path{name}
-                                                           : cache_path / name;
-    return WriteVector(type, std::move(path), std::move(data));
+    return WriteVector(type, GetEntryPath(name), std::move(data));
 }
 
 void DataBase::Load(BlobType type, const std::string& name, std::vector<u8>& data) {
@@ -213,9 +217,7 @@ void DataBase::Load(BlobType type, const std::string& name, std::vector<u8>& dat
         return;
     }
 
-    auto path = EmulatorSettings.IsPipelineCacheArchived() ? std::filesystem::path{name}
-                                                           : cache_path / name;
-    return LoadVector(type, path, data);
+    LoadVector(type, GetEntryPath(name), data);
 }
 
 void DataBase::Load(BlobType type, const std::string& name, std::vector<u32>& data) {
@@ -223,9 +225,7 @@ void DataBase::Load(BlobType type, const std::string& name, std::vector<u32>& da
         return;
     }
 
-    auto path = EmulatorSettings.IsPipelineCacheArchived() ? std::filesystem::path{name}
-                                                           : cache_path / name;
-    return LoadVector(type, path, data);
+    LoadVector(type, GetEntryPath(name), data);
 }
 
 void DataBase::ForEachBlob(BlobType type, const std::function<void(std::vector<u8>&& data)>& func) {
@@ -236,7 +236,8 @@ void DataBase::ForEachBlob(BlobType type, const std::function<void(std::vector<u
             std::array<char, MZ_ZIP_MAX_ARCHIVE_FILENAME_SIZE> file_name{};
             file_name.fill(0);
             mz_zip_reader_get_filename(&zip_ar, index, file_name.data(), file_name.size());
-            if (std::string{file_name.data()}.ends_with(ext)) {
+            const std::string_view entry{file_name.data()};
+            if (entry.starts_with(CacheEntryPrefix) && entry.ends_with(ext)) {
                 mz_zip_archive_file_stat stat{};
                 mz_zip_reader_file_stat(&zip_ar, index, &stat);
                 std::vector<u8> data(stat.m_uncomp_size);
@@ -246,7 +247,8 @@ void DataBase::ForEachBlob(BlobType type, const std::function<void(std::vector<u
         }
     } else {
         for (const auto& file_name : std::filesystem::directory_iterator{cache_path}) {
-            if (file_name.path().extension().string().ends_with(ext)) {
+            if (file_name.path().filename().string().starts_with(CacheEntryPrefix) &&
+                file_name.path().extension().string().ends_with(ext)) {
                 using namespace Common::FS;
                 const auto& file = IOFile{file_name, FileAccessMode::Read};
                 if (file.IsOpen()) {
