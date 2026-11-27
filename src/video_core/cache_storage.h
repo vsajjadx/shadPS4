@@ -44,8 +44,6 @@ public:
     void ForEachBlob(BlobType type, const std::function<void(std::vector<u8>&& data)>& func);
 
 private:
-    std::filesystem::path GetEntryPath(const std::string& name) const;
-
     std::jthread io_worker{};
     std::filesystem::path cache_path{};
     bool opened{};
