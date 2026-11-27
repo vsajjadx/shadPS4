@@ -13,6 +13,8 @@
 
 namespace Storage {
 
+inline constexpr u32 ShaderBinaryVersion = 10u;
+
 enum class BlobType : u32 {
     ShaderMeta,
     ShaderBinary,

@@ -34,6 +34,8 @@ bool ar_is_read_only{true};
 
 namespace Storage {
 
+const std::string CacheEntrySuffix = ".v" + std::to_string(ShaderBinaryVersion);
+
 void ProcessIO(const std::stop_token& stoken) {
     Common::SetCurrentThreadName("shadPS4:PipelineCacheIO");
 
@@ -85,6 +87,10 @@ constexpr std::string GetBlobFileExtension(BlobType type) {
     default:
         UNREACHABLE();
     }
+}
+
+std::string GetVersionedBlobExtension(BlobType type) {
+    return "." + GetBlobFileExtension(type) + CacheEntrySuffix;
 }
 
 void DataBase::Open() {
@@ -142,7 +148,7 @@ bool WriteVector(const BlobType type, std::filesystem::path&& path_, std::vector
     {
         auto request = std::packaged_task<void()>{[=]() {
             auto path{path_};
-            path.replace_extension(GetBlobFileExtension(type));
+            path.replace_extension(GetVersionedBlobExtension(type));
             if (EmulatorSettings.IsPipelineCacheArchived()) {
                 ASSERT_MSG(!ar_is_read_only,
                            "The archive is read-only. Did you forget to call `FinishPreload`?");
@@ -169,7 +175,7 @@ bool WriteVector(const BlobType type, std::filesystem::path&& path_, std::vector
 template <typename T>
 void LoadVector(BlobType type, std::filesystem::path& path, std::vector<T>& v) {
     using namespace Common::FS;
-    path.replace_extension(GetBlobFileExtension(type));
+    path.replace_extension(GetVersionedBlobExtension(type));
     if (EmulatorSettings.IsPipelineCacheArchived()) {
         int index{-1};
         index = mz_zip_reader_locate_file(&zip_ar, path.string().c_str(), nullptr, 0);
@@ -229,14 +235,15 @@ void DataBase::Load(BlobType type, const std::string& name, std::vector<u32>& da
 }
 
 void DataBase::ForEachBlob(BlobType type, const std::function<void(std::vector<u8>&& data)>& func) {
-    const auto& ext = GetBlobFileExtension(type);
+    const auto ext = GetVersionedBlobExtension(type);
     if (EmulatorSettings.IsPipelineCacheArchived()) {
         const auto num_files = mz_zip_reader_get_num_files(&zip_ar);
         for (int index = 0; index < num_files; ++index) {
             std::array<char, MZ_ZIP_MAX_ARCHIVE_FILENAME_SIZE> file_name{};
             file_name.fill(0);
             mz_zip_reader_get_filename(&zip_ar, index, file_name.data(), file_name.size());
-            if (std::string{file_name.data()}.ends_with(ext)) {
+            const std::string_view entry{file_name.data()};
+            if (entry.ends_with(ext)) {
                 mz_zip_archive_file_stat stat{};
                 mz_zip_reader_file_stat(&zip_ar, index, &stat);
                 std::vector<u8> data(stat.m_uncomp_size);
@@ -246,7 +253,7 @@ void DataBase::ForEachBlob(BlobType type, const std::function<void(std::vector<u
         }
     } else {
         for (const auto& file_name : std::filesystem::directory_iterator{cache_path}) {
-            if (file_name.path().extension().string().ends_with(ext)) {
+            if (file_name.path().filename().string().ends_with(ext)) {
                 using namespace Common::FS;
                 const auto& file = IOFile{file_name, FileAccessMode::Read};
                 if (file.IsOpen()) {
